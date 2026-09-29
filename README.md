@@ -70,6 +70,39 @@ Run Klepa against a **separate test bot**, never against a bot that is already i
 5. Send the bot a PDF, an album or a voice message.
 6. Stop Core with Ctrl-C. It sends pending receipts before it exits.
 
+## Running as a service
+
+Core can run under launchd, report to the owner through a second bot and take a signed snapshot every night.
+Core must not run in the foreground at the same time: the service holds the data directory's lock.
+
+1. **Service bot.** Create a second bot with [@BotFather](https://t.me/BotFather), turn off `/setjoingroups`, and put its
+   token into `~/KlepaData-test/keys/service-bot.token` the same way as the family bot's token. Add a `[service_bot]`
+   section to the config (see [`config/example.toml`](config/example.toml)).
+2. **Bind it to the owner.** With Core stopped, run
+   `uv run python -m klepa_core service-bot bind --config ~/KlepaData-test/config.toml`, open the printed link from
+   the owner's own Telegram account and confirm in the terminal.
+3. **Give Core its own interpreter**, so that the macOS permission for the documents folder belongs to Core alone:
+
+   ```bash
+   KLEPA_HOME="$HOME/Library/Application Support/Klepa"
+   UV_PYTHON_INSTALL_DIR="$KLEPA_HOME/python" uv python install 3.13
+   uv venv --python "$(UV_PYTHON_INSTALL_DIR="$KLEPA_HOME/python" uv python find --python-preference only-managed 3.13)" "$KLEPA_HOME/venv"
+   uv pip install --python "$KLEPA_HOME/venv/bin/python" .
+   ```
+
+4. **Install the service:**
+   `"$KLEPA_HOME/venv/bin/python" -m klepa_core service install --config ~/KlepaData-test/config.toml`.
+   It checks the tokens and the interpreter first, and excludes `keys/` from Time Machine.
+5. **Allow the documents folder.** If macOS asks whether Python may open the documents folder, allow it. If the
+   service bot reports that macOS denies access, allow the interpreter it names in System Settings → Privacy &
+   Security → Full Disk Access. Then restart Core: `"$KLEPA_HOME/venv/bin/python" -m klepa_core service restart`.
+   A new interpreter (after a Python upgrade) needs the permission again.
+6. **Keep a paper copy of the signing key.** In your own terminal run
+   `"$KLEPA_HOME/venv/bin/python" -m klepa_core keys paper-backup --config ~/KlepaData-test/config.toml`, write the
+   lines on paper and clear the terminal. `keys restore` types them back in.
+7. **Check it.** Press Status in the service bot. The daily line comes at 09:00; a missing line means trouble.
+   `service status` shows whether launchd runs Core; `service uninstall` stops it for good.
+
 ## Development
 
 ```bash

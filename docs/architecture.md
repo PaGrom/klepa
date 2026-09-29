@@ -28,11 +28,11 @@ Telegram (service bot)  <-->  Core
 - **Supervision** (stage 1c). Core starts, holds and stops the host gateway: RUNNING, HOLD, STOPPED.
 - **Egress proxy** (stage 1c). The host's other HTTP traffic may reach only the model API. It fails closed.
 - **Storage.** `core.db`, the originals, the documents folder, signed cards and signed snapshots.
-- **Service bot** (stage 1b). Alerts and buttons for the owner, with no model behind them.
+- **Service bot.** Alerts, the daily line and a Status button for the owner, with no model behind them.
 - **Watchdog** (stage 4). A tiny launchd job that can only send a fixed alarm.
 - **Maintenance agent** (stage 7). It works in a strict mode, and Core executes its plan from an allow-list.
 
-Stage 1a implements the gatekeeper's intake, storage, receipts and spaces. The parts marked with a stage come later (see [Roadmap](#roadmap)).
+Stages 1a and 1b implement the gatekeeper's intake, storage, receipts and spaces, the service bot, snapshots and the launchd service. The parts marked with a stage come later (see [Roadmap](#roadmap)).
 
 ## Intake
 
@@ -63,11 +63,13 @@ The data directory must be mode 0700, on a local disk, and never inside iCloud o
 
 ```
 <data_dir>/
-├─ keys/                      0700: the signing key and the bot token, each 0600
+├─ keys/                      0700: the signing key and the bot tokens, each 0600
 ├─ incoming/YYYY/MM/          originals, <evidence id>-<name>
 ├─ inbound-journal/inbound.db
 ├─ core.db                    members, spaces, evidence, outbound, event log
 ├─ core.lock                  one Core per data directory
+├─ snapshots/                 signed snapshots of core.db, <day>-g<generation>/
+├─ logs/                      Core's stdout and stderr under launchd, 0600, tokens redacted
 └─ .metadata_never_index      keeps Spotlight out
 ```
 
@@ -103,6 +105,18 @@ It is signed with HMAC-SHA256 over canonical JSON. A card without a valid signat
 
 **It may be unavailable.** Its volume may not be mounted yet, macOS may deny access, or the disk may be full. Intake does not depend on that folder: files still land in `incoming/` and receipts still go out, while copies stay pending and are retried. Core never recreates a missing documents root, because the root may live on a volume that is not mounted yet.
 
+**It may hang.** A stalled sync client, a network volume that went away or an unanswered macOS prompt can block a file call for minutes. Every call into the folder therefore runs on a worker thread, one at a time, with a 20-second timeout; while one call hangs, the others fail at once. Core's event loop never waits on the folder. A problem is reported to the owner once it has lasted five minutes, because at login the volume may mount after Core starts.
+
+**Conflicts.** If the documents folder already holds different bytes under Core's name, the copy is marked as a conflict. It counts in the daily line and is tried again after each restart, once the conflict is cleared.
+
+**Snapshots (D24).**
+- Every night (03:30 by default) `VACUUM INTO` writes a consistent copy of `core.db` on the local disk.
+- SQLite's integrity check and the SHA-256 go into a manifest with a monotonic generation number, signed with the snapshot key. Generation numbers are never reused.
+- A snapshot is built under a `.partial-` name and renamed when complete, locally and then in `documents/_klepa/snapshots/<day>-g<generation>/`. A crash leaves nothing under a final name, and the start-up sweep removes the rest.
+- Retention counts good snapshots only: the latest of each of the last 14 days and the first of each of the last 12 months. A snapshot that failed its integrity check stays two weeks for diagnosis and is never copied.
+- `privacy_journal_head` is reserved for stage 3.
+- The signing key lives in `keys/` and on paper: `keys paper-backup` prints it for the owner.
+
 ## Spaces and privacy
 
 Code: `klepa_core/spaces.py`, `klepa_core/gatekeeper/service.py`.
@@ -116,6 +130,39 @@ Every record belongs to a space: `shared`, or `personal:<member>`.
 **Moving later.** Making a file private after the fact is a separate tool, `make_private` (stage 3). It will record the move in the signed privacy journal.
 
 **Folders.** The documents folder holds one shared folder, named by the locale (for example `Shared`), and one folder per member, named after the member.
+
+## Service bot and health
+
+Code: `klepa_core/servicebot.py`, `klepa_core/alerts.py`, `klepa_core/health.py`, `klepa_core/schedule.py`, `klepa_core/app.py`.
+
+**A narrow channel.** A second bot talks only to the owner's private chat:
+- it is bound once, with a 128-bit code sent from the owner's own account and confirmed in the terminal;
+- it accepts an update only when the chat is private, the chat is the bound one and the sender is the owner;
+- it sends fixed templates with no family data: counts, times and hashes;
+- every send is an event in the log.
+
+**Alerts,** at most one per class per period:
+- the documents folder is unavailable, or macOS denies access (the alert names the interpreter to allow);
+- Telegram refuses the family bot's polling;
+- the daily snapshot failed;
+- Core restarted after an unexpected stop;
+- an album became private after part of it was copied.
+
+**The daily line.** Once a day (09:00 by default) the bot sends one line: the last intake; the newest snapshot's
+generation, hash and integrity; the state of the documents folder; and the counts of waiting copies, copy conflicts
+and sends left unconfirmed in the last 48 hours. It says "Needs attention" when any of these is wrong. A missing line
+means trouble. The Status button under the line sends a fresh one. Its id is one-time, 128-bit, and bound to the chat,
+the message and a lifetime of a week.
+
+**The documents probe.** Core writes, reads back, lists and removes a small file with a unique name. Listing matters:
+macOS lets a background process without permission write a known path in a protected folder but refuses to list it.
+
+**Daily jobs** run once a day after their time, and once on wake after sleep or downtime. A job is marked as run
+before it starts, so a job that brings Core down is not repeated in a loop.
+
+**Fault isolation.** Only family intake can stop Core; launchd then starts it again. The service bot, the scheduler,
+the snapshot copier and the start-up probe restart themselves after a failure, and a broken service bot token turns
+only the service bot off.
 
 ## Delivery
 
@@ -154,6 +201,8 @@ Receipts use the matching form ("1 file", "2 files"). Loading a locale checks th
 - **Event log.** It keeps metadata only: no message text, captions, tokens, file paths or URLs.
 - **Content is data.** Incoming content (messages, documents, recognized text, transcripts) is treated as data, never as instructions.
 - **Trust boundary.** The trust boundary is the macOS user account that runs Core.
+- **Keys and backups.** `keys/` is excluded from Time Machine at `init` and at `service install`. The snapshot signing key has a paper copy.
+- **Logs.** Under launchd, Core's stderr goes to `logs/` (0600), and anything shaped like a bot token is redacted.
 - **Egress** (stage 1c). The host reaches only the model API, through Core's proxy. The proxy checks the exact host name before any DNS lookup and fails closed.
 - **Per-call signatures** (stage 1c). Every call to a Core tool is signed with an HMAC by the adapter, and the model never sees the key.
 
@@ -174,6 +223,8 @@ Receipts use the matching form ("1 file", "2 files"). Loading a locale checks th
   - S28 — hostile file names;
   - S36 — a shuffled and repeated album;
   - also: files that are too large, an unavailable or missing documents folder, a truncated download, a full disk and a restart in the middle of an album.
+- **Acceptance scenarios for stage 1b** (`tests/test_acceptance_stage1b.py`): an album whose private caption arrives after the first receipt; the snapshot and the daily line once a day across a restart; the documents folder missing at start and gone in the middle of a run; a revoked family bot token; a restart after a crash; strangers and family members writing to the service bot; a broken service bot token; a failing service loop; the service token never on disk.
+- **No real system changes.** Tests never run `launchctl` or `tmutil` (`tests/conftest.py`).
 - **Test data.** Tests use synthetic members only.
 - **Test locale.** Tests run on the English locale. `tests/test_languages.py` checks the other languages.
 

@@ -18,6 +18,7 @@ default = "shared"
 [intake]
 batch_window_seconds = 2.0
 poll_timeout_seconds = 30
+album_quiet_seconds = 60   # album items are copied only after the album has been quiet this long
 
 [[members]]
 person_id = "owner"
@@ -30,3 +31,11 @@ person_id = "partner"
 telegram_id = 100000002
 name = "Partner"
 role = "member"
+
+[schedule]
+snapshot_at = "03:30"      # local time; "off" disables
+daily_line_at = "09:00"    # the service bot's daily line; "off" disables
+
+# The service bot: alerts, the daily line and a Status button, for the owner only.
+[service_bot]
+token_file = "/Users/you/KlepaData/keys/service-bot.token"   # 0600, typed via stdin, not the family bot's
