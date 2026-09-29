@@ -1,3 +1,7 @@
+import sqlite3
+
+import pytest
+
 from klepa_core.journal import InboundJournal
 
 
@@ -28,3 +32,15 @@ def test_journal_survives_reopen(tmp_path):
     journal.close()
     again = InboundJournal(path)
     assert again.pending()[0][1]["message"]["text"] == "hi"
+
+
+def test_mark_many_marks_all_or_nothing(tmp_path):
+    journal = InboundJournal(tmp_path / "inbound.db")
+    journal.append_batch([u(1), u(2), u(3)], "t")
+    journal.conn.execute(
+        "CREATE TRIGGER power_loss BEFORE UPDATE ON inbound_update WHEN NEW.update_id = 2 "
+        "BEGIN SELECT RAISE(ABORT, 'power loss'); END"
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="power loss"):
+        journal.mark_many([1, 2, 3], "done")
+    assert [journal.state(i) for i in (1, 2, 3)] == ["new", "new", "new"]

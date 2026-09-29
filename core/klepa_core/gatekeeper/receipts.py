@@ -79,10 +79,9 @@ class ReceiptBatcher:
             self.locale.receipt([kind for _, _, kind in items]),
             reply_to=first_message_id,
         )
-        for update_id, _, _ in items:
-            self.journal.mark(update_id, "done")
-        for update_id in batch.repeats:
-            self.journal.mark(update_id, "done", "repeat")
+        # One transaction per list: a kill in the middle must not leave half a batch to be receipted again.
+        self.journal.mark_many([update_id for update_id, _, _ in items], "done")
+        self.journal.mark_many(batch.repeats, "done", "repeat")
 
     def flush_all(self) -> None:
         for chat_id in list(self._batches):

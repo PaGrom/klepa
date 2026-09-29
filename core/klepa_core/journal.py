@@ -6,6 +6,7 @@ It lives in its own SQLite file, so restoring core.db from a snapshot never touc
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,14 @@ class InboundJournal:
 
     def mark(self, update_id: int, state: str, note: str | None = None) -> None:
         self.conn.execute("UPDATE inbound_update SET state=?, note=? WHERE update_id=?", (state, note, update_id))
+
+    def mark_many(self, update_ids: Iterable[int], state: str, note: str | None = None) -> None:
+        """Mark several updates in one transaction: all of them or none."""
+        with transaction(self.conn):
+            self.conn.executemany(
+                "UPDATE inbound_update SET state=?, note=? WHERE update_id=?",
+                [(state, note, update_id) for update_id in update_ids],
+            )
 
     def next_offset(self) -> int | None:
         row = self.conn.execute("SELECT MAX(update_id) AS last FROM inbound_update").fetchone()
