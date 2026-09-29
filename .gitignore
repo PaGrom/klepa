@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Installation data never goes into this repository.
+*.token
+*.key
+*.db
+local/
