@@ -10,6 +10,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -120,10 +121,23 @@ class EvidenceStore:
         assert row is not None
         return row
 
-    async def copy_pending(self) -> int:
+    def album_spaces(self, chat_id: int, media_group_id: str) -> set[str]:
+        rows = self.conn.execute("SELECT DISTINCT space_id FROM evidence WHERE chat_id=? AND media_group_id=?",
+                                 (chat_id, media_group_id))
+        return {row["space_id"] for row in rows}
+
+    def move_album(self, chat_id: int, media_group_id: str, space_id: str) -> int:
+        """Put the album's items that are not copied yet into one space."""
+        return self.conn.execute(
+            "UPDATE evidence SET space_id=? WHERE chat_id=? AND media_group_id=? AND space_id<>? "
+            "AND copy_state<>'copied'", (space_id, chat_id, media_group_id, space_id)).rowcount
+
+    async def copy_pending(self, ready: Callable[[sqlite3.Row], bool] | None = None) -> int:
         rows = self.conn.execute("SELECT * FROM evidence WHERE copy_state='pending' ORDER BY received_at").fetchall()
         copied = 0
         for row in rows:
+            if ready is not None and not ready(row):
+                continue
             if await self.copy_one(row):
                 copied += 1
         return copied

@@ -192,6 +192,26 @@ async def test_s36_late_repeat_of_an_album_photo_gets_no_second_receipt(fake_tg,
     finally:
         journal.close()
 
+async def test_private_caption_on_one_album_item_keeps_the_whole_album_personal(fake_tg, make_config):
+    cfg = make_config(api_root=fake_tg.url)
+    fake_tg.add_photo(OWNER, pdf(0) * 3, media_group_id="priv")
+    fake_tg.add_photo(OWNER, pdf(1) * 3, media_group_id="priv", caption="just for me")
+    fake_tg.add_photo(OWNER, pdf(2) * 3, media_group_id="priv")
+    await run_until(cfg, lambda: copied_count(cfg) == 3 and len(receipts(fake_tg)) == 1)
+    assert {row["space_id"] for row in evidence_rows(cfg)} == {"personal:owner"}
+    assert not (cfg.documents_dir / "Shared").exists()
+
+
+async def test_private_album_stays_private_when_the_captioned_item_fails_to_download(fake_tg, make_config):
+    cfg = make_config(api_root=fake_tg.url)
+    fake_tg.add_photo(OWNER, pdf(0) * 3, media_group_id="priv", caption="just for me")
+    fake_tg.add_photo(OWNER, pdf(1) * 3, media_group_id="priv")
+    fake_tg.add_photo(OWNER, pdf(2) * 3, media_group_id="priv")
+    fake_tg.fail("download", drop=True)  # the captioned photo is fetched first and fails once
+    await run_until(cfg, lambda: copied_count(cfg) == 3)
+    assert {row["space_id"] for row in evidence_rows(cfg)} == {"personal:owner"}
+    assert not (cfg.documents_dir / "Shared").exists()
+
 async def test_too_large_file_is_recorded_and_the_sender_is_asked_to_resend(fake_tg, make_config):
     cfg = make_config(api_root=fake_tg.url)
     fake_tg.add_document(OWNER, "video.mov", b"tiny", mime="video/quicktime", file_size=25 * 1024 * 1024)

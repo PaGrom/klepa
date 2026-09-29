@@ -13,7 +13,7 @@ from ..config import Config, Member
 from ..events import EventLog, utc_now_iso
 from ..evidence import EvidenceStore, IncomingFile
 from ..journal import InboundJournal
-from ..spaces import decide_space
+from ..spaces import decide_space, is_private_caption
 from ..telegram.client import (Ambiguous, BadRequest, BotApi, Conflict, DownloadFailed, NotSent, TooManyRequests,
                                Unauthorized)
 from .intake import Classified, classify
@@ -72,13 +72,40 @@ class Gatekeeper:
                                  reply_to=c.message_id)
         self.journal.mark(update_id, "done")
 
-    def _incoming(self, update_id: int, c: Classified, data: bytes) -> IncomingFile:
+    def _space_for(self, c: Classified) -> str:
+        """The caption decides the space (D32). Telegram puts an album's caption on one of its items,
+        so a private caption on any item of an album makes the whole album personal."""
+        assert c.person_id is not None and c.chat_id is not None
+        personal = f"personal:{c.person_id}"
+        space_id = decide_space(c.caption, c.person_id, self.cfg.default_space, self.cfg.private_keywords)
+        if c.media_group_id is None:
+            return space_id
+        if space_id != personal and (self._album_caption_is_private(c.chat_id, c.media_group_id)
+                                     or personal in self.store.album_spaces(c.chat_id, c.media_group_id)):
+            space_id = personal
+        if space_id == personal:
+            self.store.move_album(c.chat_id, c.media_group_id, personal)
+        return space_id
+
+    def _album_caption_is_private(self, chat_id: int, media_group_id: str) -> bool:
+        """Look at every journaled item of the album, including ones whose download has not succeeded yet."""
+        for _, update in self.journal.pending():
+            msg = update.get("message") or {}
+            if (msg.get("media_group_id") == media_group_id and (msg.get("chat") or {}).get("id") == chat_id
+                    and is_private_caption(msg.get("caption"), self.cfg.private_keywords)):
+                return True
+        return False
+
+    def _receipt_queued(self, row: Any) -> bool:
+        """Copy only closed batches: until the receipt is queued, an album may still turn personal."""
+        return self.journal.state(row["update_id"]) == "done"
+
+    def _incoming(self, update_id: int, c: Classified, data: bytes, space_id: str) -> IncomingFile:
         att = c.attachment
         assert att is not None and c.chat_id is not None and c.message_id is not None and c.person_id is not None
         return IncomingFile(
             update_id=update_id, chat_id=c.chat_id, message_id=c.message_id,
-            message_date=c.date or int(time.time()), person_id=c.person_id,
-            space_id=decide_space(c.caption, c.person_id, self.cfg.default_space, self.cfg.private_keywords),
+            message_date=c.date or int(time.time()), person_id=c.person_id, space_id=space_id,
             kind=att.kind, original_name=att.file_name, mime=att.mime, data=data, file_id=att.file_id,
             file_unique_id=att.file_unique_id, media_group_id=c.media_group_id, caption=c.caption,
             tags=("forwarded", "external") if c.forwarded else ())
@@ -86,8 +113,9 @@ class Gatekeeper:
     async def _ingest(self, update_id: int, c: Classified) -> None:
         att = c.attachment
         assert att is not None and c.chat_id is not None and c.message_id is not None
+        space_id = self._space_for(c)  # before the download: a failed download must not reopen the album
         if att.file_size is not None and att.file_size > self.cfg.max_file_bytes:
-            self._too_large(update_id, c)
+            self._too_large(update_id, c, space_id)
             return
         self.batcher.hold(c.chat_id)  # a slow download must not split an album into two receipts
         try:
@@ -96,7 +124,7 @@ class Gatekeeper:
         except BadRequest as exc:
             self.batcher.release(c.chat_id)
             if "too big" in exc.description.lower():
-                self._too_large(update_id, c)
+                self._too_large(update_id, c, space_id)
                 return
             self.events.log("attachment_failed", {"update_id": update_id, "code": exc.code})
             self.outbox.enqueue_text(f"failed:{c.chat_id}:{c.message_id}", c.chat_id, self.cfg.locale.text("failed"),
@@ -108,7 +136,7 @@ class Gatekeeper:
             self.events.log("attachment_retry", {"update_id": update_id, "error": type(exc).__name__})
             self._retry_at[update_id] = time.monotonic() + self.retry_seconds
             return
-        row = await self.store.ingest(self._incoming(update_id, c, data))
+        row = await self.store.ingest(self._incoming(update_id, c, data, space_id))
         self._retry_at.pop(update_id, None)
         if row["update_id"] != update_id and self.journal.state(row["update_id"]) == "done":
             # The same message came again under a new update_id after its receipt was queued.
@@ -117,9 +145,9 @@ class Gatekeeper:
             return
         self.batcher.add(c.chat_id, update_id, c.message_id, att.kind)
 
-    def _too_large(self, update_id: int, c: Classified) -> None:
+    def _too_large(self, update_id: int, c: Classified, space_id: str) -> None:
         assert c.attachment is not None and c.chat_id is not None and c.message_id is not None
-        self.store.record_too_large(self._incoming(update_id, c, b""), c.attachment.file_size)
+        self.store.record_too_large(self._incoming(update_id, c, b"", space_id), c.attachment.file_size)
         self.outbox.enqueue_text(f"too_large:{c.chat_id}:{c.message_id}", c.chat_id,
                                  self.cfg.locale.text("too_large"), reply_to=c.message_id)
         self.journal.mark(update_id, "done", "too_large")
@@ -173,5 +201,5 @@ class Gatekeeper:
 
     async def copy_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            await self.store.copy_pending()
+            await self.store.copy_pending(ready=self._receipt_queued)
             await _sleep_or_stop(stop, self.copy_interval)
