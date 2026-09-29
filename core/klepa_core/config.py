@@ -7,12 +7,14 @@ import stat
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .locale import Locale, LocaleError, available_locales, load_locale
 
 _PERSON_ID = re.compile(r"^[a-z0-9_-]{1,32}$")
 _FORBIDDEN_DATA_ROOTS = ("Library/CloudStorage", "Library/Mobile Documents")
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 class ConfigError(Exception):
@@ -101,6 +103,14 @@ def _members(items: object) -> tuple[Member, ...]:
     return tuple(members)
 
 
+def _safe_api_root(url: str) -> bool:
+    """https anywhere; plain http only to a loopback host, because the URL carries the bot token."""
+    parts = urlsplit(url)
+    if parts.scheme == "https":
+        return bool(parts.hostname)
+    return parts.scheme == "http" and parts.hostname in _LOOPBACK_HOSTS
+
+
 def load_config(path: Path) -> Config:
     try:
         raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
@@ -115,8 +125,8 @@ def load_config(path: Path) -> Config:
     if any(root in str(data_dir) for root in _FORBIDDEN_DATA_ROOTS):
         raise ConfigError("paths.data_dir must not be inside iCloud or CloudStorage")
     api_root = str(telegram.get("api_root", "https://api.telegram.org")).rstrip("/")
-    if not api_root.startswith(("https://", "http://127.0.0.1", "http://localhost")):
-        raise ConfigError("telegram.api_root must be https (or loopback http for tests)")
+    if not _safe_api_root(api_root):
+        raise ConfigError("telegram.api_root must be https (or plain http to a loopback address, for tests)")
     timezone = raw.get("timezone")
     if not isinstance(timezone, str):
         raise ConfigError('timezone is required, for example "Europe/Berlin"')

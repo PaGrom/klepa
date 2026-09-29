@@ -49,9 +49,20 @@ def test_timezone_is_required_and_known(make_config, line):
         make_config(text=BASE_CONFIG.replace('timezone = "Europe/Berlin"', line))
 
 
-def test_rejects_plain_http_api_root(make_config):
+@pytest.mark.parametrize(
+    "api_root",
+    ["http://example.com", "http://localhost.evil.example", "http://127.0.0.1.evil.example", "ftp://127.0.0.1"],
+)
+def test_rejects_plain_http_api_root(make_config, api_root):
     with pytest.raises(ConfigError, match="https"):
-        make_config(api_root="http://example.com")
+        make_config(api_root=api_root)
+
+
+@pytest.mark.parametrize(
+    "api_root", ["https://api.telegram.org", "http://127.0.0.1:8081", "http://localhost:8081", "http://[::1]:8081"]
+)
+def test_accepts_https_and_loopback_http(make_config, api_root):
+    assert make_config(api_root=api_root).api_root == api_root
 
 
 def test_read_token_requires_0600_and_never_echoes_it(make_config, install):
