@@ -105,7 +105,7 @@ It is signed with HMAC-SHA256 over canonical JSON. A card without a valid signat
 
 **It may be unavailable.** Its volume may not be mounted yet, macOS may deny access, or the disk may be full. Intake does not depend on that folder: files still land in `incoming/` and receipts still go out, while copies stay pending and are retried. Core never recreates a missing documents root, because the root may live on a volume that is not mounted yet.
 
-**It may hang.** A stalled sync client, a network volume that went away or an unanswered macOS prompt can block a file call for minutes. Every call into the folder therefore runs on a worker thread, one at a time, with a 20-second timeout; while one call hangs, the others fail at once. Core's event loop never waits on the folder. A problem is reported to the owner once it has lasted five minutes, because at login the volume may mount after Core starts.
+**It may hang.** A stalled sync client, a network volume that went away or an unanswered macOS prompt can block a file call for minutes. Every call into the folder therefore runs on a worker thread, one at a time, with a timeout (20 seconds, 10 minutes for copying or pruning snapshots); while one call hangs, the others fail at once. Core's event loop never waits on the folder. A problem is reported to the owner once it has lasted five minutes, because at login the volume may mount after Core starts.
 
 **Conflicts.** If the documents folder already holds different bytes under Core's name, the copy is marked as a conflict. It counts in the daily line and is tried again after each restart, once the conflict is cleared.
 
@@ -125,7 +125,7 @@ Every record belongs to a space: `shared`, or `personal:<member>`.
 
 **The caption decides (D32).** The space is chosen at intake, from the caption. A private keyword puts the file into the sender's personal space: "just for me", "private", and the equivalents in each locale. Keywords match whole words, ignoring case and spacing.
 
-**Albums move together.** Telegram puts an album's caption on one of its items, so a private caption on any item makes the whole album personal. Copies of album items wait until the album's batch closes.
+**Albums move together.** Telegram puts an album's caption on one of its items, so a private caption on any item makes the whole album personal. Copies of album items wait until no new item of the album has arrived for a while (`intake.album_quiet_seconds`, a minute by default), so a private caption that arrives late still keeps the whole album out of the shared folder.
 
 **Moving later.** Making a file private after the fact is a separate tool, `make_private` (stage 3). It will record the move in the signed privacy journal.
 
