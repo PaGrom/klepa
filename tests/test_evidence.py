@@ -1,3 +1,4 @@
+import dataclasses
 import hashlib
 from datetime import UTC, datetime
 
@@ -114,3 +115,15 @@ async def test_different_bytes_under_our_name_are_refused(store):
     with pytest.raises(FileExistsError):
         await store.ingest(f)
     assert (month_dir / name).read_bytes() == b"something else"
+
+
+@pytest.mark.parametrize(
+    "kind, mime, suffix",
+    [
+        ("photo", "image/jpeg", "-photo.jpg"), ("voice", "audio/ogg", "-voice.ogg"), ("video", "video/mp4", "-video.mp4"),
+        ("audio", "audio/mpeg", "-audio.mp3"), ("file", "application/pdf", "-file.pdf"), ("file", None, "-file"),
+    ],
+)
+async def test_unnamed_files_get_their_kind_and_an_extension(store, kind, mime, suffix):
+    row = await store.ingest(dataclasses.replace(incoming(), kind=kind, mime=mime, original_name=None))
+    assert row["disk_name"].endswith(suffix) and row["original_name"] is None

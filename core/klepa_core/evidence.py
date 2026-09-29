@@ -11,6 +11,7 @@ import errno
 import hashlib
 import hmac
 import json
+import mimetypes
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -49,6 +50,16 @@ class CopyConflict(Exception):
     """The documents folder already holds different content under our name."""
 
 
+_EXTENSIONS = {"image/jpeg": ".jpg", "audio/ogg": ".ogg", "audio/mpeg": ".mp3", "audio/mp4": ".m4a",
+               "video/mp4": ".mp4", "video/quicktime": ".mov", "application/pdf": ".pdf"}
+
+
+def fallback_name(kind: str, mime: str | None) -> str:
+    """Telegram gives photos, voice and video notes no name: call them by kind, with an extension."""
+    extension = _EXTENSIONS.get(mime or "") or (mimetypes.guess_extension(mime) if mime else None) or ""
+    return kind + extension
+
+
 def ingest_key(chat_id: int, message_id: int) -> str:
     return f"telegram:{chat_id}:{message_id}"
 
@@ -82,7 +93,7 @@ class EvidenceStore:
         if existing is not None:
             return existing
         evidence_id = self.evidence_id_for(key)
-        name = disk_name(evidence_id, f.original_name)
+        name = disk_name(evidence_id, f.original_name or fallback_name(f.kind, f.mime))
         month = self.month(f.message_date)
         directory = self.incoming_dir / month
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
