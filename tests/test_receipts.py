@@ -73,3 +73,19 @@ async def test_cancel_all_drops_batches_without_receipts(tmp_path):
     await asyncio.sleep(0.2)
     assert conn.execute("SELECT COUNT(*) FROM outbound").fetchone()[0] == 0
     assert journal.state(1) == "new"
+
+
+async def test_repeated_message_after_hold_still_closes_the_batch(tmp_path):
+    conn = db.connect(tmp_path / "core.db")
+    db.migrate(conn)
+    journal = InboundJournal(tmp_path / "inbound.db")
+    journal.append_batch([{"update_id": i} for i in (1, 2)], "t")
+    batcher = ReceiptBatcher(Outbox(conn, None, EventLog(conn)), journal, window_seconds=0.1)
+    batcher.add(111111, 1, 10, "photo")
+    batcher.hold(111111)  # a download starts ...
+    batcher.add(111111, 2, 10, "photo")  # ... and brings the same message under a new update_id
+    assert batcher.has_update(2)
+    await asyncio.sleep(0.25)
+    payloads = [row["payload"] for row in conn.execute("SELECT payload FROM outbound")]
+    assert len(payloads) == 1 and '"text": "📄 получила",' in payloads[0]
+    assert journal.pending() == []

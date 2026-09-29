@@ -115,8 +115,13 @@ class Gatekeeper:
             self.events.log("attachment_retry", {"update_id": update_id, "error": type(exc).__name__})
             self._retry_at[update_id] = time.monotonic() + self.retry_seconds
             return
-        await self.store.ingest(self._incoming(update_id, c, data))
+        row = await self.store.ingest(self._incoming(update_id, c, data))
         self._retry_at.pop(update_id, None)
+        if row["update_id"] != update_id and self.journal.state(row["update_id"]) == "done":
+            # The same message came again under a new update_id after its receipt was queued.
+            self.batcher.release(c.chat_id)
+            self.journal.mark(update_id, "done", "repeat")
+            return
         self.batcher.add(c.chat_id, update_id, c.message_id, att.kind)
 
     def _too_large(self, update_id: int, c: Classified) -> None:

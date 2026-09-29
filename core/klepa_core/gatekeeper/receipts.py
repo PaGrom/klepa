@@ -36,6 +36,7 @@ def receipt_text(kinds: list[str]) -> str:
 @dataclass
 class _Batch:
     items: list[tuple[int, int, str]] = field(default_factory=list)  # (update_id, message_id, kind)
+    repeats: list[int] = field(default_factory=list)  # update_ids that brought a message already in items
     timer: asyncio.TimerHandle | None = None
 
 
@@ -48,7 +49,11 @@ class ReceiptBatcher:
 
     def add(self, chat_id: int, update_id: int, message_id: int, kind: str) -> None:
         batch = self._batches.setdefault(chat_id, _Batch())
-        if any(item[1] == message_id for item in batch.items):
+        known = next((item for item in batch.items if item[1] == message_id), None)
+        if known is not None:
+            if known[0] != update_id:
+                batch.repeats.append(update_id)  # the same message under a new update_id: this receipt covers it
+            self.release(chat_id)  # hold() may have stopped the timer for this download
             return
         batch.items.append((update_id, message_id, kind))
         if batch.timer is not None:
@@ -69,7 +74,8 @@ class ReceiptBatcher:
             batch.timer = asyncio.get_running_loop().call_later(self.window, self.flush, chat_id)
 
     def has_update(self, update_id: int) -> bool:
-        return any(item[0] == update_id for batch in self._batches.values() for item in batch.items)
+        return any(update_id in batch.repeats or any(item[0] == update_id for item in batch.items)
+                   for batch in self._batches.values())
 
     def pending_count(self) -> int:
         return sum(len(batch.items) for batch in self._batches.values())
@@ -86,6 +92,8 @@ class ReceiptBatcher:
                                  receipt_text([kind for _, _, kind in items]), reply_to=first_message_id)
         for update_id, _, _ in items:
             self.journal.mark(update_id, "done")
+        for update_id in batch.repeats:
+            self.journal.mark(update_id, "done", "repeat")
 
     def flush_all(self) -> None:
         for chat_id in list(self._batches):
