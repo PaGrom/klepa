@@ -28,7 +28,7 @@ class AlreadyRunning(Exception):
 def init_layout(cfg: Config) -> None:
     """Create the service data layout (0700), the signing key and core.db. Idempotent.
 
-    The documents folder is not touched: it may be a Drive folder that is not mounted yet.
+    The documents folder is not touched: it may live on a volume that is not mounted yet.
     """
     for directory in (cfg.data_dir, cfg.keys_dir, cfg.incoming_dir, cfg.journal_path.parent):
         ensure_private_dir(directory)

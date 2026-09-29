@@ -290,7 +290,7 @@ async def test_review_focus_documents_folder_unavailable(fake_tg, make_config):
 
 async def test_core_starts_and_receives_without_the_documents_folder(fake_tg, make_config, install):
     cfg = make_config(api_root=fake_tg.url)
-    install["documents_dir"].rmdir()  # e.g. the Drive folder is not mounted yet
+    install["documents_dir"].rmdir()  # e.g. its volume is not mounted yet
     install["tmp"].chmod(0o500)  # and it cannot be created
     try:
         fake_tg.add_document(OWNER, "a.pdf", pdf(1))

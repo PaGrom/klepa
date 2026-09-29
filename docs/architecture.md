@@ -99,7 +99,9 @@ Photos, voice and video arrive without a name, so they become `<id>-photo.jpg`, 
 
 It is signed with HMAC-SHA256 over canonical JSON. A card without a valid signature is ignored.
 
-**The documents folder may be unavailable.** Google Drive may be paused or not mounted yet, permission may be missing, or the disk may be full. Intake does not depend on that folder: files still land in `incoming/` and receipts still go out, while copies stay pending and are retried. Core never recreates a missing documents root, because that root may be a Drive folder that is not mounted yet.
+**The documents folder is a plain folder.** Core knows nothing about what, if anything, syncs it: a cloud client, a NAS or nothing at all.
+
+**It may be unavailable.** Its volume may not be mounted yet, macOS may deny access, or the disk may be full. Intake does not depend on that folder: files still land in `incoming/` and receipts still go out, while copies stay pending and are retried. Core never recreates a missing documents root, because the root may live on a volume that is not mounted yet.
 
 ## Spaces and privacy
 
@@ -195,7 +197,7 @@ A stage is done when its acceptance scenarios pass on the test stand.
 | Stage | Scope |
 |---|---|
 | 1a | Core intake: journal, attachments, receipts, spaces, signed cards, locales. **Done.** |
-| 1b | Service bot for alerts and buttons; signed daily snapshots with a generation number; the daily "all good" line; Core as a launchd service with its own interpreter and Google Drive access. |
+| 1b | Service bot for alerts and buttons; signed daily snapshots with a generation number; the daily "all good" line; Core as a launchd service with its own interpreter; at start it probes the documents folder and names the macOS permission it lacks. |
 | 1c | A dedicated OpenClaw install with a reference config; egress proxy; host-facing API with a fake token and accept-and-hold; adapter plugin with heartbeat; supervision with a live probe at start. |
 | 2 | Processing in a sandbox: transcription and OCR, text versions of attachments, search and send tools, photo drafts to PDF, a page viewer. |
 | 3 | Knowledge: facts with verified quotes, instructions, session taint, disclosure journal, `make_private`. |

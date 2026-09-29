@@ -16,7 +16,7 @@ Start from [`config/example.toml`](../config/example.toml).
 | Key | Required | Meaning |
 |---|---|---|
 | `data_dir` | yes | Absolute path to Core's data directory. It is created with mode 0700 and must be on a local disk, never inside iCloud (`Library/Mobile Documents`) or CloudStorage (`Library/CloudStorage`). |
-| `documents_dir` | yes | Absolute path to the folder where copies and signed cards appear, for example a Google Drive folder. `init` creates it. `run` never does, because an unmounted Drive folder must not be replaced by an empty local one. |
+| `documents_dir` | yes | Absolute path to the folder where copies and signed cards appear. Core treats it as a plain folder; anything may sync it. `init` creates it. `run` never does, because a folder on an unmounted volume must not be replaced by an empty local one. |
 
 ## `[telegram]`
 

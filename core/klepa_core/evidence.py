@@ -249,7 +249,7 @@ class EvidenceStore:
 
     def _write_copy(self, relative_dir: Path, name: str, data: bytes, card: dict[str, Any]) -> None:
         if not self.documents_dir.is_dir():
-            # Never recreate a missing root: it may be a Drive folder that is not mounted yet.
+            # Never recreate a missing root: it may live on a volume that is not mounted yet.
             raise FileNotFoundError(errno.ENOENT, "documents folder is missing")
         directory = self.documents_dir
         for part in relative_dir.parts:
