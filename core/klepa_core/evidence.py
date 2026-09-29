@@ -6,6 +6,7 @@ then a verified copy and a signed card in the documents folder. A row never poin
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import secrets
@@ -152,7 +153,7 @@ class EvidenceStore:
             data = await asyncio.to_thread((self.incoming_dir / row["incoming_path"]).read_bytes)
             if hashlib.sha256(data).hexdigest() != row["sha256"]:
                 raise CopyConflict("incoming checksum mismatch")
-            await asyncio.to_thread(self._write_copy, self.documents_dir / relative.parent, row["disk_name"], data, card)
+            await asyncio.to_thread(self._write_copy, relative.parent, row["disk_name"], data, card)
         except CopyConflict as exc:
             self._set_copy_state(row["id"], "failed")
             self.events.log("documents_copy_conflict", {"evidence_id": row["id"], "reason": str(exc)})
@@ -166,8 +167,14 @@ class EvidenceStore:
         self._set_copy_state(row["id"], "copied", str(relative))
         return True
 
-    def _write_copy(self, directory: Path, name: str, data: bytes, card: dict[str, Any]) -> None:
-        directory.mkdir(parents=True, exist_ok=True)
+    def _write_copy(self, relative_dir: Path, name: str, data: bytes, card: dict[str, Any]) -> None:
+        if not self.documents_dir.is_dir():
+            # Never recreate a missing root: it may be a Drive folder that is not mounted yet.
+            raise FileNotFoundError(errno.ENOENT, "documents folder is missing")
+        directory = self.documents_dir
+        for part in relative_dir.parts:
+            directory = directory / part
+            directory.mkdir(exist_ok=True)
         try:
             write_new_atomically(directory, name, data)
         except FileExistsError:

@@ -1,8 +1,10 @@
 import asyncio
+import os
 
 import pytest
 
 from helpers import OWNER, STRANGER, copied_count, evidence_rows, query, run_until, sent_texts
+from klepa_core.__main__ import main
 from klepa_core.app import AlreadyRunning, run_service
 from klepa_core.locale import load_locale
 
@@ -67,3 +69,14 @@ async def test_token_never_lands_on_disk(fake_tg, make_config):
     for path in list(cfg.data_dir.rglob("*")) + list(cfg.documents_dir.rglob("*")):
         if path.is_file() and path.name != "family-bot.token":
             assert b"TEST-TOKEN" not in path.read_bytes(), path
+
+
+def test_cli_init_creates_the_documents_folder(make_config, install):
+    make_config()
+    install["documents_dir"].rmdir()
+    umask = os.umask(0o022)
+    try:
+        assert main(["init", "--config", str(install["tmp"] / "config.toml")]) == 0
+    finally:
+        os.umask(umask)
+    assert install["documents_dir"].is_dir()

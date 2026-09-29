@@ -33,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_config(args.config)
         if args.command == "init":
             init_layout(cfg)
+            cfg.documents_dir.mkdir(parents=True, exist_ok=True)
             print("klepa-core: initialized")
             return 0
         return asyncio.run(_run_with_signals(cfg))

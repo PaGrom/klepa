@@ -25,11 +25,13 @@ class AlreadyRunning(Exception):
 
 
 def init_layout(cfg: Config) -> None:
-    """Create the service data layout (0700), the signing key and core.db. Idempotent."""
+    """Create the service data layout (0700), the signing key and core.db. Idempotent.
+
+    The documents folder is not touched: it may be a Drive folder that is not mounted yet.
+    """
     for directory in (cfg.data_dir, cfg.keys_dir, cfg.incoming_dir, cfg.journal_path.parent):
         ensure_private_dir(directory)
     (cfg.data_dir / ".metadata_never_index").touch(exist_ok=True)
-    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     load_or_create_key(cfg.signing_key_path)
     conn = db.connect(cfg.core_db_path)
     try:

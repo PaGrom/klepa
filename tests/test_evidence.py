@@ -80,3 +80,12 @@ async def test_too_large_is_recorded_without_a_file(store):
     row = store.record_too_large(incoming(message_id=8, data=b""), 25 * 1024 * 1024)
     assert (row["state"], row["copy_state"], row["size"]) == ("too_large", "none", 25 * 1024 * 1024)
     assert not [p for p in store.incoming_dir.rglob("*") if p.is_file()]
+
+
+async def test_missing_documents_root_is_not_recreated(store):
+    await store.ingest(incoming())
+    store.documents_dir.rmdir()
+    assert await store.copy_pending() == 0
+    assert not store.documents_dir.exists()
+    store.documents_dir.mkdir()
+    assert await store.copy_pending() == 1
