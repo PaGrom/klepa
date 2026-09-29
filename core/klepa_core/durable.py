@@ -6,19 +6,32 @@ Plain fsync on macOS does not flush the disk cache, so every durable write uses 
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import hashlib
 import os
 from pathlib import Path
 
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+# File systems that do not support F_FULLFSYNC answer with one of these.
+_FULLFSYNC_UNSUPPORTED = frozenset({errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL, errno.ENOTTY})
 
 
 def full_fsync(fd: int) -> None:
-    """Flush a file descriptor to stable storage (F_FULLFSYNC, falling back to fsync)."""
+    """Flush a file descriptor to stable storage with F_FULLFSYNC.
+
+    Falls back to fsync only where F_FULLFSYNC does not exist or the file system does not support it.
+    A real I/O error propagates: downgrading it silently would hide lost data.
+    """
+    command = getattr(fcntl, "F_FULLFSYNC", None)
+    if command is None:
+        os.fsync(fd)
+        return
     try:
-        fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
-    except (AttributeError, OSError):
+        fcntl.fcntl(fd, command)
+    except OSError as exc:
+        if exc.errno not in _FULLFSYNC_UNSUPPORTED:
+            raise
         os.fsync(fd)
 
 

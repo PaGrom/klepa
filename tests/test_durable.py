@@ -1,3 +1,5 @@
+import errno
+import fcntl
 import os
 import stat
 
@@ -52,3 +54,36 @@ def test_write_new_atomically_replaces_stale_partial_and_refuses_existing(tmp_pa
     with pytest.raises(FileExistsError):
         write_new_atomically(tmp_path, "doc.pdf", b"other")
     assert path.read_bytes() == b"complete"
+
+
+def _failing_fcntl(code):
+    def fail(fd, command):
+        raise OSError(code, os.strerror(code))
+
+    return fail
+
+
+def test_full_fsync_raises_a_real_io_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(fcntl, "F_FULLFSYNC", 51, raising=False)  # present on Linux runners too
+    monkeypatch.setattr(fcntl, "fcntl", _failing_fcntl(errno.EIO))
+    fd = os.open(tmp_path / "f", os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        with pytest.raises(OSError, match=os.strerror(errno.EIO)) as info:
+            full_fsync(fd)
+        assert info.value.errno == errno.EIO
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize("code", [errno.ENOTSUP, errno.EINVAL])
+def test_full_fsync_falls_back_to_fsync_where_unsupported(tmp_path, monkeypatch, code):
+    flushed = []
+    monkeypatch.setattr(fcntl, "F_FULLFSYNC", 51, raising=False)
+    monkeypatch.setattr(fcntl, "fcntl", _failing_fcntl(code))
+    monkeypatch.setattr(os, "fsync", flushed.append)
+    fd = os.open(tmp_path / "f", os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        full_fsync(fd)
+    finally:
+        os.close(fd)
+    assert flushed == [fd]
