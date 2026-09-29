@@ -43,6 +43,8 @@ known-first-party = ["klepa_core", "helpers", "faketg"]
 
 [tool.mypy]
 python_version = "3.13"
+# Core targets macOS (F_FULLFSYNC, launchd); check it as macOS wherever mypy runs.
+platform = "darwin"
 strict = true
 mypy_path = "core"
 files = ["core/klepa_core"]
