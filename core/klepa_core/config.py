@@ -250,4 +250,13 @@ def read_service_token(cfg: Config) -> str:
     """Read the service bot token from its 0600 file. Errors never include the token."""
     if cfg.service_token_file is None:
         raise ConfigError("service_bot is not configured")
-    return _read_secret(cfg.service_token_file, "service bot token file")
+    token = _read_secret(cfg.service_token_file, "service bot token file")
+    if _bot_id(token) == _bot_id(read_token(cfg)):
+        # Two pollers on one bot would each take updates meant for the other: family files would go missing.
+        raise ConfigError("the service bot token belongs to the family bot; the service bot needs a bot of its own")
+    return token
+
+
+def _bot_id(token: str) -> str:
+    """The bot's numeric id, the part of a token before the colon; not a secret on its own."""
+    return token.split(":", 1)[0]

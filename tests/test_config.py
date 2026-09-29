@@ -143,3 +143,15 @@ def test_service_bot_is_optional_and_checked(make_config, install):
     plain = with_service_bot(BASE_CONFIG, install["service_token_file"], "http://example.com")
     with pytest.raises(ConfigError, match=r"service_bot\.api_root"):
         make_config(text=plain)
+
+
+def test_the_service_bot_must_be_another_bot(make_config, install):
+    from helpers import with_service_bot
+    from klepa_core.config import read_service_token
+
+    # A new token of the family bot (same bot id, 123): two pollers on one bot would lose family updates.
+    install["service_token_file"].write_text("123:ANOTHER-SECRET-OF-THE-FAMILY-BOT")
+    cfg = make_config(text=with_service_bot(BASE_CONFIG, install["service_token_file"], "https://api.telegram.org"))
+    with pytest.raises(ConfigError, match="family bot") as info:
+        read_service_token(cfg)
+    assert "SECRET" not in str(info.value)
