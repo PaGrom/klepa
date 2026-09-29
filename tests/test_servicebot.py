@@ -1,8 +1,15 @@
+import asyncio
+import time
+
 import pytest
 
-from helpers import MEMBER, OWNER, STRANGER
+from helpers import MEMBER, OWNER, STRANGER, wait_until
 from klepa_core import db
-from klepa_core.servicebot import bind_owner_chat, new_bind_code
+from klepa_core.events import EventLog
+from klepa_core.gatekeeper.outbox import Outbox
+from klepa_core.health import Health, Probe
+from klepa_core.journal import InboundJournal
+from klepa_core.servicebot import BUTTON_TTL_SECONDS, ServiceBot, bind_owner_chat, new_bind_code
 
 
 @pytest.fixture
@@ -53,3 +60,109 @@ async def test_binding_gives_up_after_the_deadline(setup, service_tg, service_ap
     cfg, conn = setup
     chat = await bind_owner_chat(cfg, service_api, conn, "CODE", lambda q: True, deadline_seconds=0.5, poll_timeout=0)
     assert chat is None
+
+
+EXPIRED = "This button no longer works."
+
+
+@pytest.fixture
+def running(setup, service_api, tmp_path):
+    cfg, conn = setup
+    conn.execute("INSERT INTO service_binding(person_id, chat_id, bound_at) VALUES ('owner', ?, 't')", (OWNER,))
+    events = EventLog(conn)
+    outbox = Outbox(conn, service_api, events, bot="service")
+    health = Health(cfg, conn, InboundJournal(tmp_path / "inbound.db"))
+    now = [time.time()]
+
+    async def healthy():
+        return Probe(True)
+
+    bot = ServiceBot(cfg, service_api, conn, outbox, health, events, probe=healthy, clock=lambda: now[0])
+    return bot, outbox, events, now
+
+
+async def deliver(service_api, bot):
+    updates = await service_api.get_updates(None, 0)
+    for update in updates:
+        await bot.handle(update)
+    if updates:
+        await service_api.get_updates(updates[-1]["update_id"] + 1, 0)
+
+
+async def test_status_button_works_once_and_only_for_the_owner(running, service_tg, service_api):
+    bot, outbox, _, _ = running
+    assert await bot.send_status("daily:2026-10-05")
+    assert not await bot.send_status("daily:2026-10-05")  # once per key
+    await outbox.send_due()
+    first = service_tg.sent[-1]
+    button = first["params"]["reply_markup"]["inline_keyboard"][0][0]
+    assert button["text"] == "Status"
+    assert first["params"]["text"].startswith("✅ All good")
+    service_tg.press(MEMBER, first["message"], button["callback_data"])  # not the owner
+    service_tg.press(OWNER, first["message"], button["callback_data"])
+    service_tg.press(OWNER, first["message"], button["callback_data"])  # the same button again
+    await deliver(service_api, bot)
+    await outbox.send_due()
+    assert len(service_tg.sent) == 2
+    assert [answer.get("text") for answer in service_tg.answered] == [EXPIRED, None, EXPIRED]
+
+
+async def test_moved_group_and_expired_presses_do_nothing(running, service_tg, service_api):
+    bot, outbox, _, now = running
+    assert await bot.send_status("daily:2026-10-05")
+    await outbox.send_due()
+    first = service_tg.sent[-1]
+    data = first["params"]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    other = await service_api.send_message(OWNER, "a message the button does not belong to")
+    service_tg.press(OWNER, other, data)
+    service_tg.press(OWNER, {**first["message"], "chat": {"id": -100123, "type": "group"}}, data)
+    await deliver(service_api, bot)
+    now[0] += BUTTON_TTL_SECONDS + 1
+    service_tg.press(OWNER, first["message"], data)  # the right message, a week too late
+    await deliver(service_api, bot)
+    await outbox.send_due()
+    assert len(service_tg.sent) == 2  # the line and the other message: no second status
+    assert [answer.get("text") for answer in service_tg.answered] == [EXPIRED] * 3
+
+
+async def test_words_get_the_fixed_reply_and_strangers_nothing(running, service_tg, service_api):
+    bot, outbox, events, _ = running
+    service_tg.add_text(STRANGER, "/status")
+    service_tg.add_text(STRANGER, "/status")  # logged once an hour per sender, not per message
+    service_tg.add_text(MEMBER, "/status")
+    service_tg.add_text(OWNER, "/status", chat_id=-100123, chat_type="group")  # the owner, but not in private
+    service_tg.add_text(OWNER, "how are you?")
+    service_tg.add_text(OWNER, "/status")
+    await deliver(service_api, bot)
+    await outbox.send_due()
+    texts = [item["params"]["text"] for item in service_tg.sent]
+    assert texts[0].startswith("The mechanic arrives")
+    assert texts[1].startswith("✅ All good")
+    assert len(texts) == 2
+    assert all(item["params"]["chat_id"] == OWNER for item in service_tg.sent)
+    assert events.kinds().count("service_update_rejected") == 3  # the stranger, the member, the owner's group
+
+
+async def test_an_update_that_fails_is_skipped_and_the_bot_goes_on(running, service_tg, monkeypatch):
+    bot, outbox, events, _ = running
+    handle = bot.handle
+    calls = []
+
+    async def flaky(update):
+        calls.append(update["update_id"])
+        if len(calls) == 1:
+            raise RuntimeError("a bug in a handler")
+        await handle(update)
+
+    monkeypatch.setattr(bot, "handle", flaky)
+    service_tg.add_text(OWNER, "/status")
+    service_tg.add_text(OWNER, "/status")
+    stop = asyncio.Event()
+    task = asyncio.create_task(bot.poll_forever(stop))
+    try:
+        await wait_until(lambda: outbox.conn.execute("SELECT COUNT(*) FROM outbound").fetchone()[0] == 1)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 5)
+    assert events.kinds().count("service_update_failed") == 1
+    assert len(calls) == 2
