@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .locale import Locale, LocaleError, available_locales, load_locale
+
 _PERSON_ID = re.compile(r"^[a-z0-9_-]{1,32}$")
 _FORBIDDEN_DATA_ROOTS = ("Library/CloudStorage", "Library/Mobile Documents")
-DEFAULT_PRIVATE_KEYWORDS = ("только для меня", "только мне", "лично", "личное", "just for me", "private")
 
 
 class ConfigError(Exception):
@@ -32,6 +33,7 @@ class Config:
     token_file: Path
     api_root: str
     timezone: str
+    locale: Locale
     default_space: str
     shared_folder: str
     members: tuple[Member, ...]
@@ -118,6 +120,13 @@ def load_config(path: Path) -> Config:
         ZoneInfo(timezone)
     except (ZoneInfoNotFoundError, ValueError):
         raise ConfigError(f"unknown timezone: {timezone}") from None
+    code = raw.get("locale")
+    if not isinstance(code, str):
+        raise ConfigError(f"locale is required, one of: {', '.join(available_locales())}")
+    try:
+        locale = load_locale(code)
+    except LocaleError as exc:
+        raise ConfigError(f"locale: {exc}") from None
     default_space = str(spaces.get("default", "shared"))
     if default_space not in ("shared", "personal"):
         raise ConfigError("spaces.default must be 'shared' or 'personal'")
@@ -128,13 +137,14 @@ def load_config(path: Path) -> Config:
         token_file=_abs_path(telegram.get("token_file"), "telegram.token_file"),
         api_root=api_root,
         timezone=timezone,
+        locale=locale,
         default_space=default_space,
-        shared_folder=str(spaces.get("shared_folder", "Общее")),
+        shared_folder=str(spaces.get("shared_folder", locale.shared_folder)),
         members=_members(raw.get("members")),
         max_file_bytes=int(intake.get("max_file_bytes", 20 * 1024 * 1024)),
         batch_window_seconds=float(intake.get("batch_window_seconds", 2.0)),
         poll_timeout_seconds=int(intake.get("poll_timeout_seconds", 30)),
-        private_keywords=tuple(str(k) for k in intake.get("private_keywords", DEFAULT_PRIVATE_KEYWORDS)),
+        private_keywords=tuple(str(k) for k in intake.get("private_keywords", locale.private_keywords)),
     )
 
 

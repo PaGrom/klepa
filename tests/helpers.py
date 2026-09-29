@@ -10,6 +10,7 @@ TEST_TOKEN = "123:TEST-TOKEN"
 
 BASE_CONFIG = """
 timezone = "Europe/Berlin"
+locale = "en"
 
 [paths]
 data_dir = "{data_dir}"

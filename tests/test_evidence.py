@@ -22,7 +22,7 @@ def store(make_config):
     return EvidenceStore(conn, cfg.incoming_dir, cfg.documents_dir, KEY, cfg.timezone, EventLog(conn))
 
 
-def incoming(message_id=7, data=b"%PDF test", name="Договор.pdf", date=SEPT30_2230_UTC):
+def incoming(message_id=7, data=b"%PDF test", name="Contract.pdf", date=SEPT30_2230_UTC):
     return IncomingFile(update_id=1000 + message_id, chat_id=111111, message_id=message_id, message_date=date,
                         person_id="owner", space_id="shared", kind="file", original_name=name,
                         mime="application/pdf", data=data, file_id="F", file_unique_id="U",
@@ -45,7 +45,7 @@ async def test_copy_to_documents_with_signed_card(store):
     assert await store.copy_pending() == 1
     copied = store.conn.execute("SELECT * FROM evidence WHERE id=?", (row["id"],)).fetchone()
     assert copied["copy_state"] == "copied"
-    assert copied["documents_path"].startswith("Общее/2026/10/")
+    assert copied["documents_path"].startswith("Shared/2026/10/")
     target = store.documents_dir / copied["documents_path"]
     assert target.read_bytes() == b"%PDF test"
     card = read_card(target.parent / card_file_name(row["id"]), KEY)
@@ -69,7 +69,7 @@ async def test_documents_unavailable_defers_copy(store):
 
 async def test_stale_partial_from_a_crash_does_not_block_copy(store):
     row = await store.ingest(incoming())
-    target_dir = store.documents_dir / "Общее" / "2026" / "10"
+    target_dir = store.documents_dir / "Shared" / "2026" / "10"
     target_dir.mkdir(parents=True)
     (target_dir / partial_name(row["disk_name"])).write_bytes(b"half")
     assert await store.copy_pending() == 1

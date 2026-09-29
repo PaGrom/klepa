@@ -1,4 +1,4 @@
-"""One «got it» receipt per batch of attachments (spec §5.4 «Пачка», §6.1 step 3).
+"""One "got it" receipt per batch of attachments (spec §5.4 "batch", §6.1 step 3).
 
 A batch is the attachments of one chat with less than `window_seconds` between neighbours (an album
 arrives that way). Journal entries of a batch become 'done' only when its receipt is queued, so after
@@ -10,27 +10,8 @@ import asyncio
 from dataclasses import dataclass, field
 
 from ..journal import InboundJournal
+from ..locale import Locale
 from .outbox import Outbox
-
-
-def files_word(n: int) -> str:
-    if 11 <= n % 100 <= 14:
-        word = "файлов"
-    elif n % 10 == 1:
-        word = "файл"
-    elif 2 <= n % 10 <= 4:
-        word = "файла"
-    else:
-        word = "файлов"
-    return f"{n} {word}"
-
-
-def receipt_text(kinds: list[str]) -> str:
-    if len(kinds) == 1:
-        return "🎧 получила голосовое" if kinds[0] == "voice" else "📄 получила"
-    if all(kind == "voice" for kind in kinds):
-        return f"🎧 получила голосовые: {len(kinds)}"
-    return f"📄 получила {files_word(len(kinds))}"
 
 
 @dataclass
@@ -41,10 +22,11 @@ class _Batch:
 
 
 class ReceiptBatcher:
-    def __init__(self, outbox: Outbox, journal: InboundJournal, window_seconds: float) -> None:
+    def __init__(self, outbox: Outbox, journal: InboundJournal, window_seconds: float, locale: Locale) -> None:
         self.outbox = outbox
         self.journal = journal
         self.window = window_seconds
+        self.locale = locale
         self._batches: dict[int, _Batch] = {}
 
     def add(self, chat_id: int, update_id: int, message_id: int, kind: str) -> None:
@@ -89,7 +71,7 @@ class ReceiptBatcher:
         items = sorted(batch.items, key=lambda item: item[1])
         first_message_id = items[0][1]
         self.outbox.enqueue_text(f"receipt:{chat_id}:{first_message_id}", chat_id,
-                                 receipt_text([kind for _, _, kind in items]), reply_to=first_message_id)
+                                 self.locale.receipt([kind for _, _, kind in items]), reply_to=first_message_id)
         for update_id, _, _ in items:
             self.journal.mark(update_id, "done")
         for update_id in batch.repeats:

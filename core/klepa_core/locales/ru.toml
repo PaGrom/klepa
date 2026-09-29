@@ -1,0 +1,20 @@
+# Russian: everything Core says itself, the default shared folder name and private caption keywords.
+plural = "one-few-many"
+
+[texts]
+stage1 = "Пока я только принимаю файлы: документы, фото и голосовые."
+start = "Привет! Пока я только принимаю файлы: документы, фото и голосовые."
+no_commands = "Команд у меня нет — пиши словами."
+unsupported = "Такое я пока не сохраняю. Пришли, пожалуйста, файл, фото или голосовое."
+too_large = "Этот файл больше 20 МБ, а такие Telegram ботам не отдаёт. Пришли его, пожалуйста, иначе: частями или сжатым."
+failed = "Не смогла забрать этот файл из Telegram. Пришли его, пожалуйста, ещё раз."
+
+[receipts]
+one_file = "📄 получила"
+one_voice = "🎧 получила голосовое"
+voices = "🎧 получила голосовые: {n}"
+files = { one = "📄 получила {n} файл", few = "📄 получила {n} файла", many = "📄 получила {n} файлов" }
+
+[spaces]
+shared_folder = "Общее"
+private_keywords = ["только для меня", "только мне", "лично", "личное", "just for me", "private"]

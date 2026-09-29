@@ -24,8 +24,8 @@ def state(outbox, key):
 
 async def test_confirmed_with_message_id_and_idempotent_key(fake_tg, api, outbox_factory):
     outbox = outbox_factory(api)
-    assert outbox.enqueue_text("k1", OWNER, "📄 получила", reply_to=3)
-    assert not outbox.enqueue_text("k1", OWNER, "📄 получила", reply_to=3)
+    assert outbox.enqueue_text("k1", OWNER, "📄 got it", reply_to=3)
+    assert not outbox.enqueue_text("k1", OWNER, "📄 got it", reply_to=3)
     assert await outbox.send_due() == 1
     row = state(outbox, "k1")
     assert row["state"] == "CONFIRMED"

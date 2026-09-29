@@ -1,6 +1,7 @@
 # Example installation config. Copy it OUTSIDE this repository and fill in real values there.
 # Real tokens, names and Telegram IDs never go into the repository.
 timezone = "Europe/Berlin"
+locale = "ru"      # en, ru, sr or uk: what Core says, the shared folder name, private keywords
 
 [paths]
 data_dir = "/Users/you/KlepaData"                # 0700, local disk, not iCloud/CloudStorage
@@ -12,7 +13,7 @@ api_root = "https://api.telegram.org"
 
 [spaces]
 default = "shared"
-shared_folder = "Общее"
+# shared_folder = "Family"   # default: the name the locale gives to the shared folder
 
 [intake]
 batch_window_seconds = 2.0

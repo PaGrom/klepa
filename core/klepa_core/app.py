@@ -67,7 +67,7 @@ async def run_service(cfg: Config, stop: asyncio.Event | None = None, *, copy_in
                 api = BotApi(session, cfg.api_root, token)
                 outbox = Outbox(conn, api, events)
                 outbox.recover()
-                batcher = ReceiptBatcher(outbox, journal, cfg.batch_window_seconds)
+                batcher = ReceiptBatcher(outbox, journal, cfg.batch_window_seconds, cfg.locale)
                 gatekeeper = Gatekeeper(cfg, api, journal, store, outbox, batcher, events,
                                         copy_interval=copy_interval, retry_seconds=retry_seconds)
                 events.log("core_started")

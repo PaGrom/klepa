@@ -1,0 +1,20 @@
+# English: everything Core says itself, the default shared folder name and private caption keywords.
+plural = "one-other"
+
+[texts]
+stage1 = "For now I only accept files: documents, photos and voice messages."
+start = "Hi! For now I only accept files: documents, photos and voice messages."
+no_commands = "I have no commands. Just write to me in words."
+unsupported = "I can't save this yet. Please send a file, a photo or a voice message."
+too_large = "This file is larger than 20 MB, and Telegram does not give such files to bots. Please send it another way: in parts or compressed."
+failed = "I couldn't get this file from Telegram. Please send it again."
+
+[receipts]
+one_file = "📄 got it"
+one_voice = "🎧 got the voice message"
+voices = "🎧 got {n} voice messages"
+files = { one = "📄 got {n} file", other = "📄 got {n} files" }
+
+[spaces]
+shared_folder = "Shared"
+private_keywords = ["just for me", "only for me", "private"]

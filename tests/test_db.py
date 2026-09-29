@@ -26,7 +26,7 @@ def test_seed_creates_members_and_spaces(tmp_path, make_config):
     db.seed(conn, cfg)
     db.seed(conn, cfg)
     spaces = {row["space_id"]: row["folder"] for row in conn.execute("SELECT * FROM space")}
-    assert spaces == {"shared": "Общее", "personal:owner": "Owner", "personal:member": "Member"}
+    assert spaces == {"shared": "Shared", "personal:owner": "Owner", "personal:member": "Member"}
 
 
 def test_transaction_rolls_back_on_error(tmp_path):

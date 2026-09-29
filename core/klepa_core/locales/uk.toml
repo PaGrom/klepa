@@ -1,0 +1,20 @@
+# Ukrainian: everything Core says itself, the default shared folder name and private caption keywords.
+plural = "one-few-many"
+
+[texts]
+stage1 = "Поки що я лише приймаю файли: документи, фото та голосові."
+start = "Привіт! Поки що я лише приймаю файли: документи, фото та голосові."
+no_commands = "Команд у мене немає — пиши словами."
+unsupported = "Таке я поки що не зберігаю. Надішли, будь ласка, файл, фото або голосове."
+too_large = "Цей файл більший за 20 МБ, а такі Telegram ботам не віддає. Надішли його, будь ласка, інакше: частинами або стиснутим."
+failed = "Не змогла забрати цей файл із Telegram. Надішли його, будь ласка, ще раз."
+
+[receipts]
+one_file = "📄 отримала"
+one_voice = "🎧 отримала голосове"
+voices = "🎧 отримала голосові: {n}"
+files = { one = "📄 отримала {n} файл", few = "📄 отримала {n} файли", many = "📄 отримала {n} файлів" }
+
+[spaces]
+shared_folder = "Спільне"
+private_keywords = ["тільки для мене", "лише для мене", "тільки мені", "особисто", "особисте", "just for me", "private"]

@@ -1,6 +1,6 @@
 """The space is decided at intake by the caption (spec D32).
 
-Keywords match whole words only, so «отлично» never makes a file private.
+Keywords match whole words only, so a keyword inside a longer word never makes a file private.
 """
 from __future__ import annotations
 

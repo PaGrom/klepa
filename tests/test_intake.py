@@ -17,8 +17,8 @@ def msg(from_id=111111, chat_id=None, chat_type="private", is_bot=False, **field
 def test_document_from_member():
     document = {"file_id": "F", "file_unique_id": "U", "file_size": 10, "file_name": "a.pdf",
                 "mime_type": "application/pdf"}
-    c = classify(msg(document=document, caption="чек"), MEMBERS)
-    assert (c.action, c.person_id, c.caption, c.message_id) == ("attachment", "owner", "чек", 5)
+    c = classify(msg(document=document, caption="receipt"), MEMBERS)
+    assert (c.action, c.person_id, c.caption, c.message_id) == ("attachment", "owner", "receipt", 5)
     assert (c.attachment.kind, c.attachment.file_name, c.attachment.file_size) == ("file", "a.pdf", 10)
 
 
@@ -40,7 +40,7 @@ def test_commands(text, command):
 
 
 def test_plain_text():
-    assert classify(msg(text="привет"), MEMBERS).action == "text"
+    assert classify(msg(text="hello"), MEMBERS).action == "text"
 
 
 @pytest.mark.parametrize(

@@ -4,8 +4,8 @@ KEY = b"k" * 32
 
 
 def test_canonical_json_is_order_independent():
-    assert canonical_json({"b": 1, "a": "я"}) == canonical_json({"a": "я", "b": 1})
-    assert canonical_json({"a": "я"}) == '{"a":"я"}'.encode()
+    assert canonical_json({"b": 1, "a": "é"}) == canonical_json({"a": "é", "b": 1})
+    assert canonical_json({"a": "é"}) == '{"a":"é"}'.encode()
 
 
 def test_sign_and_verify_roundtrip():

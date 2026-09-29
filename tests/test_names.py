@@ -10,11 +10,11 @@ EID = "ev0123456789abcdef0123"
 @pytest.mark.parametrize(
     "raw, expected",
     [
-        ("Договор.pdf", "Договор.pdf"),
+        ("Contract.pdf", "Contract.pdf"),
         ("../x.pdf", "_x.pdf"),
         ("/etc/passwd", "_etc_passwd"),
         ("a\\b:c.txt", "a_b_c.txt"),
-        ("‮fdp.exe", "fdp.exe"),
+        ("\u202efdp.exe", "fdp.exe"),
         ("  .hidden  ", "hidden"),
         ("...", "file"),
         ("", "file"),
@@ -27,8 +27,8 @@ def test_sanitize_original_name(raw, expected):
 
 
 def test_sanitize_normalizes_to_nfc():
-    nfd = unicodedata.normalize("NFD", "Йогурт.pdf")
-    assert sanitize_original_name(nfd) == unicodedata.normalize("NFC", "Йогурт.pdf")
+    nfd = unicodedata.normalize("NFD", "Café.pdf")
+    assert sanitize_original_name(nfd) == unicodedata.normalize("NFC", "Café.pdf")
 
 
 def test_disk_name_prefixes_evidence_id():
@@ -36,7 +36,7 @@ def test_disk_name_prefixes_evidence_id():
 
 
 def test_disk_name_is_at_most_255_bytes_and_keeps_extension():
-    name = disk_name(EID, "Я" * 300 + ".pdf")
+    name = disk_name(EID, "é" * 300 + ".pdf")
     assert len(name.encode("utf-8")) <= MAX_NAME_BYTES
     assert name.startswith(f"{EID}-")
     assert name.endswith(".pdf")
@@ -48,6 +48,6 @@ def test_disk_name_never_contains_separators():
 
 
 def test_card_lookalike_cannot_collide_with_card_file():
-    name = disk_name(EID, "Договор.pdf.json")
-    assert name == f"{EID}-Договор.pdf.json"
+    name = disk_name(EID, "Contract.pdf.json")
+    assert name == f"{EID}-Contract.pdf.json"
     assert name != f"{EID}.card.json"

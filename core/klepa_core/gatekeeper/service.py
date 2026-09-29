@@ -20,14 +20,6 @@ from .intake import Classified, classify
 from .outbox import Outbox
 from .receipts import ReceiptBatcher
 
-TEXT_STAGE1 = "Пока я только принимаю файлы: документы, фото и голосовые."
-TEXT_START = "Привет! Пока я только принимаю файлы: документы, фото и голосовые."
-TEXT_NO_COMMANDS = "Команд у меня нет — пиши словами."
-TEXT_UNSUPPORTED = "Такое я пока не сохраняю. Пришли, пожалуйста, файл, фото или голосовое."
-TEXT_TOO_LARGE = "Этот файл больше 20 МБ, а такие Telegram ботам не отдаёт. Пришли его, пожалуйста, иначе: частями или сжатым."
-TEXT_FAILED = "Не смогла забрать этот файл из Telegram. Пришли его, пожалуйста, ещё раз."
-
-
 async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(stop.wait(), timeout=seconds)
@@ -66,17 +58,18 @@ class Gatekeeper:
             self.events.log("update_rejected", {"update_id": update_id, "reason": c.reason, "from_id": c.from_id})
             self.journal.mark(update_id, "rejected", c.reason)
         elif c.action == "command":
-            self._reply(update_id, c, TEXT_START if c.command == "start" else TEXT_NO_COMMANDS)
+            self._reply(update_id, c, "start" if c.command == "start" else "no_commands")
         elif c.action == "text":
-            self._reply(update_id, c, TEXT_STAGE1)
+            self._reply(update_id, c, "stage1")
         elif c.action == "unsupported":
-            self._reply(update_id, c, TEXT_UNSUPPORTED)
+            self._reply(update_id, c, "unsupported")
         else:
             await self._ingest(update_id, c)
 
-    def _reply(self, update_id: int, c: Classified, text: str) -> None:
+    def _reply(self, update_id: int, c: Classified, text_key: str) -> None:
         assert c.chat_id is not None and c.message_id is not None
-        self.outbox.enqueue_text(f"reply:{c.chat_id}:{c.message_id}", c.chat_id, text, reply_to=c.message_id)
+        self.outbox.enqueue_text(f"reply:{c.chat_id}:{c.message_id}", c.chat_id, self.cfg.locale.text(text_key),
+                                 reply_to=c.message_id)
         self.journal.mark(update_id, "done")
 
     def _incoming(self, update_id: int, c: Classified, data: bytes) -> IncomingFile:
@@ -106,7 +99,7 @@ class Gatekeeper:
                 self._too_large(update_id, c)
                 return
             self.events.log("attachment_failed", {"update_id": update_id, "code": exc.code})
-            self.outbox.enqueue_text(f"failed:{c.chat_id}:{c.message_id}", c.chat_id, TEXT_FAILED,
+            self.outbox.enqueue_text(f"failed:{c.chat_id}:{c.message_id}", c.chat_id, self.cfg.locale.text("failed"),
                                      reply_to=c.message_id)
             self.journal.mark(update_id, "failed", f"getFile {exc.code}")
             return
@@ -127,8 +120,8 @@ class Gatekeeper:
     def _too_large(self, update_id: int, c: Classified) -> None:
         assert c.attachment is not None and c.chat_id is not None and c.message_id is not None
         self.store.record_too_large(self._incoming(update_id, c, b""), c.attachment.file_size)
-        self.outbox.enqueue_text(f"too_large:{c.chat_id}:{c.message_id}", c.chat_id, TEXT_TOO_LARGE,
-                                 reply_to=c.message_id)
+        self.outbox.enqueue_text(f"too_large:{c.chat_id}:{c.message_id}", c.chat_id,
+                                 self.cfg.locale.text("too_large"), reply_to=c.message_id)
         self.journal.mark(update_id, "done", "too_large")
 
     async def _get_updates_or_stop(self, stop: asyncio.Event, offset: int | None) -> list[dict[str, Any]] | None:

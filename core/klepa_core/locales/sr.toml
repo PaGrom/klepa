@@ -1,0 +1,20 @@
+# Serbian (Latin script): everything Core says itself, the default shared folder name and private caption keywords.
+plural = "one-few-other"
+
+[texts]
+stage1 = "Za sada primam samo fajlove: dokumente, fotografije i glasovne poruke."
+start = "Zdravo! Za sada primam samo fajlove: dokumente, fotografije i glasovne poruke."
+no_commands = "Nemam komande — piši mi rečima."
+unsupported = "Ovo za sada ne čuvam. Pošalji, molim te, fajl, fotografiju ili glasovnu poruku."
+too_large = "Ovaj fajl je veći od 20 MB, a takve fajlove Telegram ne daje botovima. Pošalji ga, molim te, drugačije: u delovima ili kompresovan."
+failed = "Nisam uspela da preuzmem ovaj fajl iz Telegrama. Pošalji ga, molim te, ponovo."
+
+[receipts]
+one_file = "📄 primila sam"
+one_voice = "🎧 primila sam glasovnu poruku"
+voices = "🎧 primila sam glasovne poruke: {n}"
+files = { one = "📄 primila sam {n} fajl", few = "📄 primila sam {n} fajla", other = "📄 primila sam {n} fajlova" }
+
+[spaces]
+shared_folder = "Zajedničko"
+private_keywords = ["samo za mene", "samo meni", "lično", "privatno", "just for me", "private"]

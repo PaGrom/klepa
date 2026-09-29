@@ -18,6 +18,7 @@ makes Telegram answer 409 to both.
 1. Create a separate test bot in @BotFather. Turn off `/setjoingroups` for it.
 2. Copy `config/example.toml` outside the repository, for example to `~/KlepaData-test/config.toml`, and fill in:
    - paths outside iCloud/CloudStorage;
+   - `locale`: `en`, `ru`, `sr` or `uk` (Core's own replies, the shared folder name, private keywords);
    - your Telegram ID;
    - the test bot token file path.
 3. Put the token into its file without echo and without shell history:

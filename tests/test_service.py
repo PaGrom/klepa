@@ -4,22 +4,24 @@ import pytest
 
 from helpers import OWNER, STRANGER, copied_count, evidence_rows, query, run_until, sent_texts
 from klepa_core.app import AlreadyRunning, run_service
-from klepa_core.gatekeeper.service import TEXT_NO_COMMANDS, TEXT_STAGE1, TEXT_START
+from klepa_core.locale import load_locale
+
+EN = load_locale("en")
 
 
 async def test_document_is_stored_copied_and_acknowledged(fake_tg, make_config):
     cfg = make_config(api_root=fake_tg.url)
-    update = fake_tg.add_document(OWNER, "Счёт.pdf", b"%PDF-1.4 invoice")
-    await run_until(cfg, lambda: sent_texts(fake_tg) == ["📄 получила"] and copied_count(cfg) == 1)
+    update = fake_tg.add_document(OWNER, "Invoice.pdf", b"%PDF-1.4 invoice")
+    await run_until(cfg, lambda: sent_texts(fake_tg) == ["📄 got it"] and copied_count(cfg) == 1)
     row = evidence_rows(cfg)[0]
-    assert (row["original_name"], row["space_id"], row["authenticated_subject"]) == ("Счёт.pdf", "shared", "owner")
+    assert (row["original_name"], row["space_id"], row["authenticated_subject"]) == ("Invoice.pdf", "shared", "owner")
     assert (cfg.documents_dir / row["documents_path"]).read_bytes() == b"%PDF-1.4 invoice"
     assert fake_tg.sent[-1]["params"]["reply_parameters"]["message_id"] == update["message"]["message_id"]
 
 
 async def test_private_caption_goes_to_personal_space(fake_tg, make_config):
     cfg = make_config(api_root=fake_tg.url)
-    fake_tg.add_document(OWNER, "анализы.pdf", b"%PDF", caption="только для меня")
+    fake_tg.add_document(OWNER, "lab-results.pdf", b"%PDF", caption="just for me")
     await run_until(cfg, lambda: copied_count(cfg) == 1)
     row = evidence_rows(cfg)[0]
     assert row["space_id"] == "personal:owner"
@@ -28,11 +30,11 @@ async def test_private_caption_goes_to_personal_space(fake_tg, make_config):
 
 async def test_text_and_commands_get_fixed_replies(fake_tg, make_config):
     cfg = make_config(api_root=fake_tg.url)
-    fake_tg.add_text(OWNER, "привет")
+    fake_tg.add_text(OWNER, "hello")
     fake_tg.add_text(OWNER, "/start")
     fake_tg.add_text(OWNER, "/model")
     await run_until(cfg, lambda: len(fake_tg.sent) == 3)
-    assert sorted(sent_texts(fake_tg)) == sorted([TEXT_STAGE1, TEXT_START, TEXT_NO_COMMANDS])
+    assert sorted(sent_texts(fake_tg)) == sorted([EN.text("stage1"), EN.text("start"), EN.text("no_commands")])
 
 
 async def test_stranger_is_ignored_silently(fake_tg, make_config):
@@ -40,7 +42,7 @@ async def test_stranger_is_ignored_silently(fake_tg, make_config):
     fake_tg.add_document(STRANGER, "x.pdf", b"x")
     fake_tg.add_text(OWNER, "ping")
     await run_until(cfg, lambda: len(fake_tg.sent) == 1)
-    assert sent_texts(fake_tg) == [TEXT_STAGE1]
+    assert sent_texts(fake_tg) == [EN.text("stage1")]
     assert "getFile" not in fake_tg.calls
     assert evidence_rows(cfg) == []
     assert query(cfg, "SELECT kind FROM event_log WHERE kind='update_rejected'")

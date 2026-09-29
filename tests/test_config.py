@@ -8,7 +8,8 @@ def test_loads_members_and_defaults(make_config):
     cfg = make_config()
     assert [m.person_id for m in cfg.members] == ["owner", "member"]
     assert cfg.default_space == "shared"
-    assert cfg.shared_folder == "Общее"
+    assert cfg.shared_folder == "Shared"
+    assert cfg.locale.code == "en" and cfg.private_keywords == cfg.locale.private_keywords
     assert cfg.max_file_bytes == 20 * 1024 * 1024
     assert cfg.members_by_telegram_id()[111111].role == "owner"
     assert cfg.journal_path == cfg.data_dir / "inbound-journal" / "inbound.db"
@@ -33,6 +34,12 @@ def test_rejects_data_dir_in_cloud_storage(make_config, install):
 def test_rejects_bad_members(make_config, mutation, message):
     with pytest.raises(ConfigError, match=message):
         make_config(text=mutation(BASE_CONFIG))
+
+
+@pytest.mark.parametrize("line", ['locale = "xx"', 'locale = "../en"', ""])
+def test_locale_is_required_and_known(make_config, line):
+    with pytest.raises(ConfigError, match="locale"):
+        make_config(text=BASE_CONFIG.replace('locale = "en"', line))
 
 
 def test_rejects_plain_http_api_root(make_config):

@@ -41,7 +41,7 @@ async def test_unreachable_server_is_not_sent(fake_tg, api):
 
 
 async def test_send_message_disables_previews_and_uses_plain_text(fake_tg, api):
-    result = await api.send_message(OWNER, "см. https://example.com", reply_to_message_id=5)
+    result = await api.send_message(OWNER, "see https://example.com", reply_to_message_id=5)
     params = fake_tg.sent[-1]["params"]
     assert params["link_preview_options"] == {"is_disabled": True}
     assert "parse_mode" not in params
