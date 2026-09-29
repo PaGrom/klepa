@@ -44,6 +44,24 @@ def fsync_dir(directory: Path) -> None:
         os.close(fd)
 
 
+def make_dirs_durably(root: Path, relative: str, mode: int = 0o700) -> Path:
+    """Create `root/relative` level by level, flushing each parent that got a new entry.
+
+    Without the parent flush, a power loss could lose a brand-new directory, and with it the files inside.
+    """
+    current = Path(root)
+    for part in Path(relative).parts:
+        child = current / part
+        try:
+            child.mkdir(mode=mode)
+        except FileExistsError:
+            pass
+        else:
+            fsync_dir(current)
+        current = child
+    return current
+
+
 def write_exclusive(directory: Path, name: str, data: bytes, mode: int = 0o600) -> Path:
     """Create `directory/name` with O_EXCL, write `data`, flush the file and the directory.
 

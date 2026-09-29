@@ -18,6 +18,7 @@ SEPT30_2230_UTC = int(datetime(2026, 9, 30, 22, 30, tzinfo=UTC).timestamp())
 @pytest.fixture
 def store(make_config):
     cfg = make_config()
+    cfg.incoming_dir.mkdir(mode=0o700)  # init_layout creates it before Core runs
     conn = db.connect(cfg.core_db_path)
     db.migrate(conn)
     db.seed(conn, cfg)

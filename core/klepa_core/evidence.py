@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 
 from . import cards
 from .db import transaction
-from .durable import write_new_atomically
+from .durable import make_dirs_durably, write_new_atomically
 from .events import EventLog, utc_now_iso
 from .names import disk_name
 
@@ -112,8 +112,7 @@ class EvidenceStore:
         evidence_id = self.evidence_id_for(key)
         name = disk_name(evidence_id, f.original_name or fallback_name(f.kind, f.mime))
         month = self.month(f.message_date)
-        directory = self.incoming_dir / month
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory = make_dirs_durably(self.incoming_dir, month)
         digest = hashlib.sha256(f.data).hexdigest()
         await asyncio.to_thread(self._write_original, directory, name, f.data, digest)
         with transaction(self.conn):

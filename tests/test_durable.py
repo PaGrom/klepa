@@ -5,7 +5,8 @@ import stat
 
 import pytest
 
-from klepa_core.durable import full_fsync, partial_name, write_exclusive, write_new_atomically
+from klepa_core import durable
+from klepa_core.durable import full_fsync, make_dirs_durably, partial_name, write_exclusive, write_new_atomically
 
 
 def test_write_exclusive_creates_private_file(tmp_path):
@@ -87,3 +88,15 @@ def test_full_fsync_falls_back_to_fsync_where_unsupported(tmp_path, monkeypatch,
     finally:
         os.close(fd)
     assert flushed == [fd]
+
+
+def test_make_dirs_durably_flushes_each_parent_that_got_a_new_entry(tmp_path, monkeypatch):
+    flushed = []
+    monkeypatch.setattr(durable, "fsync_dir", flushed.append)
+    path = make_dirs_durably(tmp_path, "2026/10")
+    assert path == tmp_path / "2026" / "10"
+    assert path.is_dir()
+    assert flushed == [tmp_path, tmp_path / "2026"]
+    flushed.clear()
+    make_dirs_durably(tmp_path, "2026/11")
+    assert flushed == [tmp_path / "2026"]
