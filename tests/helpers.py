@@ -94,3 +94,13 @@ async def run_until(cfg, predicate, *, timeout=15.0):
     finally:
         stop.set()
         await asyncio.wait_for(task, 20)
+
+
+async def wait_until(condition, *, timeout=5.0):
+    """Poll `condition()` until it is true."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not condition():
+        if loop.time() > deadline:
+            raise AssertionError("condition not reached in time")
+        await asyncio.sleep(0.01)

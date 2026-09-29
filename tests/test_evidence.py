@@ -1,11 +1,15 @@
 import dataclasses
+import errno
 import hashlib
+import threading
 from datetime import UTC, datetime
 
 import pytest
 
+from helpers import wait_until
 from klepa_core import db
 from klepa_core.cards import card_file_name, read_card
+from klepa_core.documents import DocumentsFolder
 from klepa_core.durable import partial_name
 from klepa_core.events import EventLog
 from klepa_core.evidence import EvidenceStore, IncomingFile, ingest_key
@@ -146,3 +150,34 @@ async def test_unnamed_files_get_their_kind_and_an_extension(store, kind, mime, 
     row = await store.ingest(dataclasses.replace(incoming(), kind=kind, mime=mime, original_name=None))
     assert row["disk_name"].endswith(suffix)
     assert row["original_name"] is None
+
+
+async def test_a_hanging_documents_folder_defers_the_copy_and_reports_it(store, monkeypatch):
+    store.documents = DocumentsFolder(store.documents_dir, timeout=0.2)
+    release = threading.Event()
+    write_copy = store._write_copy
+
+    def hanging(*args):
+        release.wait()
+        write_copy(*args)
+
+    monkeypatch.setattr(store, "_write_copy", hanging)
+    await store.ingest(incoming())
+    assert await store.copy_pending() == 0
+    assert store.last_copy_error == ("DocumentsTimeout", errno.ETIMEDOUT)
+    release.set()  # the folder answers again, and the stuck call finishes its copy
+    await wait_until(lambda: not store.documents.stuck)
+    assert await store.copy_pending() == 1  # the finished copy is recognised, not written twice
+    assert store.last_copy_error is None
+
+
+async def test_a_copy_conflict_is_tried_again_after_a_restart(store):
+    row = await store.ingest(incoming())
+    target_dir = store.documents_dir / "Shared" / "2026" / "10"
+    target_dir.mkdir(parents=True)
+    (target_dir / row["disk_name"]).write_bytes(b"someone else's file")
+    assert await store.copy_pending() == 0
+    assert store.conn.execute("SELECT copy_state FROM evidence").fetchone()[0] == "failed"
+    (target_dir / row["disk_name"]).unlink()  # the owner clears the conflict
+    assert store.retry_failed_copies() == 1
+    assert await store.copy_pending() == 1

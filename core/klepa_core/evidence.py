@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from . import cards
 from .db import transaction
+from .documents import DocumentsFolder
 from .durable import make_dirs_durably, write_new_atomically
 from .events import EventLog, utc_now_iso
 from .names import disk_name
@@ -82,6 +83,8 @@ class EvidenceStore:
         signing_key: bytes,
         timezone: str,
         events: EventLog,
+        *,
+        documents: DocumentsFolder | None = None,
     ) -> None:
         self.conn = conn
         self.incoming_dir = incoming_dir
@@ -90,6 +93,8 @@ class EvidenceStore:
         self.tz = ZoneInfo(timezone)
         self.events = events
         self._deferred: dict[str, int | None] = {}
+        self.documents = documents or DocumentsFolder(documents_dir)
+        self.last_copy_error: tuple[str, int | None] | None = None  # the documents folder's, in the last pass
 
     def month(self, unix_seconds: int) -> str:
         return datetime.fromtimestamp(unix_seconds, self.tz).strftime("%Y/%m")
@@ -219,6 +224,7 @@ class EvidenceStore:
         return int(row[0])
 
     async def copy_pending(self, ready: Callable[[sqlite3.Row], bool] | None = None) -> int:
+        self.last_copy_error = None
         rows = self.conn.execute("SELECT * FROM evidence WHERE copy_state='pending' ORDER BY received_at").fetchall()
         copied = 0
         for row in rows:
@@ -238,7 +244,11 @@ class EvidenceStore:
             data = await asyncio.to_thread((self.incoming_dir / row["incoming_path"]).read_bytes)
             if hashlib.sha256(data).hexdigest() != row["sha256"]:
                 raise CopyConflict("incoming checksum mismatch")
-            await asyncio.to_thread(self._write_copy, relative.parent, row["disk_name"], data, card)
+            try:
+                await self.documents.call(self._write_copy, relative.parent, row["disk_name"], data, card)
+            except OSError as exc:
+                self.last_copy_error = (type(exc).__name__, exc.errno)
+                raise
         except CopyConflict as exc:
             self._set_copy_state(row["id"], "failed")
             self.events.log("documents_copy_conflict", {"evidence_id": row["id"], "reason": str(exc)})
@@ -251,6 +261,13 @@ class EvidenceStore:
         self._deferred.pop(row["id"], None)
         self._set_copy_state(row["id"], "copied", str(relative))
         return True
+
+    def retry_failed_copies(self) -> int:
+        """Copies that conflicted are tried again after a restart, once the owner has cleared the conflict."""
+        count = self.conn.execute("UPDATE evidence SET copy_state='pending' WHERE copy_state='failed'").rowcount
+        if count:
+            self.events.log("copy_retry_after_restart", {"count": count})
+        return count
 
     @staticmethod
     def _write_original(directory: Path, name: str, data: bytes, digest: str) -> None:
