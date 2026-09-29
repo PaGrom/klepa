@@ -8,6 +8,15 @@ OWNER = 111111
 MEMBER = 222222
 STRANGER = 999999
 TEST_TOKEN = "123:TEST-TOKEN"
+SERVICE_TOKEN = "456:SERVICE-TOKEN"
+
+
+def with_service_bot(text: str, token_file, api_root: str, *, snapshot_at="off", daily_line_at="off") -> str:
+    """Config text with a service bot and the given schedule."""
+    text = text.replace('snapshot_at = "off"', f'snapshot_at = "{snapshot_at}"')
+    text = text.replace('daily_line_at = "off"', f'daily_line_at = "{daily_line_at}"')
+    return text + f'\n[service_bot]\ntoken_file = "{token_file}"\napi_root = "{api_root}"\n'
+
 
 BASE_CONFIG = """
 timezone = "Europe/Berlin"

@@ -38,6 +38,8 @@ class Config:
     documents_dir: Path
     token_file: Path
     api_root: str
+    service_token_file: Path | None
+    service_api_root: str
     timezone: str
     locale: Locale
     default_space: str
@@ -161,6 +163,17 @@ def load_config(path: Path) -> Config:
     api_root = str(telegram.get("api_root", "https://api.telegram.org")).rstrip("/")
     if not _safe_api_root(api_root):
         raise ConfigError("telegram.api_root must be https (or plain http to a loopback address, for tests)")
+    token_file = _abs_path(telegram.get("token_file"), "telegram.token_file")
+    service = raw.get("service_bot")
+    service_token_file: Path | None = None
+    service_api_root = api_root
+    if service is not None:
+        service_token_file = _abs_path(service.get("token_file"), "service_bot.token_file")
+        if service_token_file == token_file:
+            raise ConfigError("service_bot.token_file must differ from telegram.token_file")
+        service_api_root = str(service.get("api_root", api_root)).rstrip("/")
+        if not _safe_api_root(service_api_root):
+            raise ConfigError("service_bot.api_root must be https (or plain http to a loopback address, for tests)")
     timezone = raw.get("timezone")
     if not isinstance(timezone, str):
         raise ConfigError('timezone is required, for example "Europe/Berlin"')
@@ -196,8 +209,10 @@ def load_config(path: Path) -> Config:
     return Config(
         data_dir=data_dir,
         documents_dir=_abs_path(paths.get("documents_dir"), "paths.documents_dir"),
-        token_file=_abs_path(telegram.get("token_file"), "telegram.token_file"),
+        token_file=token_file,
         api_root=api_root,
+        service_token_file=service_token_file,
+        service_api_root=service_api_root,
         timezone=timezone,
         locale=locale,
         default_space=default_space,
@@ -213,15 +228,26 @@ def load_config(path: Path) -> Config:
     )
 
 
-def read_token(cfg: Config) -> str:
-    """Read the bot token from its 0600 file. Errors never include the token."""
+def _read_secret(path: Path, what: str) -> str:
     try:
-        mode = stat.S_IMODE(cfg.token_file.stat().st_mode)
+        mode = stat.S_IMODE(path.stat().st_mode)
     except OSError:
-        raise ConfigError("token file is missing") from None
+        raise ConfigError(f"{what} is missing") from None
     if mode & 0o077:
-        raise ConfigError("token file must be mode 0600")
-    token = cfg.token_file.read_text(encoding="utf-8").strip()
-    if not token:
-        raise ConfigError("token file is empty")
-    return token
+        raise ConfigError(f"{what} must be mode 0600")
+    secret = path.read_text(encoding="utf-8").strip()
+    if not secret:
+        raise ConfigError(f"{what} is empty")
+    return secret
+
+
+def read_token(cfg: Config) -> str:
+    """Read the family bot token from its 0600 file. Errors never include the token."""
+    return _read_secret(cfg.token_file, "token file")
+
+
+def read_service_token(cfg: Config) -> str:
+    """Read the service bot token from its 0600 file. Errors never include the token."""
+    if cfg.service_token_file is None:
+        raise ConfigError("service_bot is not configured")
+    return _read_secret(cfg.service_token_file, "service bot token file")

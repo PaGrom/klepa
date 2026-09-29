@@ -124,3 +124,22 @@ def test_schedule_defaults_and_validation(make_config):
     assert (cfg.snapshot_at, cfg.daily_line_at) == (time(3, 30), time(9, 0))
     with pytest.raises(ConfigError, match=r"schedule\.snapshot_at"):
         make_config(text=BASE_CONFIG.replace('snapshot_at = "off"', 'snapshot_at = "3am"'))
+
+
+def test_service_bot_is_optional_and_checked(make_config, install):
+    from helpers import with_service_bot
+    from klepa_core.config import read_service_token
+
+    cfg = make_config()
+    assert cfg.service_token_file is None
+    with pytest.raises(ConfigError, match="not configured"):
+        read_service_token(cfg)
+    text = with_service_bot(BASE_CONFIG, install["service_token_file"], "https://api.telegram.org")
+    cfg = make_config(text=text)
+    assert read_service_token(cfg) == "456:SERVICE-TOKEN"
+    same = with_service_bot(BASE_CONFIG, install["token_file"], "https://api.telegram.org")
+    with pytest.raises(ConfigError, match="must differ"):
+        make_config(text=same)
+    plain = with_service_bot(BASE_CONFIG, install["service_token_file"], "http://example.com")
+    with pytest.raises(ConfigError, match=r"service_bot\.api_root"):
+        make_config(text=plain)
