@@ -44,3 +44,11 @@ def test_mark_many_marks_all_or_nothing(tmp_path):
     with pytest.raises(sqlite3.IntegrityError, match="power loss"):
         journal.mark_many([1, 2, 3], "done")
     assert [journal.state(i) for i in (1, 2, 3)] == ["new", "new", "new"]
+
+
+def test_last_received_at(tmp_path):
+    journal = InboundJournal(tmp_path / "inbound.db")
+    assert journal.last_received_at() is None
+    journal.append_batch([u(1)], "2026-10-05T07:00:00.000+00:00")
+    journal.append_batch([u(2)], "2026-10-05T08:00:00.000+00:00")
+    assert journal.last_received_at() == "2026-10-05T08:00:00.000+00:00"

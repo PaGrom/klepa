@@ -61,5 +61,9 @@ class InboundJournal:
         row = self.conn.execute("SELECT MAX(update_id) AS last FROM inbound_update").fetchone()
         return None if row["last"] is None else int(row["last"]) + 1
 
+    def last_received_at(self) -> str | None:
+        row = self.conn.execute("SELECT MAX(received_at) AS last FROM inbound_update").fetchone()
+        return None if row["last"] is None else str(row["last"])
+
     def close(self) -> None:
         self.conn.close()
