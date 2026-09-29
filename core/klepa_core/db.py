@@ -1,4 +1,5 @@
 """core.db: one SQLite database for Core state (spec D16)."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -97,7 +98,7 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 
 def migrate(conn: sqlite3.Connection) -> int:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
-    current = conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version").fetchone()[0]
+    current = int(conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version").fetchone()[0])
     if current < 1:
         with transaction(conn):
             for statement in SCHEMA_V1:
@@ -115,13 +116,16 @@ def seed(conn: sqlite3.Connection, cfg: Config) -> None:
                 "INSERT INTO member(person_id, telegram_id, name, role) VALUES (?,?,?,?) "
                 "ON CONFLICT(person_id) DO UPDATE SET telegram_id=excluded.telegram_id, "
                 "name=excluded.name, role=excluded.role",
-                (m.person_id, m.telegram_id, m.name, m.role))
+                (m.person_id, m.telegram_id, m.name, m.role),
+            )
         conn.execute(
             "INSERT INTO space(space_id, kind, owner_person_id, folder) VALUES ('shared', 'shared', NULL, ?) "
             "ON CONFLICT(space_id) DO NOTHING",
-            (sanitize_original_name(cfg.shared_folder),))
+            (sanitize_original_name(cfg.shared_folder),),
+        )
         for m in cfg.members:
             conn.execute(
                 "INSERT INTO space(space_id, kind, owner_person_id, folder) VALUES (?, 'personal', ?, ?) "
                 "ON CONFLICT(space_id) DO NOTHING",
-                (f"personal:{m.person_id}", m.person_id, sanitize_original_name(m.name)))
+                (f"personal:{m.person_id}", m.person_id, sanitize_original_name(m.name)),
+            )

@@ -4,6 +4,7 @@ A batch is the attachments of one chat with less than `window_seconds` between n
 arrives that way). Journal entries of a batch become 'done' only when its receipt is queued, so after
 a crash they are processed again and the idempotency key prevents a second receipt.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -56,8 +57,10 @@ class ReceiptBatcher:
             batch.timer = asyncio.get_running_loop().call_later(self.window, self.flush, chat_id)
 
     def has_update(self, update_id: int) -> bool:
-        return any(update_id in batch.repeats or any(item[0] == update_id for item in batch.items)
-                   for batch in self._batches.values())
+        return any(
+            update_id in batch.repeats or any(item[0] == update_id for item in batch.items)
+            for batch in self._batches.values()
+        )
 
     def pending_count(self) -> int:
         return sum(len(batch.items) for batch in self._batches.values())
@@ -70,8 +73,12 @@ class ReceiptBatcher:
             batch.timer.cancel()
         items = sorted(batch.items, key=lambda item: item[1])
         first_message_id = items[0][1]
-        self.outbox.enqueue_text(f"receipt:{chat_id}:{first_message_id}", chat_id,
-                                 self.locale.receipt([kind for _, _, kind in items]), reply_to=first_message_id)
+        self.outbox.enqueue_text(
+            f"receipt:{chat_id}:{first_message_id}",
+            chat_id,
+            self.locale.receipt([kind for _, _, kind in items]),
+            reply_to=first_message_id,
+        )
         for update_id, _, _ in items:
             self.journal.mark(update_id, "done")
         for update_id in batch.repeats:

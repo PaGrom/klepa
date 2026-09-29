@@ -3,8 +3,15 @@ import asyncio
 import pytest
 
 from helpers import OWNER, TEST_TOKEN
-from klepa_core.telegram.client import (Ambiguous, BadRequest, Conflict, DownloadFailed, NotSent,
-                                        TooManyRequests, Unauthorized)
+from klepa_core.telegram.client import (
+    Ambiguous,
+    BadRequest,
+    Conflict,
+    DownloadFailed,
+    NotSent,
+    TooManyRequests,
+    Unauthorized,
+)
 
 
 async def test_get_updates_and_offset_ack(fake_tg, api):
@@ -14,7 +21,9 @@ async def test_get_updates_and_offset_ack(fake_tg, api):
     assert await api.get_updates(first["update_id"] + 1, 0) == []
 
 
-@pytest.mark.parametrize("status, error", [(401, Unauthorized), (409, Conflict), (400, BadRequest), (500, Ambiguous)])
+@pytest.mark.parametrize(
+    ("status", "error"), [(401, Unauthorized), (409, Conflict), (400, BadRequest), (500, Ambiguous)]
+)
 async def test_error_classification(fake_tg, api, status, error):
     fake_tg.fail("sendMessage", status=status, description="nope")
     with pytest.raises(error) as info:

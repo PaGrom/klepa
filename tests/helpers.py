@@ -1,4 +1,5 @@
 """Shared test data. Synthetic members only: real names and IDs never go into the repository."""
+
 import asyncio
 import sqlite3
 from contextlib import closing

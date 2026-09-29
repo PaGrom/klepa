@@ -1,4 +1,5 @@
 """Canonical JSON and HMAC-SHA256 signatures for cards, manifests and journals (spec D24)."""
+
 from __future__ import annotations
 
 import hashlib

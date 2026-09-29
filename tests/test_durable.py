@@ -22,7 +22,7 @@ def test_write_exclusive_refuses_existing_name(tmp_path):
 
 @pytest.mark.parametrize("bad", ["../x", "sub/x", "/etc/x", "", ".", "..", "a\x00b"])
 def test_write_exclusive_rejects_names_leaving_directory(tmp_path, bad):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a single file name"):
         write_exclusive(tmp_path, bad, b"x")
 
 

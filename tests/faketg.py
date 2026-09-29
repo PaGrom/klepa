@@ -1,4 +1,5 @@
 """Fake Telegram Bot API for tests and the stand (spec §13.1). Never used in production."""
+
 from __future__ import annotations
 
 import asyncio
@@ -47,8 +48,15 @@ class FakeTelegram:
             self._runner = None
 
     # ---- building updates ------------------------------------------------------------------
-    def message(self, from_id: int, *, chat_id: int | None = None, chat_type: str = "private",
-                date: int | None = None, **fields: Any) -> dict[str, Any]:
+    def message(
+        self,
+        from_id: int,
+        *,
+        chat_id: int | None = None,
+        chat_type: str = "private",
+        date: int | None = None,
+        **fields: Any,
+    ) -> dict[str, Any]:
         msg: dict[str, Any] = {
             "message_id": self._next_message_id,
             "date": date or int(time.time()),
@@ -79,25 +87,41 @@ class FakeTelegram:
             meta["file_name"] = name
         return meta
 
-    def _attachment(self, from_id: int, fields: dict[str, Any], caption: str | None,
-                    media_group_id: str | None, kw: dict[str, Any]) -> dict[str, Any]:
+    def _attachment(
+        self, from_id: int, fields: dict[str, Any], caption: str | None, media_group_id: str | None, kw: dict[str, Any]
+    ) -> dict[str, Any]:
         if caption is not None:
             fields["caption"] = caption
         if media_group_id is not None:
             fields["media_group_id"] = media_group_id
         return self.push({"message": self.message(from_id, **fields, **kw)})
 
-    def add_document(self, from_id: int, name: str, data: bytes, *, mime: str = "application/pdf",
-                     caption: str | None = None, media_group_id: str | None = None,
-                     file_size: int | None = None, **kw: Any) -> dict[str, Any]:
+    def add_document(
+        self,
+        from_id: int,
+        name: str,
+        data: bytes,
+        *,
+        mime: str = "application/pdf",
+        caption: str | None = None,
+        media_group_id: str | None = None,
+        file_size: int | None = None,
+        **kw: Any,
+    ) -> dict[str, Any]:
         document = self._register_file(data, name, file_size) | {"mime_type": mime}
         return self._attachment(from_id, {"document": document}, caption, media_group_id, kw)
 
-    def add_photo(self, from_id: int, data: bytes, *, caption: str | None = None,
-                  media_group_id: str | None = None, **kw: Any) -> dict[str, Any]:
+    def add_photo(
+        self, from_id: int, data: bytes, *, caption: str | None = None, media_group_id: str | None = None, **kw: Any
+    ) -> dict[str, Any]:
         big = self._register_file(data, None, None) | {"width": 1280, "height": 960}
-        small = {"file_id": big["file_id"] + "-thumb", "file_unique_id": big["file_unique_id"] + "-thumb",
-                 "file_size": 1, "width": 90, "height": 67}
+        small = {
+            "file_id": big["file_id"] + "-thumb",
+            "file_unique_id": big["file_unique_id"] + "-thumb",
+            "file_size": 1,
+            "width": 90,
+            "height": 67,
+        }
         return self._attachment(from_id, {"photo": [small, big]}, caption, media_group_id, kw)
 
     def add_voice(self, from_id: int, data: bytes, *, duration: int = 5, **kw: Any) -> dict[str, Any]:
@@ -112,12 +136,21 @@ class FakeTelegram:
         self._wakeup.set()
         return update
 
-    def fail(self, method: str, *, status: int = 500, description: str = "Internal Server Error",
-             retry_after: float | None = None, drop: bool = False, stall: bool = False, times: int = 1) -> None:
+    def fail(
+        self,
+        method: str,
+        *,
+        status: int = 500,
+        description: str = "Internal Server Error",
+        retry_after: float | None = None,
+        drop: bool = False,
+        stall: bool = False,
+        times: int = 1,
+    ) -> None:
         for _ in range(times):
             self.failures.setdefault(method, []).append(
-                {"status": status, "description": description, "retry_after": retry_after, "drop": drop,
-                 "stall": stall})
+                {"status": status, "description": description, "retry_after": retry_after, "drop": drop, "stall": stall}
+            )
 
     # ---- HTTP --------------------------------------------------------------------------------
     async def _api(self, request: web.Request) -> web.StreamResponse:
@@ -136,8 +169,9 @@ class FakeTelegram:
             if failure["retry_after"] is not None:
                 body["parameters"] = {"retry_after": failure["retry_after"]}
             return web.json_response(body, status=failure["status"])
-        handler = {"getUpdates": self._get_updates, "getFile": self._get_file,
-                   "sendMessage": self._send_message}.get(method)
+        handler = {"getUpdates": self._get_updates, "getFile": self._get_file, "sendMessage": self._send_message}.get(
+            method
+        )
         result = await handler(params) if handler else True
         if isinstance(result, web.StreamResponse):
             return result
@@ -165,16 +199,28 @@ class FakeTelegram:
     async def _get_file(self, params: dict[str, Any]) -> Any:
         entry = self.files.get(params.get("file_id"))
         if entry is None:
-            return web.json_response({"ok": False, "error_code": 400, "description": "Bad Request: invalid file_id"}, status=400)
+            return web.json_response(
+                {"ok": False, "error_code": 400, "description": "Bad Request: invalid file_id"}, status=400
+            )
         if entry["size"] > MAX_BOT_FILE:
-            return web.json_response({"ok": False, "error_code": 400, "description": "Bad Request: file is too big"}, status=400)
-        return {"file_id": params["file_id"], "file_unique_id": "U" + params["file_id"],
-                "file_size": entry["size"], "file_path": entry["path"]}
+            return web.json_response(
+                {"ok": False, "error_code": 400, "description": "Bad Request: file is too big"}, status=400
+            )
+        return {
+            "file_id": params["file_id"],
+            "file_unique_id": "U" + params["file_id"],
+            "file_size": entry["size"],
+            "file_path": entry["path"],
+        }
 
     async def _send_message(self, params: dict[str, Any]) -> dict[str, Any]:
         self._next_sent_id += 1
-        message = {"message_id": self._next_sent_id, "date": int(time.time()),
-                   "chat": {"id": params["chat_id"], "type": "private"}, "text": params.get("text", "")}
+        message = {
+            "message_id": self._next_sent_id,
+            "date": int(time.time()),
+            "chat": {"id": params["chat_id"], "type": "private"},
+            "text": params.get("text", ""),
+        }
         self.sent.append({"params": params, "message": message})
         return message
 

@@ -19,7 +19,8 @@ def outbox_factory(tmp_path):
 
 def state(outbox, key):
     return outbox.conn.execute(
-        "SELECT state, attempts, telegram_message_id FROM outbound WHERE idempotency_key=?", (key,)).fetchone()
+        "SELECT state, attempts, telegram_message_id FROM outbound WHERE idempotency_key=?", (key,)
+    ).fetchone()
 
 
 async def test_confirmed_with_message_id_and_idempotent_key(fake_tg, api, outbox_factory):

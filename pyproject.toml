@@ -6,7 +6,12 @@ requires-python = ">=3.13"
 dependencies = ["aiohttp>=3.10"]
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.16.9",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -20,3 +25,24 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+src = ["core", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "PT", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["klepa_core", "helpers", "faketg"]
+
+[tool.ruff.lint.per-file-ignores]
+# Letters that look Latin but are Cyrillic are the point of this module.
+"tests/test_languages.py" = ["RUF001"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+mypy_path = "core"
+files = ["core/klepa_core"]

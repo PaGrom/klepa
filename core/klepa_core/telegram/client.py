@@ -2,6 +2,7 @@
 
 Error messages never include the request URL, because the URL carries the bot token.
 """
+
 from __future__ import annotations
 
 import json
@@ -86,10 +87,13 @@ class BotApi:
         params: dict[str, Any] = {"timeout": timeout, "allowed_updates": ["message", "callback_query"]}
         if offset is not None:
             params["offset"] = offset
-        return await self.call("getUpdates", params, timeout=timeout + 15)
+        result = await self.call("getUpdates", params, timeout=timeout + 15)
+        if not isinstance(result, list):
+            raise Ambiguous("getUpdates: unexpected result")
+        return result
 
     async def get_file(self, file_id: str) -> dict[str, Any]:
-        return await self.call("getFile", {"file_id": file_id}, timeout=30)
+        return await self._call_for_object("getFile", {"file_id": file_id}, timeout=30)
 
     async def download(self, file_path: str, max_bytes: int, *, read_timeout: float = 60.0) -> bytes:
         """A silent connection fails after `read_timeout`, so one stalled download cannot hold intake for long."""
@@ -117,4 +121,10 @@ class BotApi:
         params: dict[str, Any] = {"chat_id": chat_id, "text": text, "link_preview_options": {"is_disabled": True}}
         if reply_to_message_id is not None:
             params["reply_parameters"] = {"message_id": reply_to_message_id, "allow_sending_without_reply": True}
-        return await self.call("sendMessage", params, timeout=30)
+        return await self._call_for_object("sendMessage", params, timeout=30)
+
+    async def _call_for_object(self, method: str, params: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        result = await self.call(method, params, timeout=timeout)
+        if not isinstance(result, dict):
+            raise Ambiguous(f"{method}: unexpected result")
+        return result

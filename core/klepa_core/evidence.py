@@ -1,12 +1,14 @@
-"""Evidence store (spec §5.3–5.5): originals are written once and never changed.
+"""Evidence store (spec §5.3-5.5): originals are written once and never changed.
 
 Order of writes: the file lands in incoming/ first (a temporary file with F_FULLFSYNC, then a rename that
 never replaces), then its row in core.db, then a verified copy and a signed card in the documents folder.
 A row never points to a missing file, and a retry after a crash reuses the file under its stable id.
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import hashlib
 import hmac
@@ -50,8 +52,15 @@ class CopyConflict(Exception):
     """The documents folder already holds different content under our name."""
 
 
-_EXTENSIONS = {"image/jpeg": ".jpg", "audio/ogg": ".ogg", "audio/mpeg": ".mp3", "audio/mp4": ".m4a",
-               "video/mp4": ".mp4", "video/quicktime": ".mov", "application/pdf": ".pdf"}
+_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "audio/ogg": ".ogg",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".m4a",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "application/pdf": ".pdf",
+}
 
 
 def fallback_name(kind: str, mime: str | None) -> str:
@@ -65,8 +74,15 @@ def ingest_key(chat_id: int, message_id: int) -> str:
 
 
 class EvidenceStore:
-    def __init__(self, conn: sqlite3.Connection, incoming_dir: Path, documents_dir: Path, signing_key: bytes,
-                 timezone: str, events: EventLog) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        incoming_dir: Path,
+        documents_dir: Path,
+        signing_key: bytes,
+        timezone: str,
+        events: EventLog,
+    ) -> None:
         self.conn = conn
         self.incoming_dir = incoming_dir
         self.documents_dir = documents_dir
@@ -84,7 +100,8 @@ class EvidenceStore:
         return "ev" + mac.hexdigest()[:20]
 
     def by_ingest_key(self, key: str) -> sqlite3.Row | None:
-        return self.conn.execute("SELECT * FROM evidence WHERE ingest_key=?", (key,)).fetchone()
+        row: sqlite3.Row | None = self.conn.execute("SELECT * FROM evidence WHERE ingest_key=?", (key,)).fetchone()
+        return row
 
     async def ingest(self, f: IncomingFile) -> sqlite3.Row:
         """Store an original. Idempotent: one Telegram message is stored once."""
@@ -106,9 +123,30 @@ class EvidenceStore:
                        file_unique_id, media_group_id, authenticated_subject, ingest_key, state, copy_state,
                        caption, tags)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?, 'telegram', ?,?,?,?,?,?,?,?, 'stored', 'pending', ?, ?)""",
-                (evidence_id, f.space_id, f.kind, f.original_name, name, f"{month}/{name}", f.mime, len(f.data),
-                 digest, utc_now_iso(), f.message_date, f.chat_id, f.message_id, f.update_id, f.file_id,
-                 f.file_unique_id, f.media_group_id, f.person_id, key, f.caption, json.dumps(list(f.tags))))
+                (
+                    evidence_id,
+                    f.space_id,
+                    f.kind,
+                    f.original_name,
+                    name,
+                    f"{month}/{name}",
+                    f.mime,
+                    len(f.data),
+                    digest,
+                    utc_now_iso(),
+                    f.message_date,
+                    f.chat_id,
+                    f.message_id,
+                    f.update_id,
+                    f.file_id,
+                    f.file_unique_id,
+                    f.media_group_id,
+                    f.person_id,
+                    key,
+                    f.caption,
+                    json.dumps(list(f.tags)),
+                ),
+            )
         self.events.log("evidence_stored", {"evidence_id": evidence_id, "kind": f.kind, "space_id": f.space_id})
         row = self.by_ingest_key(key)
         assert row is not None
@@ -127,24 +165,44 @@ class EvidenceStore:
                        channel, chat_id, message_id, update_id, file_id, file_unique_id, media_group_id,
                        authenticated_subject, ingest_key, state, copy_state, caption)
                    VALUES (?,?,?,?,?,?,?,?, 'telegram', ?,?,?,?,?,?,?,?, 'too_large', 'none', ?)""",
-                (evidence_id, f.space_id, f.kind, f.original_name, f.mime, size, utc_now_iso(), f.message_date,
-                 f.chat_id, f.message_id, f.update_id, f.file_id, f.file_unique_id, f.media_group_id,
-                 f.person_id, key, f.caption))
+                (
+                    evidence_id,
+                    f.space_id,
+                    f.kind,
+                    f.original_name,
+                    f.mime,
+                    size,
+                    utc_now_iso(),
+                    f.message_date,
+                    f.chat_id,
+                    f.message_id,
+                    f.update_id,
+                    f.file_id,
+                    f.file_unique_id,
+                    f.media_group_id,
+                    f.person_id,
+                    key,
+                    f.caption,
+                ),
+            )
         self.events.log("evidence_too_large", {"evidence_id": evidence_id, "size": size})
         row = self.by_ingest_key(key)
         assert row is not None
         return row
 
     def album_spaces(self, chat_id: int, media_group_id: str) -> set[str]:
-        rows = self.conn.execute("SELECT DISTINCT space_id FROM evidence WHERE chat_id=? AND media_group_id=?",
-                                 (chat_id, media_group_id))
+        rows = self.conn.execute(
+            "SELECT DISTINCT space_id FROM evidence WHERE chat_id=? AND media_group_id=?", (chat_id, media_group_id)
+        )
         return {row["space_id"] for row in rows}
 
     def move_album(self, chat_id: int, media_group_id: str, space_id: str) -> int:
         """Put the album's items that are not copied yet into one space."""
         return self.conn.execute(
             "UPDATE evidence SET space_id=? WHERE chat_id=? AND media_group_id=? AND space_id<>? "
-            "AND copy_state<>'copied'", (space_id, chat_id, media_group_id, space_id)).rowcount
+            "AND copy_state<>'copied'",
+            (space_id, chat_id, media_group_id, space_id),
+        ).rowcount
 
     async def copy_pending(self, ready: Callable[[sqlite3.Row], bool] | None = None) -> int:
         rows = self.conn.execute("SELECT * FROM evidence WHERE copy_state='pending' ORDER BY received_at").fetchall()
@@ -198,10 +256,8 @@ class EvidenceStore:
         for part in relative_dir.parts:
             directory = directory / part
             directory.mkdir(exist_ok=True)
-        try:
+        with contextlib.suppress(FileExistsError):  # an earlier attempt got this far; the check below decides
             write_new_atomically(directory, name, data)
-        except FileExistsError:
-            pass  # an earlier attempt got this far; the check below decides
         if hashlib.sha256((directory / name).read_bytes()).hexdigest() != card["sha256"]:
             raise CopyConflict("documents copy differs from the original")
         try:
@@ -213,4 +269,5 @@ class EvidenceStore:
     def _set_copy_state(self, evidence_id: str, state: str, documents_path: str | None = None) -> None:
         self.conn.execute(
             "UPDATE evidence SET copy_state=?, documents_path=COALESCE(?, documents_path) WHERE id=?",
-            (state, documents_path, evidence_id))
+            (state, documents_path, evidence_id),
+        )

@@ -1,4 +1,5 @@
 """Core process wiring (stage 1a)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -51,8 +52,9 @@ def acquire_lock(path: Path) -> int:
     return fd
 
 
-async def run_service(cfg: Config, stop: asyncio.Event | None = None, *, copy_interval: float = 5.0,
-                      retry_seconds: float = 30.0) -> None:
+async def run_service(
+    cfg: Config, stop: asyncio.Event | None = None, *, copy_interval: float = 5.0, retry_seconds: float = 30.0
+) -> None:
     ensure_private_dir(cfg.data_dir)
     lock_fd = acquire_lock(cfg.data_dir / "core.lock")
     try:
@@ -70,8 +72,17 @@ async def run_service(cfg: Config, stop: asyncio.Event | None = None, *, copy_in
                 outbox = Outbox(conn, api, events)
                 outbox.recover()
                 batcher = ReceiptBatcher(outbox, journal, cfg.batch_window_seconds, cfg.locale)
-                gatekeeper = Gatekeeper(cfg, api, journal, store, outbox, batcher, events,
-                                        copy_interval=copy_interval, retry_seconds=retry_seconds)
+                gatekeeper = Gatekeeper(
+                    cfg,
+                    api,
+                    journal,
+                    store,
+                    outbox,
+                    batcher,
+                    events,
+                    copy_interval=copy_interval,
+                    retry_seconds=retry_seconds,
+                )
                 events.log("core_started")
                 try:
                     async with asyncio.TaskGroup() as tasks:

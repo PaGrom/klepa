@@ -9,7 +9,8 @@ def test_loads_members_and_defaults(make_config):
     assert [m.person_id for m in cfg.members] == ["owner", "member"]
     assert cfg.default_space == "shared"
     assert cfg.shared_folder == "Shared"
-    assert cfg.locale.code == "en" and cfg.private_keywords == cfg.locale.private_keywords
+    assert cfg.locale.code == "en"
+    assert cfg.private_keywords == cfg.locale.private_keywords
     assert cfg.max_file_bytes == 20 * 1024 * 1024
     assert cfg.members_by_telegram_id()[111111].role == "owner"
     assert cfg.journal_path == cfg.data_dir / "inbound-journal" / "inbound.db"
@@ -23,7 +24,7 @@ def test_rejects_data_dir_in_cloud_storage(make_config, install):
 
 
 @pytest.mark.parametrize(
-    "mutation, message",
+    ("mutation", "message"),
     [
         (lambda t: t.replace("telegram_id = 222222", "telegram_id = 111111"), "unique"),
         (lambda t: t.replace('role = "member"', 'role = "owner"'), "exactly one"),

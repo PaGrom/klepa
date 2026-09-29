@@ -12,5 +12,5 @@ def test_log_and_forbidden_keys(tmp_path):
     events.log("update_rejected", {"reason": "not_member", "from_id": 1})
     assert events.kinds() == ["core_started", "update_rejected"]
     for key in ("token", "text", "caption", "url"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="must not carry"):
             events.log("x", {key: "secret"})

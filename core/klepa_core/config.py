@@ -1,4 +1,5 @@
 """Installation config (TOML). Installation data never goes into the repository."""
+
 from __future__ import annotations
 
 import re
@@ -79,8 +80,9 @@ def _members(items: object) -> tuple[Member, ...]:
     members: list[Member] = []
     for i, item in enumerate(items if isinstance(items, list) else []):
         try:
-            member = Member(str(item["person_id"]), int(item["telegram_id"]), str(item["name"]),
-                            str(item.get("role", "member")))
+            member = Member(
+                str(item["person_id"]), int(item["telegram_id"]), str(item["name"]), str(item.get("role", "member"))
+            )
         except (KeyError, TypeError, ValueError):
             raise ConfigError(f"members[{i}] needs person_id, telegram_id and name") from None
         if not _PERSON_ID.match(member.person_id):

@@ -1,4 +1,5 @@
-"""Acceptance scenarios for stage 1a (spec §13.2: 2, 3, 5, 7, 12, 14, 28, 36; too large; Review Focus 1–3)."""
+"""Acceptance scenarios for stage 1a (spec §13.2: 2, 3, 5, 7, 12, 14, 28, 36; too large; Review Focus 1-3)."""
+
 import asyncio
 import errno
 import random
@@ -7,9 +8,9 @@ import unicodedata
 import pytest
 
 from helpers import MEMBER, OWNER, STRANGER, copied_count, evidence_rows, query, run_until, sent_texts
+from klepa_core import evidence as evidence_module
 from klepa_core.app import run_service
 from klepa_core.cards import card_file_name, read_card
-from klepa_core import evidence as evidence_module
 from klepa_core.evidence import EvidenceStore
 from klepa_core.journal import InboundJournal
 from klepa_core.keys import load_or_create_key
@@ -56,7 +57,8 @@ async def test_s2_thirteen_pdfs_in_two_sends(fake_tg, make_config):
     await run_until(cfg, progress)
     assert receipts(fake_tg) == ["📄 got 10 files", "📄 got 3 files"]
     rows = evidence_rows(cfg)
-    assert len(rows) == 13 and len({row["sha256"] for row in rows}) == 13
+    assert len(rows) == 13
+    assert len({row["sha256"] for row in rows}) == 13
     assert len(stored_files(cfg)) == 13
     key = load_or_create_key(cfg.signing_key_path)
     for row in rows:
@@ -82,7 +84,8 @@ async def test_s3_core_killed_mid_save_keeps_one_record_each(fake_tg, make_confi
     monkeypatch.setattr(EvidenceStore, "ingest", real_ingest)
     await run_until(cfg, lambda: len(receipts(fake_tg)) == 1 and copied_count(cfg) == 3)
     assert receipts(fake_tg) == ["📄 got 3 files"]
-    assert len(evidence_rows(cfg)) == 3 and len(stored_files(cfg)) == 3
+    assert len(evidence_rows(cfg)) == 3
+    assert len(stored_files(cfg)) == 3
 
 
 async def test_s3_crash_between_the_file_and_its_row_keeps_one_file(fake_tg, make_config, monkeypatch):
@@ -95,10 +98,12 @@ async def test_s3_crash_between_the_file_and_its_row_keeps_one_file(fake_tg, mak
 
     monkeypatch.setattr(evidence_module, "transaction", power_loss)
     await crash_run(cfg)
-    assert len(stored_files(cfg)) == 1 and evidence_rows(cfg) == []
+    assert len(stored_files(cfg)) == 1
+    assert evidence_rows(cfg) == []
     monkeypatch.setattr(evidence_module, "transaction", real_transaction)
     await run_until(cfg, lambda: receipts(fake_tg) == ["📄 got it"] and copied_count(cfg) == 1)
-    assert len(stored_files(cfg)) == 1 and len(evidence_rows(cfg)) == 1
+    assert len(stored_files(cfg)) == 1
+    assert len(evidence_rows(cfg)) == 1
 
 
 async def test_full_disk_while_saving_is_retried_not_fatal(fake_tg, make_config, monkeypatch):
@@ -116,7 +121,9 @@ async def test_full_disk_while_saving_is_retried_not_fatal(fake_tg, make_config,
     monkeypatch.setattr(EvidenceStore, "ingest", full_disk_once)
     await run_until(cfg, lambda: receipts(fake_tg) == ["📄 got it"] and copied_count(cfg) == 1)
     retries = query(cfg, "SELECT data FROM event_log WHERE kind='attachment_retry'")
-    assert retries and "/private/incoming" not in retries[0]["data"]
+    assert retries
+    assert "/private/incoming" not in retries[0]["data"]
+
 
 async def test_s3_crash_before_journaling_redelivers(fake_tg, make_config, monkeypatch):
     cfg = make_config(api_root=fake_tg.url)
@@ -142,7 +149,8 @@ async def test_s5_duplicate_delivery_gives_one_record(fake_tg, make_config):
     fake_tg.add_text(OWNER, "still there?")
     await run_until(cfg, lambda: len(fake_tg.sent) == 2)
     assert receipts(fake_tg) == ["📄 got it"]
-    assert len(evidence_rows(cfg)) == 1 and len(stored_files(cfg)) == 1
+    assert len(evidence_rows(cfg)) == 1
+    assert len(stored_files(cfg)) == 1
 
 
 async def test_s7_sender_comes_from_telegram_not_from_text(fake_tg, make_config):
@@ -179,8 +187,17 @@ async def test_s14_strangers_groups_and_other_updates_are_not_stored(fake_tg, ma
     assert len(query(cfg, "SELECT id FROM event_log WHERE kind IN ('update_rejected','update_ignored')")) == 4
 
 
-NAMES = ["../x.pdf", "/etc/passwd", "\u202efdp.exe", "é" * 300 + ".pdf", "Scan.pdf", "scan.pdf",
-         unicodedata.normalize("NFC", "Café.pdf"), unicodedata.normalize("NFD", "Café.pdf"), "Contract.pdf.json"]
+NAMES = [
+    "../x.pdf",
+    "/etc/passwd",
+    "\u202efdp.exe",
+    "é" * 300 + ".pdf",
+    "Scan.pdf",
+    "scan.pdf",
+    unicodedata.normalize("NFC", "Café.pdf"),
+    unicodedata.normalize("NFD", "Café.pdf"),
+    "Contract.pdf.json",
+]
 
 
 async def test_s28_hostile_file_names_stay_inside_the_space_folder(fake_tg, make_config):
@@ -227,6 +244,7 @@ async def test_s36_late_repeat_of_an_album_photo_gets_no_second_receipt(fake_tg,
     finally:
         journal.close()
 
+
 async def test_private_caption_on_one_album_item_keeps_the_whole_album_personal(fake_tg, make_config):
     cfg = make_config(api_root=fake_tg.url)
     fake_tg.add_photo(OWNER, pdf(0) * 3, media_group_id="priv")
@@ -246,6 +264,7 @@ async def test_private_album_stays_private_when_the_captioned_item_fails_to_down
     await run_until(cfg, lambda: copied_count(cfg) == 3)
     assert {row["space_id"] for row in evidence_rows(cfg)} == {"personal:owner"}
     assert not (cfg.documents_dir / "Shared").exists()
+
 
 async def test_too_large_file_is_recorded_and_the_sender_is_asked_to_resend(fake_tg, make_config):
     cfg = make_config(api_root=fake_tg.url)
@@ -283,6 +302,7 @@ async def test_core_starts_and_receives_without_the_documents_folder(fake_tg, ma
     cfg.documents_dir.mkdir()
     await run_until(cfg, lambda: copied_count(cfg) == 1)
 
+
 async def test_review_focus_truncated_download_is_retried_and_stored_intact(fake_tg, make_config):
     cfg = make_config(api_root=fake_tg.url)
     data = pdf(3) * 200
@@ -308,6 +328,7 @@ async def test_a_file_that_never_downloads_is_given_up_and_the_sender_told(fake_
         journal.close()
     assert len(query(cfg, "SELECT id FROM event_log WHERE kind='attachment_retry'")) == 4
 
+
 async def test_review_focus_restart_in_the_middle_of_an_album(fake_tg, make_config, monkeypatch):
     cfg = make_config(api_root=fake_tg.url)
     for i in range(5):
@@ -323,7 +344,8 @@ async def test_review_focus_restart_in_the_middle_of_an_album(fake_tg, make_conf
 
     monkeypatch.setattr(EvidenceStore, "ingest", flaky)
     await crash_run(cfg)
-    assert len(stored_files(cfg)) == 3 and receipts(fake_tg) == []
+    assert len(stored_files(cfg)) == 3
+    assert receipts(fake_tg) == []
     monkeypatch.setattr(EvidenceStore, "ingest", real_ingest)
     await run_until(cfg, lambda: len(receipts(fake_tg)) == 1 and copied_count(cfg) == 5)
     assert receipts(fake_tg) == ["📄 got 5 files"]

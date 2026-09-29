@@ -1,4 +1,5 @@
 """Append-only event log. Metadata only: no message text, no captions, no secrets, no URLs."""
+
 from __future__ import annotations
 
 import json
@@ -24,7 +25,8 @@ class EventLog:
             raise ValueError(f"event data must not carry {sorted(bad)}")
         self.conn.execute(
             "INSERT INTO event_log(at, kind, data) VALUES (?,?,?)",
-            (utc_now_iso(), kind, json.dumps(data, ensure_ascii=False, sort_keys=True)))
+            (utc_now_iso(), kind, json.dumps(data, ensure_ascii=False, sort_keys=True)),
+        )
 
     def kinds(self) -> list[str]:
         return [row["kind"] for row in self.conn.execute("SELECT kind FROM event_log ORDER BY id")]

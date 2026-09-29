@@ -4,6 +4,7 @@ A file is stored as `<evidence_id>-<sanitized name>`: NFC, no path separators, n
 bidirectional characters, at most 255 bytes. The original name lives only in the database and
 the card; it is never used as a path on its own.
 """
+
 from __future__ import annotations
 
 import unicodedata

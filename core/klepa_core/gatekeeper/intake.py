@@ -3,6 +3,7 @@
 Only `message` updates from a private chat where chat.id == from.id == a member are accepted.
 Everything else is rejected (strangers, groups, bots) or ignored (other update types).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -41,25 +42,35 @@ class Classified:
 def _attachment(msg: dict[str, Any]) -> Attachment | None:
     if "document" in msg:
         d = msg["document"]
-        return Attachment("file", d["file_id"], d.get("file_unique_id"), d.get("file_size"), d.get("file_name"),
-                          d.get("mime_type"))
+        return Attachment(
+            "file", d["file_id"], d.get("file_unique_id"), d.get("file_size"), d.get("file_name"), d.get("mime_type")
+        )
     if msg.get("photo"):
         best = max(msg["photo"], key=lambda p: (p.get("file_size") or 0, p.get("width", 0) * p.get("height", 0)))
-        return Attachment("photo", best["file_id"], best.get("file_unique_id"), best.get("file_size"), None,
-                          "image/jpeg")
+        return Attachment(
+            "photo", best["file_id"], best.get("file_unique_id"), best.get("file_size"), None, "image/jpeg"
+        )
     if "voice" in msg:
         v = msg["voice"]
-        return Attachment("voice", v["file_id"], v.get("file_unique_id"), v.get("file_size"), None,
-                          v.get("mime_type", "audio/ogg"))
+        return Attachment(
+            "voice", v["file_id"], v.get("file_unique_id"), v.get("file_size"), None, v.get("mime_type", "audio/ogg")
+        )
     if "audio" in msg:
         a = msg["audio"]
-        return Attachment("audio", a["file_id"], a.get("file_unique_id"), a.get("file_size"), a.get("file_name"),
-                          a.get("mime_type"))
+        return Attachment(
+            "audio", a["file_id"], a.get("file_unique_id"), a.get("file_size"), a.get("file_name"), a.get("mime_type")
+        )
     for key in ("video", "video_note", "animation"):
         if key in msg:
             v = msg[key]
-            return Attachment("video", v["file_id"], v.get("file_unique_id"), v.get("file_size"), v.get("file_name"),
-                              v.get("mime_type", "video/mp4"))
+            return Attachment(
+                "video",
+                v["file_id"],
+                v.get("file_unique_id"),
+                v.get("file_size"),
+                v.get("file_name"),
+                v.get("mime_type", "video/mp4"),
+            )
     return None
 
 
@@ -82,8 +93,12 @@ def classify(update: dict[str, Any], members: dict[int, Member]) -> Classified:
     if member is None:
         return Classified("reject", reason="not_member", from_id=sender.get("id"))
     base: dict[str, Any] = {
-        "from_id": sender["id"], "chat_id": chat["id"], "message_id": msg["message_id"],
-        "person_id": member.person_id, "date": msg.get("date"), "media_group_id": msg.get("media_group_id"),
+        "from_id": sender["id"],
+        "chat_id": chat["id"],
+        "message_id": msg["message_id"],
+        "person_id": member.person_id,
+        "date": msg.get("date"),
+        "media_group_id": msg.get("media_group_id"),
         "forwarded": "forward_origin" in msg,
     }
     attachment = _attachment(msg)

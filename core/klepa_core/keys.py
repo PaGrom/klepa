@@ -1,6 +1,8 @@
 """Key files: at least 32 random bytes, mode 0600, in a 0700 directory, never in snapshots."""
+
 from __future__ import annotations
 
+import contextlib
 import secrets
 import stat
 from pathlib import Path
@@ -22,10 +24,8 @@ def ensure_private_dir(path: Path) -> None:
 def load_or_create_key(path: Path, nbytes: int = 32) -> bytes:
     ensure_private_dir(path.parent)
     if not path.exists():
-        try:
+        with contextlib.suppress(FileExistsError):
             write_exclusive(path.parent, path.name, secrets.token_bytes(nbytes), mode=0o600)
-        except FileExistsError:
-            pass
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode & 0o077:
         raise KeyFileError(f"{path.name} must be mode 0600 (is {mode:o})")

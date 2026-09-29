@@ -3,6 +3,7 @@
 The words live in locales/<code>.toml. This module only picks a file, checks that it is complete
 and chooses the plural form; it holds no words of its own.
 """
+
 from __future__ import annotations
 
 import re
@@ -54,7 +55,10 @@ class Locale:
     code: str
     plural: str
     texts: Mapping[str, str]
-    receipts: Mapping[str, Any]
+    one_file: str
+    one_voice: str
+    voices: str
+    files: Mapping[str, str]
     shared_folder: str
     private_keywords: tuple[str, ...]
 
@@ -64,10 +68,10 @@ class Locale:
     def receipt(self, kinds: Sequence[str]) -> str:
         n = len(kinds)
         if n == 1:
-            return self.receipts["one_voice"] if kinds[0] == "voice" else self.receipts["one_file"]
+            return self.one_voice if kinds[0] == "voice" else self.one_file
         if all(kind == "voice" for kind in kinds):
-            return self.receipts["voices"].format(n=n)
-        return self.receipts["files"][plural_category(self.plural, n)].format(n=n)
+            return self.voices.format(n=n)
+        return self.files[plural_category(self.plural, n)].format(n=n)
 
 
 def _packaged() -> Traversable:
@@ -121,5 +125,14 @@ def _checked(code: str, raw: dict[str, Any]) -> Locale:
     keywords = spaces.get("private_keywords")
     if not isinstance(keywords, list) or not keywords or not all(is_text(k) for k in keywords):
         raise fail("spaces.private_keywords must be a non-empty list of words")
-    return Locale(code=code, plural=rule, texts=dict(texts), receipts=dict(receipts),
-                  shared_folder=spaces["shared_folder"], private_keywords=tuple(keywords))
+    return Locale(
+        code=code,
+        plural=rule,
+        texts={key: texts[key] for key in TEXT_KEYS},
+        one_file=receipts["one_file"],
+        one_voice=receipts["one_voice"],
+        voices=receipts["voices"],
+        files={category: files[category] for category in PLURAL_RULES[rule][0]},
+        shared_folder=spaces["shared_folder"],
+        private_keywords=tuple(keywords),
+    )

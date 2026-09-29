@@ -1,7 +1,9 @@
 """Signed provenance cards next to each original (spec §5.3, D24)."""
+
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -10,11 +12,24 @@ from .durable import write_new_atomically
 from .signing import sign, verify
 
 CARD_VERSION = 1
-_FIELDS = ("space_id", "kind", "original_name", "disk_name", "mime", "size", "sha256", "received_at",
-           "channel", "chat_id", "message_id", "authenticated_subject", "caption")
+_FIELDS = (
+    "space_id",
+    "kind",
+    "original_name",
+    "disk_name",
+    "mime",
+    "size",
+    "sha256",
+    "received_at",
+    "channel",
+    "chat_id",
+    "message_id",
+    "authenticated_subject",
+    "caption",
+)
 
 
-def build_card(row: Mapping[str, Any]) -> dict[str, Any]:
+def build_card(row: Mapping[str, Any] | sqlite3.Row) -> dict[str, Any]:
     card: dict[str, Any] = {"card_version": CARD_VERSION, "evidence_id": row["id"]}
     for key in _FIELDS:
         card[key] = row[key]

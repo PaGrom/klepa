@@ -32,8 +32,12 @@ def test_seed_creates_members_and_spaces(tmp_path, make_config):
 def test_transaction_rolls_back_on_error(tmp_path):
     conn = db.connect(tmp_path / "core.db")
     db.migrate(conn)
-    with pytest.raises(RuntimeError):
+
+    def insert_then_fail():
         with db.transaction(conn):
             conn.execute("INSERT INTO event_log(at, kind, data) VALUES ('t', 'k', '{}')")
             raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        insert_then_fail()
     assert conn.execute("SELECT COUNT(*) FROM event_log").fetchone()[0] == 0

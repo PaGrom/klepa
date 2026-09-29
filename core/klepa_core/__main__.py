@@ -1,4 +1,5 @@
 """klepa-core command line: `init` and `run` (stage 1a)."""
+
 from __future__ import annotations
 
 import argparse

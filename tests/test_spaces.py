@@ -6,7 +6,7 @@ KEYWORDS = ("just for me", "private")
 
 
 @pytest.mark.parametrize(
-    "caption, private",
+    ("caption", "private"),
     [
         ("just for me", True),
         ("Just for me: lab results", True),

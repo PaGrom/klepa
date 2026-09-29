@@ -2,8 +2,10 @@
 
 Plain fsync on macOS does not flush the disk cache, so every durable write uses F_FULLFSYNC.
 """
+
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
 import os
@@ -39,8 +41,6 @@ def write_exclusive(directory: Path, name: str, data: bytes, mode: int = 0o600) 
         raise ValueError(f"not a single file name: {name!r}")
     directory = Path(directory)
     target = directory / name
-    if target.parent.resolve() != directory.resolve():
-        raise ValueError(f"name escapes directory: {name!r}")
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, mode)
     try:
         view = memoryview(data)
@@ -67,10 +67,8 @@ def write_new_atomically(directory: Path, name: str, data: bytes, mode: int = 0o
     """
     directory = Path(directory)
     temp = directory / partial_name(name)
-    try:
+    with contextlib.suppress(FileNotFoundError):
         os.unlink(temp)
-    except FileNotFoundError:
-        pass
     write_exclusive(directory, temp.name, data, mode)
     target = directory / name
     if target.exists() or target.is_symlink():

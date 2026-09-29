@@ -30,14 +30,24 @@ def test_shipped_locales():
 
 
 @pytest.mark.parametrize(
-    "rule, n, category",
+    ("rule", "n", "category"),
     [
-        ("one-other", 1, "one"), ("one-other", 2, "other"), ("one-other", 21, "other"),
-        ("one-few-many", 1, "one"), ("one-few-many", 3, "few"), ("one-few-many", 5, "many"),
-        ("one-few-many", 11, "many"), ("one-few-many", 12, "many"), ("one-few-many", 21, "one"),
-        ("one-few-many", 22, "few"), ("one-few-many", 111, "many"),
-        ("one-few-other", 1, "one"), ("one-few-other", 4, "few"), ("one-few-other", 5, "other"),
-        ("one-few-other", 14, "other"), ("one-few-other", 21, "one"),
+        ("one-other", 1, "one"),
+        ("one-other", 2, "other"),
+        ("one-other", 21, "other"),
+        ("one-few-many", 1, "one"),
+        ("one-few-many", 3, "few"),
+        ("one-few-many", 5, "many"),
+        ("one-few-many", 11, "many"),
+        ("one-few-many", 12, "many"),
+        ("one-few-many", 21, "one"),
+        ("one-few-many", 22, "few"),
+        ("one-few-many", 111, "many"),
+        ("one-few-other", 1, "one"),
+        ("one-few-other", 4, "few"),
+        ("one-few-other", 5, "other"),
+        ("one-few-other", 14, "other"),
+        ("one-few-other", 21, "one"),
     ],
 )
 def test_plural_categories(rule, n, category):
@@ -73,7 +83,7 @@ def test_complete_locale_from_a_directory_loads(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "mutation, message",
+    ("mutation", "message"),
     [
         (lambda t: t.replace('failed = "f"\n', ""), "failed"),
         (lambda t: t.replace('plural = "one-other"', 'plural = "one-few-many"'), "few"),

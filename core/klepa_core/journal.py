@@ -2,6 +2,7 @@
 
 It lives in its own SQLite file, so restoring core.db from a snapshot never touches it.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,7 +21,8 @@ class InboundJournal:
                 received_at TEXT NOT NULL,
                 raw TEXT NOT NULL,
                 state TEXT NOT NULL DEFAULT 'new' CHECK (state IN ('new','done','rejected','failed')),
-                note TEXT)""")
+                note TEXT)"""
+        )
 
     def append_batch(self, updates: list[dict[str, Any]], received_at: str) -> list[int]:
         """Store a getUpdates batch in one durable transaction; return the ids that are new."""
@@ -29,7 +31,8 @@ class InboundJournal:
             for update in updates:
                 cursor = self.conn.execute(
                     "INSERT OR IGNORE INTO inbound_update(update_id, received_at, raw) VALUES (?,?,?)",
-                    (int(update["update_id"]), received_at, json.dumps(update, ensure_ascii=False)))
+                    (int(update["update_id"]), received_at, json.dumps(update, ensure_ascii=False)),
+                )
                 if cursor.rowcount == 1:
                     new_ids.append(int(update["update_id"]))
         return new_ids

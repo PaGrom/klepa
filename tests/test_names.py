@@ -8,7 +8,7 @@ EID = "ev0123456789abcdef0123"
 
 
 @pytest.mark.parametrize(
-    "raw, expected",
+    ("raw", "expected"),
     [
         ("Contract.pdf", "Contract.pdf"),
         ("../x.pdf", "_x.pdf"),

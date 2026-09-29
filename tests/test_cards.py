@@ -6,10 +6,21 @@ from klepa_core.cards import build_card, card_file_name, read_card, write_card
 
 KEY = b"k" * 32
 ROW = {
-    "id": "ev00", "space_id": "shared", "kind": "file", "original_name": "Contract.pdf",
-    "disk_name": "ev00-Contract.pdf", "mime": "application/pdf", "size": 3, "sha256": "ab" * 32,
-    "received_at": "2026-09-28T10:00:00.000+00:00", "channel": "telegram", "chat_id": 111111,
-    "message_id": 7, "authenticated_subject": "owner", "caption": None, "tags": "[]",
+    "id": "ev00",
+    "space_id": "shared",
+    "kind": "file",
+    "original_name": "Contract.pdf",
+    "disk_name": "ev00-Contract.pdf",
+    "mime": "application/pdf",
+    "size": 3,
+    "sha256": "ab" * 32,
+    "received_at": "2026-09-28T10:00:00.000+00:00",
+    "channel": "telegram",
+    "chat_id": 111111,
+    "message_id": 7,
+    "authenticated_subject": "owner",
+    "caption": None,
+    "tags": "[]",
 }
 
 
@@ -18,7 +29,8 @@ def test_card_roundtrip(tmp_path):
     path = write_card(tmp_path, card, KEY)
     assert path.name == card_file_name("ev00") == "ev00.card.json"
     assert read_card(path, KEY) == card
-    assert card["card_version"] == 1 and card["evidence_id"] == "ev00"
+    assert card["card_version"] == 1
+    assert card["evidence_id"] == "ev00"
 
 
 def test_tampered_card_is_rejected(tmp_path):

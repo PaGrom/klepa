@@ -25,10 +25,22 @@ def store(make_config):
 
 
 def incoming(message_id=7, data=b"%PDF test", name="Contract.pdf", date=SEPT30_2230_UTC):
-    return IncomingFile(update_id=1000 + message_id, chat_id=111111, message_id=message_id, message_date=date,
-                        person_id="owner", space_id="shared", kind="file", original_name=name,
-                        mime="application/pdf", data=data, file_id="F", file_unique_id="U",
-                        media_group_id=None, caption=None)
+    return IncomingFile(
+        update_id=1000 + message_id,
+        chat_id=111111,
+        message_id=message_id,
+        message_date=date,
+        person_id="owner",
+        space_id="shared",
+        kind="file",
+        original_name=name,
+        mime="application/pdf",
+        data=data,
+        file_id="F",
+        file_unique_id="U",
+        media_group_id=None,
+        caption=None,
+    )
 
 
 async def test_ingest_writes_original_once_in_local_month(store):
@@ -51,7 +63,8 @@ async def test_copy_to_documents_with_signed_card(store):
     target = store.documents_dir / copied["documents_path"]
     assert target.read_bytes() == b"%PDF test"
     card = read_card(target.parent / card_file_name(row["id"]), KEY)
-    assert card["sha256"] == row["sha256"] and card["authenticated_subject"] == "owner"
+    assert card["sha256"] == row["sha256"]
+    assert card["authenticated_subject"] == "owner"
     assert await store.copy_pending() == 0
 
 
@@ -118,12 +131,17 @@ async def test_different_bytes_under_our_name_are_refused(store):
 
 
 @pytest.mark.parametrize(
-    "kind, mime, suffix",
+    ("kind", "mime", "suffix"),
     [
-        ("photo", "image/jpeg", "-photo.jpg"), ("voice", "audio/ogg", "-voice.ogg"), ("video", "video/mp4", "-video.mp4"),
-        ("audio", "audio/mpeg", "-audio.mp3"), ("file", "application/pdf", "-file.pdf"), ("file", None, "-file"),
+        ("photo", "image/jpeg", "-photo.jpg"),
+        ("voice", "audio/ogg", "-voice.ogg"),
+        ("video", "video/mp4", "-video.mp4"),
+        ("audio", "audio/mpeg", "-audio.mp3"),
+        ("file", "application/pdf", "-file.pdf"),
+        ("file", None, "-file"),
     ],
 )
 async def test_unnamed_files_get_their_kind_and_an_extension(store, kind, mime, suffix):
     row = await store.ingest(dataclasses.replace(incoming(), kind=kind, mime=mime, original_name=None))
-    assert row["disk_name"].endswith(suffix) and row["original_name"] is None
+    assert row["disk_name"].endswith(suffix)
+    assert row["original_name"] is None
