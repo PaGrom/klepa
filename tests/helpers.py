@@ -89,7 +89,7 @@ async def run_until(cfg, predicate, *, timeout=15.0):
     from klepa_core.app import run_service
 
     stop = asyncio.Event()
-    task = asyncio.create_task(run_service(cfg, stop, copy_interval=0.05, retry_seconds=0.2))
+    task = asyncio.create_task(run_service(cfg, stop, copy_interval=0.05, retry_seconds=0.2, documents_grace=0.0))
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     try:

@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from ..aio import sleep_or_stop, until_stopped
+from ..alerts import Alerts
 from ..config import Config, Member
 from ..events import EventLog, utc_now_iso
 from ..evidence import EvidenceStore, IncomingFile
@@ -45,6 +46,7 @@ class Gatekeeper:
         *,
         copy_interval: float = 5.0,
         retry_seconds: float = 30.0,
+        alerts: Alerts | None = None,
     ) -> None:
         self.cfg = cfg
         self.api = api
@@ -55,6 +57,8 @@ class Gatekeeper:
         self.events = events
         self.copy_interval = copy_interval
         self.retry_seconds = retry_seconds
+        self.alerts = alerts
+        self._album_alerted: set[tuple[int, str]] = set()
         self.members: dict[int, Member] = cfg.members_by_telegram_id()
         self._retry_at: dict[int, float] = {}
         self._attempts: dict[int, int] = {}
@@ -108,6 +112,10 @@ class Gatekeeper:
             space_id = personal
         if space_id == personal:
             self.store.move_album(c.chat_id, c.media_group_id, personal)
+            copied = self.store.album_copied_count(c.chat_id, c.media_group_id)
+            if copied and self.alerts is not None and (c.chat_id, c.media_group_id) not in self._album_alerted:
+                self._album_alerted.add((c.chat_id, c.media_group_id))
+                self.alerts.raise_("album_private_after_copy", count=copied)
         return space_id
 
     def _album_caption_is_private(self, chat_id: int, media_group_id: str) -> bool:
@@ -243,10 +251,14 @@ class Gatekeeper:
                 backoff = 1.0
             except Unauthorized:
                 self.events.log("channel_unauthorized")
+                if self.alerts is not None:
+                    self.alerts.raise_("channel_dead", error="Unauthorized")
                 await sleep_or_stop(stop, 30)
                 continue
             except Conflict:
                 self.events.log("channel_conflict")
+                if self.alerts is not None:
+                    self.alerts.raise_("channel_dead", error="Conflict")
                 await sleep_or_stop(stop, 30)
                 continue
             except TooManyRequests as exc:
@@ -268,5 +280,11 @@ class Gatekeeper:
 
     async def copy_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            await self.store.copy_pending(ready=self._ready_to_copy)
+            # A copy may wait on the documents folder; stopping Core must not wait with it.
+            copied = await until_stopped(stop, self.store.copy_pending(ready=self._ready_to_copy))
+            if copied is not None and self.alerts is not None:
+                if self.store.last_copy_error is not None:
+                    self.alerts.documents_failed(*self.store.last_copy_error)
+                elif copied:
+                    self.alerts.documents_ok()
             await sleep_or_stop(stop, self.copy_interval)
