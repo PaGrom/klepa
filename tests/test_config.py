@@ -113,3 +113,14 @@ def test_album_quiet_period_defaults_to_a_minute(make_config):
     assert make_config(text=text).album_quiet_seconds == 60.0
     with pytest.raises(ConfigError, match="album_quiet_seconds"):
         make_config(text=BASE_CONFIG.replace("album_quiet_seconds = 0.3", "album_quiet_seconds = -1"))
+
+
+def test_schedule_defaults_and_validation(make_config):
+    from datetime import time
+
+    assert (make_config().snapshot_at, make_config().daily_line_at) == (None, None)  # BASE_CONFIG turns them off
+    text = BASE_CONFIG.replace('snapshot_at = "off"\ndaily_line_at = "off"\n', "")
+    cfg = make_config(text=text)
+    assert (cfg.snapshot_at, cfg.daily_line_at) == (time(3, 30), time(9, 0))
+    with pytest.raises(ConfigError, match=r"schedule\.snapshot_at"):
+        make_config(text=BASE_CONFIG.replace('snapshot_at = "off"', 'snapshot_at = "3am"'))

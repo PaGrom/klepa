@@ -6,6 +6,7 @@ import re
 import stat
 import tomllib
 from dataclasses import dataclass
+from datetime import time as time_of_day
 from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -45,6 +46,8 @@ class Config:
     max_file_bytes: int
     batch_window_seconds: float
     album_quiet_seconds: float
+    snapshot_at: time_of_day | None
+    daily_line_at: time_of_day | None
     poll_timeout_seconds: int
     private_keywords: tuple[str, ...]
 
@@ -132,6 +135,17 @@ def _safe_api_root(url: str) -> bool:
     return parts.scheme == "http" and parts.hostname in _LOOPBACK_HOSTS
 
 
+def parse_time_of_day(text: str) -> time_of_day | None:
+    """'HH:MM' in local time, or 'off' to disable a daily job."""
+    if text == "off":
+        return None
+    try:
+        hours, minutes = text.split(":")
+        return time_of_day(int(hours), int(minutes))
+    except ValueError:
+        raise ValueError(f"expected HH:MM or 'off', got {text!r}") from None
+
+
 def load_config(path: Path) -> Config:
     try:
         raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
@@ -169,6 +183,16 @@ def load_config(path: Path) -> Config:
     if album_quiet_seconds < 0:
         raise ConfigError("intake.album_quiet_seconds must not be negative")
 
+    schedule = raw.get("schedule", {})
+    try:
+        snapshot_at = parse_time_of_day(str(schedule.get("snapshot_at", "03:30")))
+    except ValueError as exc:
+        raise ConfigError(f"schedule.snapshot_at: {exc}") from None
+    try:
+        daily_line_at = parse_time_of_day(str(schedule.get("daily_line_at", "09:00")))
+    except ValueError as exc:
+        raise ConfigError(f"schedule.daily_line_at: {exc}") from None
+
     return Config(
         data_dir=data_dir,
         documents_dir=_abs_path(paths.get("documents_dir"), "paths.documents_dir"),
@@ -182,6 +206,8 @@ def load_config(path: Path) -> Config:
         max_file_bytes=int(intake.get("max_file_bytes", 20 * 1024 * 1024)),
         batch_window_seconds=float(intake.get("batch_window_seconds", 2.0)),
         album_quiet_seconds=album_quiet_seconds,
+        snapshot_at=snapshot_at,
+        daily_line_at=daily_line_at,
         poll_timeout_seconds=int(intake.get("poll_timeout_seconds", 30)),
         private_keywords=tuple(str(k) for k in intake.get("private_keywords", locale.private_keywords)),
     )

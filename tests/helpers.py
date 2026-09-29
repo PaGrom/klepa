@@ -26,6 +26,10 @@ batch_window_seconds = 0.2
 poll_timeout_seconds = 1
 album_quiet_seconds = 0.3
 
+[schedule]
+snapshot_at = "off"
+daily_line_at = "off"
+
 [[members]]
 person_id = "owner"
 telegram_id = 111111

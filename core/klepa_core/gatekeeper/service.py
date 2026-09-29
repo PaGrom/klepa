@@ -6,10 +6,10 @@ In this plan Core answers text itself. Serving text to the OpenClaw host arrives
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 from typing import Any
 
+from ..aio import sleep_or_stop, until_stopped
 from ..config import Config, Member
 from ..events import EventLog, utc_now_iso
 from ..evidence import EvidenceStore, IncomingFile
@@ -30,11 +30,6 @@ from .outbox import Outbox
 from .receipts import ReceiptBatcher
 
 MAX_FILE_ATTEMPTS = 5  # failed downloads or saves of one file before the sender is asked to send it again
-
-
-async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(stop.wait(), timeout=seconds)
 
 
 class Gatekeeper:
@@ -235,18 +230,8 @@ class Gatekeeper:
         self.journal.mark(update_id, "done", "too_large")
 
     async def _get_updates_or_stop(self, stop: asyncio.Event, offset: int | None) -> list[dict[str, Any]] | None:
-        poll = asyncio.ensure_future(self.api.get_updates(offset, self.cfg.poll_timeout_seconds))
-        waiter = asyncio.ensure_future(stop.wait())
-        try:
-            done, _ = await asyncio.wait({poll, waiter}, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            waiter.cancel()
-        if poll in done:
-            return poll.result()
-        poll.cancel()  # updates of a cancelled poll were not acknowledged; Telegram delivers them again
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await poll
-        return None
+        # Updates of a cancelled poll were not acknowledged; Telegram delivers them again.
+        return await until_stopped(stop, self.api.get_updates(offset, self.cfg.poll_timeout_seconds))
 
     async def poll_forever(self, stop: asyncio.Event) -> None:
         offset = self.journal.next_offset()
@@ -258,18 +243,18 @@ class Gatekeeper:
                 backoff = 1.0
             except Unauthorized:
                 self.events.log("channel_unauthorized")
-                await _sleep_or_stop(stop, 30)
+                await sleep_or_stop(stop, 30)
                 continue
             except Conflict:
                 self.events.log("channel_conflict")
-                await _sleep_or_stop(stop, 30)
+                await sleep_or_stop(stop, 30)
                 continue
             except TooManyRequests as exc:
-                await _sleep_or_stop(stop, exc.retry_after or 1.0)
+                await sleep_or_stop(stop, exc.retry_after or 1.0)
                 continue
             except (NotSent, Ambiguous, BadRequest) as exc:
                 self.events.log("poll_error", {"error": type(exc).__name__})
-                await _sleep_or_stop(stop, backoff)
+                await sleep_or_stop(stop, backoff)
                 backoff = min(backoff * 2, 60.0)
                 continue
             if not updates:
@@ -284,4 +269,4 @@ class Gatekeeper:
     async def copy_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
             await self.store.copy_pending(ready=self._ready_to_copy)
-            await _sleep_or_stop(stop, self.copy_interval)
+            await sleep_or_stop(stop, self.copy_interval)
