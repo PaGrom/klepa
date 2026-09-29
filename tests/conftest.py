@@ -1,7 +1,10 @@
+import aiohttp
 import pytest
 
+from faketg import FakeTelegram
 from helpers import BASE_CONFIG, TEST_TOKEN
 from klepa_core.config import load_config
+from klepa_core.telegram.client import BotApi
 
 
 @pytest.fixture
@@ -33,3 +36,17 @@ def make_config(install):
         return load_config(path)
 
     return make
+
+
+@pytest.fixture
+async def fake_tg():
+    telegram = FakeTelegram(token=TEST_TOKEN)
+    await telegram.start()
+    yield telegram
+    await telegram.stop()
+
+
+@pytest.fixture
+async def api(fake_tg):
+    async with aiohttp.ClientSession() as session:
+        yield BotApi(session, fake_tg.url, TEST_TOKEN)
