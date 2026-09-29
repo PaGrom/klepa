@@ -91,3 +91,20 @@ async def test_stalled_download_fails_fast(fake_tg, api):
     with pytest.raises(DownloadFailed):
         await api.download(info["file_path"], 1_000_000, read_timeout=0.3)
     assert asyncio.get_running_loop().time() - started < 1.5
+
+
+async def test_get_me_and_answer_callback_query(fake_tg, api):
+    assert (await api.get_me())["username"] == "test_bot"
+    await api.answer_callback_query("cb1", "expired")
+    await api.answer_callback_query("cb2")
+    assert fake_tg.answered == [{"callback_query_id": "cb1", "text": "expired"}, {"callback_query_id": "cb2"}]
+
+
+async def test_button_press_arrives_as_callback_query(fake_tg, api):
+    markup = {"inline_keyboard": [[{"text": "Status", "callback_data": "abc"}]]}
+    sent = await api.send_message(OWNER, "status", reply_markup=markup)
+    assert fake_tg.sent[-1]["params"]["reply_markup"] == markup
+    fake_tg.press(OWNER, sent, "abc")
+    callback = (await api.get_updates(None, 0))[-1]["callback_query"]
+    assert (callback["data"], callback["from"]["id"]) == ("abc", OWNER)
+    assert callback["message"]["message_id"] == sent["message_id"]

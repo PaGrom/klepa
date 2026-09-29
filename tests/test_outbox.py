@@ -85,3 +85,19 @@ def test_recover_marks_sending_unknown(outbox_factory):
     outbox.conn.execute("UPDATE outbound SET state='SENDING'")
     assert outbox.recover() == 1
     assert state(outbox, "k6")["state"] == "UNKNOWN"
+
+
+async def test_each_bot_sends_only_its_own_messages(fake_tg, api, outbox_factory):
+    family = outbox_factory(api)
+    service = Outbox(family.conn, api, EventLog(family.conn), bot="service")
+    markup = {"inline_keyboard": [[{"text": "Status", "callback_data": "x"}]]}
+    family.enqueue_text("f1", OWNER, "family text")
+    service.enqueue_text("s1", OWNER, "service text", reply_markup=markup)
+    assert await service.send_due() == 1
+    assert [item["params"]["text"] for item in fake_tg.sent] == ["service text"]
+    assert fake_tg.sent[0]["params"]["reply_markup"] == markup
+    assert service.message_id("s1") == fake_tg.sent[0]["message"]["message_id"]
+    assert service.message_id("missing") is None
+    assert await family.send_due() == 1
+    assert [item["params"]["text"] for item in fake_tg.sent] == ["service text", "family text"]
+    assert service.events.kinds().count("service_sent") == 1  # every service send is logged, family sends are not

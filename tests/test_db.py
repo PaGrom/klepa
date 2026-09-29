@@ -13,10 +13,11 @@ def test_connect_sets_durability_pragmas(tmp_path):
 
 def test_migrate_is_idempotent(tmp_path):
     conn = db.connect(tmp_path / "core.db")
-    assert db.migrate(conn) == 1
-    assert db.migrate(conn) == 1
+    assert db.migrate(conn) == 2
+    assert db.migrate(conn) == 2
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"member", "space", "evidence", "outbound", "event_log", "schema_version"} <= tables
+    expected = {"member", "space", "evidence", "outbound", "event_log", "schema_version", "service_binding"}
+    assert expected | {"button_action", "alert_state", "snapshot", "job_run"} <= tables
 
 
 def test_seed_creates_members_and_spaces(tmp_path, make_config):
@@ -41,3 +42,37 @@ def test_transaction_rolls_back_on_error(tmp_path):
     with pytest.raises(RuntimeError, match="boom"):
         insert_then_fail()
     assert conn.execute("SELECT COUNT(*) FROM event_log").fetchone()[0] == 0
+
+
+def test_v1_database_is_upgraded_in_place(tmp_path):
+    conn = db.connect(tmp_path / "core.db")
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    with db.transaction(conn):
+        for statement in db.SCHEMA_V1:
+            conn.execute(statement)
+        conn.execute("INSERT INTO schema_version(version) VALUES (1)")
+    conn.execute(
+        "INSERT INTO outbound(idempotency_key, origin, method, chat_id, payload, state, created_at, updated_at) "
+        "VALUES ('k', 'core', 'sendMessage', 1, '{}', 'PENDING', 't', 't')"
+    )
+    assert db.migrate(conn) == 2
+    assert conn.execute("SELECT bot FROM outbound").fetchone()[0] == "family"
+
+
+def test_snapshot_generations_are_never_reused(tmp_path):
+    conn = db.connect(tmp_path / "core.db")
+    db.migrate(conn)
+    insert = "INSERT INTO snapshot(day, created_at) VALUES ('2026-10-05', 't')"
+    first = conn.execute(insert).lastrowid
+    conn.execute("DELETE FROM snapshot WHERE generation=?", (first,))
+    assert conn.execute(insert).lastrowid == first + 1
+
+
+def test_owner_service_chat(tmp_path, make_config):
+    cfg = make_config()
+    conn = db.connect(tmp_path / "core.db")
+    db.migrate(conn)
+    db.seed(conn, cfg)
+    assert db.owner_service_chat(conn) is None
+    conn.execute("INSERT INTO service_binding(person_id, chat_id, bound_at) VALUES ('owner', 111111, 't')")
+    assert db.owner_service_chat(conn) == 111111

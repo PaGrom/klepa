@@ -117,11 +117,28 @@ class BotApi:
             raise DownloadFailed("download: truncated")
         return b"".join(chunks)
 
-    async def send_message(self, chat_id: int, text: str, reply_to_message_id: int | None = None) -> dict[str, Any]:
+    async def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        reply_to_message_id: int | None = None,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {"chat_id": chat_id, "text": text, "link_preview_options": {"is_disabled": True}}
         if reply_to_message_id is not None:
             params["reply_parameters"] = {"message_id": reply_to_message_id, "allow_sending_without_reply": True}
+        if reply_markup is not None:
+            params["reply_markup"] = reply_markup
         return await self._call_for_object("sendMessage", params, timeout=30)
+
+    async def get_me(self) -> dict[str, Any]:
+        return await self._call_for_object("getMe", {}, timeout=30)
+
+    async def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
+        params: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text is not None:
+            params["text"] = text
+        await self.call("answerCallbackQuery", params, timeout=30)
 
     async def _call_for_object(self, method: str, params: dict[str, Any], *, timeout: float) -> dict[str, Any]:
         result = await self.call(method, params, timeout=timeout)

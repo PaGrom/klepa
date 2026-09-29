@@ -27,29 +27,47 @@ def backoff_seconds(attempts: int) -> float:
 
 class Outbox:
     def __init__(
-        self, conn: sqlite3.Connection, api: BotApi | None, events: EventLog, clock: Callable[[], float] = time.time
+        self,
+        conn: sqlite3.Connection,
+        api: BotApi | None,
+        events: EventLog,
+        clock: Callable[[], float] = time.time,
+        *,
+        bot: str = "family",
     ) -> None:
         self.conn = conn
         self.api = api
         self.events = events
         self.clock = clock
+        self.bot = bot
         self._wake = asyncio.Event()
 
-    def enqueue_text(self, key: str, chat_id: int, text: str, reply_to: int | None = None) -> bool:
+    def enqueue_text(
+        self, key: str, chat_id: int, text: str, reply_to: int | None = None, reply_markup: dict[str, Any] | None = None
+    ) -> bool:
         now = utc_now_iso()
+        payload: dict[str, Any] = {"text": text, "reply_to": reply_to}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         cursor = self.conn.execute(
-            """INSERT OR IGNORE INTO outbound(idempotency_key, origin, method, chat_id, payload, state,
+            """INSERT OR IGNORE INTO outbound(idempotency_key, origin, bot, method, chat_id, payload, state,
                    created_at, updated_at)
-               VALUES (?, 'core', 'sendMessage', ?, ?, 'PENDING', ?, ?)""",
-            (key, chat_id, json.dumps({"text": text, "reply_to": reply_to}, ensure_ascii=False), now, now),
+               VALUES (?, 'core', ?, 'sendMessage', ?, ?, 'PENDING', ?, ?)""",
+            (key, self.bot, chat_id, json.dumps(payload, ensure_ascii=False), now, now),
         )
         self._wake.set()
         return cursor.rowcount == 1
 
+    def message_id(self, key: str) -> int | None:
+        """Telegram's message id of a confirmed send, by idempotency key."""
+        row = self.conn.execute("SELECT telegram_message_id FROM outbound WHERE idempotency_key=?", (key,)).fetchone()
+        return None if row is None or row[0] is None else int(row[0])
+
     def recover(self) -> int:
         """After a crash, a send that may have left becomes UNKNOWN (never resent automatically)."""
         return self.conn.execute(
-            "UPDATE outbound SET state='UNKNOWN', updated_at=? WHERE state='SENDING'", (utc_now_iso(),)
+            "UPDATE outbound SET state='UNKNOWN', updated_at=? WHERE state='SENDING' AND bot=?",
+            (utc_now_iso(), self.bot),
         ).rowcount
 
     def _set(self, row_id: int, state: str, **fields: Any) -> None:
@@ -62,9 +80,9 @@ class Outbox:
     async def send_due(self) -> int:
         assert self.api is not None
         rows = self.conn.execute(
-            """SELECT * FROM outbound WHERE origin='core' AND state IN ('PENDING','RETRY_WAIT')
+            """SELECT * FROM outbound WHERE origin='core' AND bot=? AND state IN ('PENDING','RETRY_WAIT')
                AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY id LIMIT 20""",
-            (self.clock(),),
+            (self.bot, self.clock()),
         ).fetchall()
         confirmed = 0
         for row in rows:
@@ -79,7 +97,9 @@ class Outbox:
             payload = json.loads(row["payload"])
             attempts = row["attempts"] + 1
             try:
-                result = await self.api.send_message(row["chat_id"], payload["text"], payload.get("reply_to"))
+                result = await self.api.send_message(
+                    row["chat_id"], payload["text"], payload.get("reply_to"), payload.get("reply_markup")
+                )
             except (NotSent, Unauthorized) as exc:
                 state = "FAILED" if attempts >= MAX_ATTEMPTS else "RETRY_WAIT"
                 self._set(
@@ -103,6 +123,8 @@ class Outbox:
                 self.events.log("outbound_unknown", {"outbound_id": row["id"]})
             else:
                 self._set(row["id"], "CONFIRMED", telegram_message_id=int(result["message_id"]))
+                if self.bot == "service":  # every send of the service bot is an event of its own (spec §8)
+                    self.events.log("service_sent", {"outbound_id": row["id"], "key": row["idempotency_key"]})
                 confirmed += 1
         return confirmed
 

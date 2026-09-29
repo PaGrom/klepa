@@ -72,6 +72,37 @@ SCHEMA_V1 = (
     "CREATE INDEX outbound_state ON outbound(state, next_attempt_at)",
 )
 
+SCHEMA_V2 = (
+    "ALTER TABLE outbound ADD COLUMN bot TEXT NOT NULL DEFAULT 'family' CHECK (bot IN ('family','service'))",
+    """CREATE TABLE service_binding (
+        person_id TEXT PRIMARY KEY REFERENCES member(person_id),
+        chat_id INTEGER NOT NULL UNIQUE,
+        bound_at TEXT NOT NULL)""",
+    """CREATE TABLE button_action (
+        id TEXT PRIMARY KEY,
+        action TEXT NOT NULL,
+        chat_id INTEGER NOT NULL,
+        outbound_key TEXT NOT NULL REFERENCES outbound(idempotency_key),
+        expires_at REAL NOT NULL,
+        used_at TEXT)""",
+    """CREATE TABLE alert_state (
+        class TEXT PRIMARY KEY,
+        last_sent_at REAL NOT NULL)""",
+    # AUTOINCREMENT: a generation number is never handed out twice, even after its row is removed (D24).
+    """CREATE TABLE snapshot (
+        generation INTEGER PRIMARY KEY AUTOINCREMENT,
+        day TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        sha256 TEXT,
+        size INTEGER,
+        integrity TEXT,
+        copied_at TEXT)""",
+    """CREATE TABLE job_run (
+        name TEXT PRIMARY KEY,
+        last_day TEXT NOT NULL)""",
+    "CREATE INDEX outbound_bot_state ON outbound(bot, state, next_attempt_at)",
+)
+
 
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -105,6 +136,12 @@ def migrate(conn: sqlite3.Connection) -> int:
                 conn.execute(statement)
             conn.execute("INSERT INTO schema_version(version) VALUES (1)")
         current = 1
+    if current < 2:
+        with transaction(conn):
+            for statement in SCHEMA_V2:
+                conn.execute(statement)
+            conn.execute("INSERT INTO schema_version(version) VALUES (2)")
+        current = 2
     return current
 
 
@@ -129,3 +166,11 @@ def seed(conn: sqlite3.Connection, cfg: Config) -> None:
                 "ON CONFLICT(space_id) DO NOTHING",
                 (f"personal:{m.person_id}", m.person_id, sanitize_original_name(m.name)),
             )
+
+
+def owner_service_chat(conn: sqlite3.Connection) -> int | None:
+    """The owner's private chat with the service bot, once bound."""
+    row = conn.execute(
+        "SELECT b.chat_id FROM service_binding b JOIN member m ON m.person_id = b.person_id WHERE m.role = 'owner'"
+    ).fetchone()
+    return None if row is None else int(row[0])

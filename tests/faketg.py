@@ -13,8 +13,11 @@ MAX_BOT_FILE = 20 * 1024 * 1024
 
 
 class FakeTelegram:
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, username: str = "test_bot") -> None:
         self.token = token
+        self.username = username
+        self.answered: list[dict[str, Any]] = []
+        self._next_callback_id = 0
         self.token_valid = True
         self.updates: list[dict[str, Any]] = []
         self.forced: list[dict[str, Any]] = []
@@ -136,6 +139,18 @@ class FakeTelegram:
         self._wakeup.set()
         return update
 
+    def press(self, from_id: int, message: dict[str, Any], data: str) -> dict[str, Any]:
+        """A button press on `message`, a message the bot sent (as returned by sendMessage)."""
+        self._next_callback_id += 1
+        callback = {
+            "id": f"cb{self._next_callback_id}",
+            "from": {"id": from_id, "is_bot": False, "first_name": "Test"},
+            "message": copy.deepcopy(message),
+            "chat_instance": "test",
+            "data": data,
+        }
+        return self.push({"callback_query": callback})
+
     def fail(
         self,
         method: str,
@@ -169,9 +184,13 @@ class FakeTelegram:
             if failure["retry_after"] is not None:
                 body["parameters"] = {"retry_after": failure["retry_after"]}
             return web.json_response(body, status=failure["status"])
-        handler = {"getUpdates": self._get_updates, "getFile": self._get_file, "sendMessage": self._send_message}.get(
-            method
-        )
+        handler = {
+            "getUpdates": self._get_updates,
+            "getFile": self._get_file,
+            "sendMessage": self._send_message,
+            "answerCallbackQuery": self._answer_callback,
+            "getMe": self._get_me,
+        }.get(method)
         result = await handler(params) if handler else True
         if isinstance(result, web.StreamResponse):
             return result
@@ -212,6 +231,13 @@ class FakeTelegram:
             "file_size": entry["size"],
             "file_path": entry["path"],
         }
+
+    async def _answer_callback(self, params: dict[str, Any]) -> bool:
+        self.answered.append(params)
+        return True
+
+    async def _get_me(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"id": 1, "is_bot": True, "first_name": "Test bot", "username": self.username}
 
     async def _send_message(self, params: dict[str, Any]) -> dict[str, Any]:
         self._next_sent_id += 1
