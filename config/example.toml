@@ -1,0 +1,31 @@
+# Example installation config. Copy it OUTSIDE this repository and fill in real values there.
+# Real tokens, names and Telegram IDs never go into the repository.
+timezone = "Europe/Berlin"
+
+[paths]
+data_dir = "/Users/you/KlepaData"                # 0700, local disk, not iCloud/CloudStorage
+documents_dir = "/Users/you/KlepaDocuments"      # stage 1a: a local folder; Google Drive comes with plan 1b
+
+[telegram]
+token_file = "/Users/you/KlepaData/keys/family-bot.token"   # 0600, typed via stdin, never pasted in chat
+api_root = "https://api.telegram.org"
+
+[spaces]
+default = "shared"
+shared_folder = "Общее"
+
+[intake]
+batch_window_seconds = 2.0
+poll_timeout_seconds = 30
+
+[[members]]
+person_id = "owner"
+telegram_id = 100000001
+name = "Owner"
+role = "owner"
+
+[[members]]
+person_id = "partner"
+telegram_id = 100000002
+name = "Partner"
+role = "member"
