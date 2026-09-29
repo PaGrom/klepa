@@ -117,7 +117,9 @@ def load_config(path: Path) -> Config:
     api_root = str(telegram.get("api_root", "https://api.telegram.org")).rstrip("/")
     if not api_root.startswith(("https://", "http://127.0.0.1", "http://localhost")):
         raise ConfigError("telegram.api_root must be https (or loopback http for tests)")
-    timezone = str(raw.get("timezone", "Europe/Berlin"))
+    timezone = raw.get("timezone")
+    if not isinstance(timezone, str):
+        raise ConfigError('timezone is required, for example "Europe/Berlin"')
     try:
         ZoneInfo(timezone)
     except (ZoneInfoNotFoundError, ValueError):

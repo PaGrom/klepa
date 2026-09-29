@@ -43,6 +43,12 @@ def test_locale_is_required_and_known(make_config, line):
         make_config(text=BASE_CONFIG.replace('locale = "en"', line))
 
 
+@pytest.mark.parametrize("line", ['timezone = "Mars/Olympus_Mons"', ""])
+def test_timezone_is_required_and_known(make_config, line):
+    with pytest.raises(ConfigError, match="timezone"):
+        make_config(text=BASE_CONFIG.replace('timezone = "Europe/Berlin"', line))
+
+
 def test_rejects_plain_http_api_root(make_config):
     with pytest.raises(ConfigError, match="https"):
         make_config(api_root="http://example.com")
