@@ -78,3 +78,21 @@ def test_russian_private_keywords(caption, private):
 )
 def test_other_private_keywords(code, caption, private):
     assert is_private_caption(caption, load_locale(code).private_keywords) is private
+
+
+@pytest.mark.parametrize("code", ["ru", "uk", "sr"])
+def test_service_texts_render(code):
+    loc = load_locale(code)
+    line = loc.service_text(
+        "line",
+        headline=loc.service_text("attention"),
+        last_intake=loc.service_text("never"),
+        snapshot=loc.service_text("no_snapshot"),
+        documents=loc.service_text("unavailable", error="PermissionError"),
+        pending_copies=2,
+        failed_copies=1,
+        unknown_sends=0,
+    )
+    assert "PermissionError" in line
+    assert "{" not in line
+    assert loc.service_text("status_button")

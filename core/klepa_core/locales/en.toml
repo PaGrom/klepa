@@ -18,3 +18,22 @@ files = { one = "📄 got {n} file", other = "📄 got {n} files" }
 [spaces]
 shared_folder = "Shared"
 private_keywords = ["just for me", "only for me", "private", "personal"]
+
+[service]
+status_button = "Status"
+not_yet = "The mechanic arrives in a later stage. For now I send alerts and the daily line, and the Status button shows how things are."
+button_expired = "This button no longer works."
+all_good = "✅ All good"
+attention = "⚠️ Needs attention"
+line = "{headline} · last intake: {last_intake} · snapshot: {snapshot} · documents folder: {documents} · waiting to copy: {pending_copies} · copy conflicts: {failed_copies} · unconfirmed sends in 48 h: {unknown_sends}"
+snapshot = "#{generation} {hash} ({integrity})"
+never = "none yet"
+no_snapshot = "none yet"
+ok = "ok"
+unavailable = "unavailable ({error})"
+alert_documents_unavailable = "⚠️ The documents folder is not available ({error}). Files are still received and will be copied when it is back."
+alert_permission_denied = "⚠️ macOS denies Core access to the documents folder ({error}). Allow {interpreter} in System Settings → Privacy & Security → Full Disk Access, or accept the macOS prompt. Then restart Core."
+alert_channel_dead = "⚠️ Telegram refuses the family bot's polling ({error}). Telegram keeps messages for 24 hours."
+alert_snapshot_failed = "⚠️ The daily snapshot failed ({error})."
+alert_restarted = "⚠️ Core restarted after an unexpected stop."
+alert_album_private_after_copy = "⚠️ An album became private after some of its files had been copied to the shared folder. Copied files: {count}. Please move them by hand."

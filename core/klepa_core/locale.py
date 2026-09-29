@@ -16,6 +16,25 @@ from pathlib import Path
 from typing import Any
 
 TEXT_KEYS = ("stage1", "start", "no_commands", "unsupported", "too_large", "failed")
+SERVICE_FIELDS: dict[str, tuple[str, ...]] = {
+    "status_button": (),
+    "not_yet": (),
+    "button_expired": (),
+    "all_good": (),
+    "attention": (),
+    "line": ("headline", "last_intake", "snapshot", "documents", "pending_copies", "failed_copies", "unknown_sends"),
+    "snapshot": ("generation", "hash", "integrity"),
+    "never": (),
+    "no_snapshot": (),
+    "ok": (),
+    "unavailable": ("error",),
+    "alert_documents_unavailable": ("error",),
+    "alert_permission_denied": ("error", "interpreter"),
+    "alert_channel_dead": ("error",),
+    "alert_snapshot_failed": ("error",),
+    "alert_restarted": (),
+    "alert_album_private_after_copy": ("count",),
+}
 _CODE = re.compile(r"^[a-z]{2,3}$")
 
 
@@ -59,11 +78,15 @@ class Locale:
     one_voice: str
     voices: str
     files: Mapping[str, str]
+    service: Mapping[str, str]
     shared_folder: str
     private_keywords: tuple[str, ...]
 
     def text(self, key: str) -> str:
         return self.texts[key]
+
+    def service_text(self, key: str, **fields: object) -> str:
+        return self.service[key].format(**fields)
 
     def receipt(self, kinds: Sequence[str]) -> str:
         n = len(kinds)
@@ -125,6 +148,18 @@ def _checked(code: str, raw: dict[str, Any]) -> Locale:
     keywords = spaces.get("private_keywords")
     if not isinstance(keywords, list) or not keywords or not all(is_text(k) for k in keywords):
         raise fail("spaces.private_keywords must be a non-empty list of words")
+    service = raw.get("service") or {}
+    for key, fields in SERVICE_FIELDS.items():
+        template = service.get(key)
+        if not isinstance(template, str) or not is_text(template):
+            raise fail(f"missing service.{key}")
+        for field in fields:
+            if "{" + field + "}" not in template:
+                raise fail(f"service.{key} needs {{{field}}}")
+        try:
+            template.format(**dict.fromkeys(fields, "x"))
+        except (KeyError, IndexError, ValueError):
+            raise fail(f"service.{key} has an unknown placeholder") from None
     return Locale(
         code=code,
         plural=rule,
@@ -133,6 +168,7 @@ def _checked(code: str, raw: dict[str, Any]) -> Locale:
         one_voice=receipts["one_voice"],
         voices=receipts["voices"],
         files={category: files[category] for category in PLURAL_RULES[rule][0]},
+        service={key: service[key] for key in SERVICE_FIELDS},
         shared_folder=spaces["shared_folder"],
         private_keywords=tuple(keywords),
     )

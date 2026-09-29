@@ -22,6 +22,25 @@ files = { one = "got {n} file", other = "got {n} files" }
 [spaces]
 shared_folder = "Shared"
 private_keywords = ["just for me"]
+
+[service]
+status_button = "Status"
+not_yet = "later"
+button_expired = "expired"
+all_good = "good"
+attention = "attention"
+line = "{headline} {last_intake} {snapshot} {documents} {pending_copies} {failed_copies} {unknown_sends}"
+snapshot = "{generation} {hash} {integrity}"
+never = "never"
+no_snapshot = "none"
+ok = "ok"
+unavailable = "unavailable {error}"
+alert_documents_unavailable = "docs {error}"
+alert_permission_denied = "denied {error} {interpreter}"
+alert_channel_dead = "dead {error}"
+alert_snapshot_failed = "snapshot {error}"
+alert_restarted = "restarted"
+alert_album_private_after_copy = "album {count}"
 """
 
 
@@ -93,6 +112,39 @@ def test_complete_locale_from_a_directory_loads(tmp_path):
     ],
 )
 def test_incomplete_locale_is_refused(tmp_path, mutation, message):
+    (tmp_path / "xx.toml").write_text(mutation(COMPLETE), encoding="utf-8")
+    with pytest.raises(LocaleError, match=message):
+        load_locale("xx", directory=tmp_path)
+
+
+def test_english_service_texts():
+    en = load_locale("en")
+    assert en.service_text("status_button") == "Status"
+    line = en.service_text(
+        "line",
+        headline=en.service_text("all_good"),
+        last_intake="2026-10-05 09:00",
+        snapshot=en.service_text("snapshot", generation=3, hash="a1b2c3d4", integrity="ok"),
+        documents=en.service_text("ok"),
+        pending_copies=0,
+        failed_copies=0,
+        unknown_sends=0,
+    )
+    assert line.startswith("✅ All good")
+    assert "#3 a1b2c3d4" in line
+    denied = en.service_text("alert_permission_denied", error="PermissionError", interpreter="/Applications/X")
+    assert "/Applications/X" in denied
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda t: t.replace('status_button = "Status"\n', ""), "service.status_button"),
+        (lambda t: t.replace('unavailable = "unavailable {error}"', 'unavailable = "gone"'), "needs {error}"),
+        (lambda t: t.replace('ok = "ok"', 'ok = "ok {surprise}"'), "unknown placeholder"),
+    ],
+)
+def test_incomplete_service_texts_are_refused(tmp_path, mutation, message):
     (tmp_path / "xx.toml").write_text(mutation(COMPLETE), encoding="utf-8")
     with pytest.raises(LocaleError, match=message):
         load_locale("xx", directory=tmp_path)

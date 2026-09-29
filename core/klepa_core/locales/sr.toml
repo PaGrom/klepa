@@ -19,3 +19,22 @@ files = { one = "📄 primila sam {n} fajl", few = "📄 primila sam {n} fajla",
 shared_folder = "Zajedničko"
 private_keywords = ["samo za mene", "samo meni", "lično", "privatno", "privatni", "privatna", "privatne", "just for me",
                     "private"]
+
+[service]
+status_button = "Status"
+not_yet = "Mehaničar stiže kasnije. Za sada šaljem upozorenja i dnevni izveštaj, a dugme „Status“ pokazuje kako stoje stvari."
+button_expired = "Ovo dugme više ne važi."
+all_good = "✅ Sve je u redu"
+attention = "⚠️ Potrebna je pažnja"
+line = "{headline} · prijem: {last_intake} · snimak: {snapshot} · fascikla dokumenata: {documents} · čeka kopiranje: {pending_copies} · sukoba pri kopiranju: {failed_copies} · nepotvrđenih slanja za 48 h: {unknown_sends}"
+snapshot = "br. {generation} {hash} ({integrity})"
+never = "još nije bilo"
+no_snapshot = "još nema"
+ok = "u redu"
+unavailable = "nedostupna ({error})"
+alert_documents_unavailable = "⚠️ Fascikla dokumenata nije dostupna ({error}). Fajlovi se i dalje primaju i biće kopirani kad se vrati."
+alert_permission_denied = "⚠️ macOS ne pušta jezgro u fasciklu dokumenata ({error}). Dozvoli {interpreter} u „Podešavanja sistema → Privatnost i bezbednost → Pun pristup disku“ ili potvrdi zahtev macOS-a. Zatim ponovo pokreni jezgro."
+alert_channel_dead = "⚠️ Telegram ne daje ažuriranja porodičnog bota ({error}). Telegram čuva poruke 24 sata."
+alert_snapshot_failed = "⚠️ Dnevni snimak nije uspeo ({error})."
+alert_restarted = "⚠️ Jezgro se ponovo pokrenulo posle neočekivanog zaustavljanja."
+alert_album_private_after_copy = "⚠️ Album je postao privatan tek posle kopiranja u zajedničku fasciklu. Kopirano fajlova: {count}. Premesti ih ručno."
