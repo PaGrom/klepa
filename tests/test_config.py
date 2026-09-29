@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from helpers import BASE_CONFIG
@@ -72,3 +74,34 @@ def test_read_token_requires_0600_and_never_echoes_it(make_config, install):
     with pytest.raises(ConfigError) as info:
         read_token(cfg)
     assert "TEST-TOKEN" not in str(info.value)
+
+
+def test_rejects_data_dir_behind_a_symlink_into_cloud_storage(make_config, install):
+    target = install["tmp"] / "Library" / "CloudStorage" / "SomeDrive"
+    target.mkdir(parents=True)
+    link = install["tmp"] / "innocent-looking"
+    link.symlink_to(target)
+    bad = BASE_CONFIG.replace("{data_dir}", str(link / "data"))
+    with pytest.raises(ConfigError, match="iCloud or CloudStorage"):
+        make_config(text=bad)
+
+
+@pytest.mark.parametrize(
+    ("folder", "named"),
+    [("Desktop", "Desktop"), ("Documents", "Documents"), ("desktop", "Desktop")],
+)
+def test_rejects_data_dir_in_folders_icloud_may_sync(make_config, install, monkeypatch, folder, named):
+    home = install["tmp"] / "home"
+    (home / folder).mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    bad = BASE_CONFIG.replace("{data_dir}", str(home / folder / "KlepaData"))
+    with pytest.raises(ConfigError, match=f"~/{named}"):
+        make_config(text=bad)
+
+
+def test_accepts_data_dir_elsewhere_in_home(make_config, install, monkeypatch):
+    home = install["tmp"] / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    good = BASE_CONFIG.replace("{data_dir}", str(home / "KlepaData"))
+    assert make_config(text=good).data_dir == home / "KlepaData"

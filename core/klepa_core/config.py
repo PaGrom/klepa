@@ -15,6 +15,8 @@ from .locale import Locale, LocaleError, available_locales, load_locale
 _PERSON_ID = re.compile(r"^[a-z0-9_-]{1,32}$")
 _FORBIDDEN_DATA_ROOTS = ("Library/CloudStorage", "Library/Mobile Documents")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+# iCloud's "Desktop & Documents Folders" option syncs these; Core cannot tell whether it is on.
+_SYNCABLE_HOME_FOLDERS = ("Desktop", "Documents")
 
 
 class ConfigError(Exception):
@@ -78,6 +80,24 @@ def _abs_path(value: object, key: str) -> Path:
     return path
 
 
+def _inside(path: Path, folder: Path) -> bool:
+    """Whether `path` is `folder` or lies below it, ignoring case like the default macOS volume format."""
+    parts = [part.casefold() for part in path.parts]
+    prefix = [part.casefold() for part in folder.parts]
+    return parts[: len(prefix)] == prefix
+
+
+def _check_data_dir(data_dir: Path) -> None:
+    """Keys and databases must never leave the machine through iCloud or a sync client (#9)."""
+    resolved = data_dir.resolve()  # follows symlinks in the part of the path that exists
+    if any(root.casefold() in str(resolved).casefold() for root in _FORBIDDEN_DATA_ROOTS):
+        raise ConfigError("paths.data_dir must not be inside iCloud or CloudStorage")
+    home = Path.home().resolve()
+    for folder in _SYNCABLE_HOME_FOLDERS:
+        if _inside(resolved, home / folder):
+            raise ConfigError(f"paths.data_dir must not be inside ~/{folder}: iCloud may sync it")
+
+
 def _members(items: object) -> tuple[Member, ...]:
     members: list[Member] = []
     for i, item in enumerate(items if isinstance(items, list) else []):
@@ -122,8 +142,7 @@ def load_config(path: Path) -> Config:
     intake = raw.get("intake", {})
 
     data_dir = _abs_path(paths.get("data_dir"), "paths.data_dir")
-    if any(root in str(data_dir) for root in _FORBIDDEN_DATA_ROOTS):
-        raise ConfigError("paths.data_dir must not be inside iCloud or CloudStorage")
+    _check_data_dir(data_dir)
     api_root = str(telegram.get("api_root", "https://api.telegram.org")).rstrip("/")
     if not _safe_api_root(api_root):
         raise ConfigError("telegram.api_root must be https (or plain http to a loopback address, for tests)")
