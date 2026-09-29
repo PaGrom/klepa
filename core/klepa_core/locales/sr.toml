@@ -17,4 +17,5 @@ files = { one = "📄 primila sam {n} fajl", few = "📄 primila sam {n} fajla",
 
 [spaces]
 shared_folder = "Zajedničko"
-private_keywords = ["samo za mene", "samo meni", "lično", "privatno", "just for me", "private"]
+private_keywords = ["samo za mene", "samo meni", "lično", "privatno", "privatni", "privatna", "privatne", "just for me",
+                    "private"]

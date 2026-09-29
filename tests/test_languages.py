@@ -43,6 +43,9 @@ def test_single_and_voice_receipts(code, one_file, one_voice, voices):
         ("отлично, вот документы", False),
         ("наличные", False),
         ("удостоверение личности", False),
+        ("личные фото", True),
+        ("личный паспорт", True),
+        ("личная переписка", True),
     ],
 )
 def test_russian_private_keywords(caption, private):
@@ -53,7 +56,10 @@ def test_russian_private_keywords(caption, private):
     "code, caption, private",
     [
         ("uk", "тільки для мене", True), ("uk", "Особисто!", True), ("uk", "посвідчення особи", False),
+        ("uk", "особисті фото", True), ("uk", "особистий документ", True),
         ("sr", "samo za mene", True), ("sr", "Lično!", True), ("sr", "lična karta", False),
+        ("sr", "privatne slike", True),
+        ("en", "personal documents", True),
     ],
 )
 def test_other_private_keywords(code, caption, private):

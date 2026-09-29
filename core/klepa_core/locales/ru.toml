@@ -17,4 +17,5 @@ files = { one = "📄 получила {n} файл", few = "📄 получил
 
 [spaces]
 shared_folder = "Общее"
-private_keywords = ["только для меня", "только мне", "лично", "личное", "just for me", "private"]
+private_keywords = ["только для меня", "только мне", "лично", "личное", "личный", "личная", "личные", "личных",
+                    "just for me", "private"]

@@ -17,4 +17,4 @@ files = { one = "📄 got {n} file", other = "📄 got {n} files" }
 
 [spaces]
 shared_folder = "Shared"
-private_keywords = ["just for me", "only for me", "private"]
+private_keywords = ["just for me", "only for me", "private", "personal"]

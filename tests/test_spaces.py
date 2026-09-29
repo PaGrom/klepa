@@ -13,6 +13,8 @@ KEYWORDS = ("just for me", "private")
         ("Private!", True),
         ("this is private", True),
         ("JUST FOR ME", True),
+        ("just  for\u00a0me", True),  # a doubled space and a no-break space
+        ("just\nfor me", True),
         ("privately owned", False),
         ("unprivate", False),
         (None, False),
