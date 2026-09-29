@@ -1,15 +1,16 @@
 """Evidence store (spec §5.3–5.5): originals are written once and never changed.
 
-Order of writes: the file lands in incoming/ first (F_FULLFSYNC, O_EXCL), then its row in core.db,
-then a verified copy and a signed card in the documents folder. A row never points to a missing file.
+Order of writes: the file lands in incoming/ first (a temporary file with F_FULLFSYNC, then a rename that
+never replaces), then its row in core.db, then a verified copy and a signed card in the documents folder.
+A row never points to a missing file, and a retry after a crash reuses the file under its stable id.
 """
 from __future__ import annotations
 
 import asyncio
 import errno
 import hashlib
+import hmac
 import json
-import secrets
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from . import cards
 from .db import transaction
-from .durable import write_exclusive, write_new_atomically
+from .durable import write_new_atomically
 from .events import EventLog, utc_now_iso
 from .names import disk_name
 
@@ -48,10 +49,6 @@ class CopyConflict(Exception):
     """The documents folder already holds different content under our name."""
 
 
-def new_evidence_id() -> str:
-    return "ev" + secrets.token_hex(10)
-
-
 def ingest_key(chat_id: int, message_id: int) -> str:
     return f"telegram:{chat_id}:{message_id}"
 
@@ -70,6 +67,11 @@ class EvidenceStore:
     def month(self, unix_seconds: int) -> str:
         return datetime.fromtimestamp(unix_seconds, self.tz).strftime("%Y/%m")
 
+    def evidence_id_for(self, key: str) -> str:
+        """Stable per message and installation, so a retry after a crash finds the file it already wrote."""
+        mac = hmac.new(self.key, b"evidence-id\x00" + key.encode("utf-8"), hashlib.sha256)
+        return "ev" + mac.hexdigest()[:20]
+
     def by_ingest_key(self, key: str) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM evidence WHERE ingest_key=?", (key,)).fetchone()
 
@@ -79,13 +81,13 @@ class EvidenceStore:
         existing = self.by_ingest_key(key)
         if existing is not None:
             return existing
-        evidence_id = new_evidence_id()
+        evidence_id = self.evidence_id_for(key)
         name = disk_name(evidence_id, f.original_name)
         month = self.month(f.message_date)
         directory = self.incoming_dir / month
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        await asyncio.to_thread(write_exclusive, directory, name, f.data)
         digest = hashlib.sha256(f.data).hexdigest()
+        await asyncio.to_thread(self._write_original, directory, name, f.data, digest)
         with transaction(self.conn):
             self.conn.execute(
                 """INSERT INTO evidence(id, space_id, kind, original_name, disk_name, incoming_path, mime, size,
@@ -107,7 +109,7 @@ class EvidenceStore:
         existing = self.by_ingest_key(key)
         if existing is not None:
             return existing
-        evidence_id = new_evidence_id()
+        evidence_id = self.evidence_id_for(key)
         with transaction(self.conn):
             self.conn.execute(
                 """INSERT INTO evidence(id, space_id, kind, original_name, mime, size, received_at, message_date,
@@ -166,6 +168,16 @@ class EvidenceStore:
         self._deferred.pop(row["id"], None)
         self._set_copy_state(row["id"], "copied", str(relative))
         return True
+
+    @staticmethod
+    def _write_original(directory: Path, name: str, data: bytes, digest: str) -> None:
+        """Write the original once. A complete file left by an interrupted attempt is adopted; other bytes
+        under our name are refused (FileExistsError) and never overwritten."""
+        try:
+            write_new_atomically(directory, name, data)
+        except FileExistsError:
+            if hashlib.sha256((directory / name).read_bytes()).hexdigest() != digest:
+                raise
 
     def _write_copy(self, relative_dir: Path, name: str, data: bytes, card: dict[str, Any]) -> None:
         if not self.documents_dir.is_dir():

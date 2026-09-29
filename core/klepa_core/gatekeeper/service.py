@@ -132,11 +132,13 @@ class Gatekeeper:
             self.journal.mark(update_id, "failed", f"getFile {exc.code}")
             return
         except (NotSent, Ambiguous, TooManyRequests, Unauthorized, DownloadFailed) as exc:
-            self.batcher.release(c.chat_id)
-            self.events.log("attachment_retry", {"update_id": update_id, "error": type(exc).__name__})
-            self._retry_at[update_id] = time.monotonic() + self.retry_seconds
+            self._retry_later(update_id, c, exc)
             return
-        row = await self.store.ingest(self._incoming(update_id, c, data, space_id))
+        try:
+            row = await self.store.ingest(self._incoming(update_id, c, data, space_id))
+        except OSError as exc:  # a full or failing data disk: keep the update and try again later
+            self._retry_later(update_id, c, exc)
+            return
         self._retry_at.pop(update_id, None)
         if row["update_id"] != update_id and self.journal.state(row["update_id"]) == "done":
             # The same message came again under a new update_id after its receipt was queued.
@@ -144,6 +146,14 @@ class Gatekeeper:
             self.journal.mark(update_id, "done", "repeat")
             return
         self.batcher.add(c.chat_id, update_id, c.message_id, att.kind)
+
+    def _retry_later(self, update_id: int, c: Classified, exc: Exception) -> None:
+        assert c.chat_id is not None
+        self.batcher.release(c.chat_id)
+        # Type and errno only: an OSError's text carries a file path.
+        self.events.log("attachment_retry", {"update_id": update_id, "error": type(exc).__name__,
+                                             "errno": getattr(exc, "errno", None)})
+        self._retry_at[update_id] = time.monotonic() + self.retry_seconds
 
     def _too_large(self, update_id: int, c: Classified, space_id: str) -> None:
         assert c.attachment is not None and c.chat_id is not None and c.message_id is not None

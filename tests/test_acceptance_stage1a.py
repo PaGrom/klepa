@@ -1,5 +1,6 @@
 """Acceptance scenarios for stage 1a (spec §13.2: 2, 3, 5, 7, 12, 14, 28, 36; too large; Review Focus 1–3)."""
 import asyncio
+import errno
 import random
 import unicodedata
 
@@ -8,6 +9,7 @@ import pytest
 from helpers import MEMBER, OWNER, STRANGER, copied_count, evidence_rows, query, run_until, sent_texts
 from klepa_core.app import run_service
 from klepa_core.cards import card_file_name, read_card
+from klepa_core import evidence as evidence_module
 from klepa_core.evidence import EvidenceStore
 from klepa_core.journal import InboundJournal
 from klepa_core.keys import load_or_create_key
@@ -82,6 +84,39 @@ async def test_s3_core_killed_mid_save_keeps_one_record_each(fake_tg, make_confi
     assert receipts(fake_tg) == ["📄 got 3 files"]
     assert len(evidence_rows(cfg)) == 3 and len(stored_files(cfg)) == 3
 
+
+async def test_s3_crash_between_the_file_and_its_row_keeps_one_file(fake_tg, make_config, monkeypatch):
+    cfg = make_config(api_root=fake_tg.url)
+    fake_tg.add_document(OWNER, "a.pdf", pdf(1))
+    real_transaction = evidence_module.transaction
+
+    def power_loss(conn):
+        raise Crash("power loss after the file became durable, before its row")
+
+    monkeypatch.setattr(evidence_module, "transaction", power_loss)
+    await crash_run(cfg)
+    assert len(stored_files(cfg)) == 1 and evidence_rows(cfg) == []
+    monkeypatch.setattr(evidence_module, "transaction", real_transaction)
+    await run_until(cfg, lambda: receipts(fake_tg) == ["📄 got it"] and copied_count(cfg) == 1)
+    assert len(stored_files(cfg)) == 1 and len(evidence_rows(cfg)) == 1
+
+
+async def test_full_disk_while_saving_is_retried_not_fatal(fake_tg, make_config, monkeypatch):
+    cfg = make_config(api_root=fake_tg.url)
+    fake_tg.add_document(OWNER, "a.pdf", pdf(1))
+    real_ingest = EvidenceStore.ingest
+    calls = {"n": 0}
+
+    async def full_disk_once(self, f):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(errno.ENOSPC, "No space left on device", "/private/incoming/a.pdf")
+        return await real_ingest(self, f)
+
+    monkeypatch.setattr(EvidenceStore, "ingest", full_disk_once)
+    await run_until(cfg, lambda: receipts(fake_tg) == ["📄 got it"] and copied_count(cfg) == 1)
+    retries = query(cfg, "SELECT data FROM event_log WHERE kind='attachment_retry'")
+    assert retries and "/private/incoming" not in retries[0]["data"]
 
 async def test_s3_crash_before_journaling_redelivers(fake_tg, make_config, monkeypatch):
     cfg = make_config(api_root=fake_tg.url)

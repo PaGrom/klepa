@@ -7,7 +7,8 @@ from klepa_core import db
 from klepa_core.cards import card_file_name, read_card
 from klepa_core.durable import partial_name
 from klepa_core.events import EventLog
-from klepa_core.evidence import EvidenceStore, IncomingFile
+from klepa_core.evidence import EvidenceStore, IncomingFile, ingest_key
+from klepa_core.names import disk_name
 
 KEY = b"k" * 32
 SEPT30_2230_UTC = int(datetime(2026, 9, 30, 22, 30, tzinfo=UTC).timestamp())
@@ -89,3 +90,27 @@ async def test_missing_documents_root_is_not_recreated(store):
     assert not store.documents_dir.exists()
     store.documents_dir.mkdir()
     assert await store.copy_pending() == 1
+
+
+async def test_leftovers_of_an_interrupted_save_are_reused(store):
+    f = incoming()
+    evidence_id = store.evidence_id_for(ingest_key(f.chat_id, f.message_id))
+    month_dir = store.incoming_dir / "2026" / "10"
+    month_dir.mkdir(parents=True)
+    name = disk_name(evidence_id, f.original_name)
+    (month_dir / partial_name(name)).write_bytes(b"half")  # died while writing
+    (month_dir / name).write_bytes(f.data)  # an earlier attempt finished the file but not the row
+    row = await store.ingest(f)
+    assert row["id"] == evidence_id
+    assert sorted(p.name for p in month_dir.iterdir()) == [name]
+
+
+async def test_different_bytes_under_our_name_are_refused(store):
+    f = incoming()
+    month_dir = store.incoming_dir / "2026" / "10"
+    month_dir.mkdir(parents=True)
+    name = disk_name(store.evidence_id_for(ingest_key(f.chat_id, f.message_id)), f.original_name)
+    (month_dir / name).write_bytes(b"something else")
+    with pytest.raises(FileExistsError):
+        await store.ingest(f)
+    assert (month_dir / name).read_bytes() == b"something else"
