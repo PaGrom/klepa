@@ -1,4 +1,4 @@
-"""The space is decided at intake by the caption (spec D32).
+"""The space is decided at intake by the caption (docs/architecture.md: Spaces and privacy, D32).
 
 Keywords match whole words only, so a keyword inside a longer word never makes a file private. Case, runs
 of spaces, line breaks and no-break spaces do not matter.

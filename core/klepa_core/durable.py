@@ -1,4 +1,4 @@
-"""Durable file primitives for macOS (spec §5.3).
+"""Durable file primitives for macOS (docs/architecture.md: Storage).
 
 Plain fsync on macOS does not flush the disk cache, so every durable write uses F_FULLFSYNC.
 """

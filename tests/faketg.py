@@ -1,4 +1,4 @@
-"""Fake Telegram Bot API for tests and the stand (spec §13.1). Never used in production."""
+"""Fake Telegram Bot API for tests (docs/architecture.md: Testing). Never used in production."""
 
 from __future__ import annotations
 

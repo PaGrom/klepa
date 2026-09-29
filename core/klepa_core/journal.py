@@ -1,4 +1,4 @@
-"""Inbound journal (spec §6.1): every Telegram update is stored durably before it is acknowledged.
+"""Inbound journal (docs/architecture.md: Intake): every Telegram update is stored durably before it is acknowledged.
 
 It lives in its own SQLite file, so restoring core.db from a snapshot never touches it.
 """

@@ -1,4 +1,4 @@
-"""Minimal Telegram Bot API client for the gatekeeper (spec D33).
+"""Minimal Telegram Bot API client for the gatekeeper (docs/architecture.md: Intake, D33).
 
 Error messages never include the request URL, because the URL carries the bot token.
 """

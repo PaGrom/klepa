@@ -1,4 +1,4 @@
-"""Classify a raw Telegram update (spec §6.1 step 2). Pure function, no I/O.
+"""Classify a raw Telegram update (docs/architecture.md: Intake). Pure function, no I/O.
 
 Only `message` updates from a private chat where chat.id == from.id == a member are accepted.
 Everything else is rejected (strangers, groups, bots) or ignored (other update types).

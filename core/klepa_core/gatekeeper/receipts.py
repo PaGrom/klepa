@@ -1,4 +1,4 @@
-"""One "got it" receipt per batch of attachments (spec §5.4 "batch", §6.1 step 3).
+"""One "got it" receipt per batch of attachments (docs/architecture.md: Delivery).
 
 A batch is the attachments of one chat with less than `window_seconds` between neighbours (an album
 arrives that way). Journal entries of a batch become 'done' only when its receipt is queued, so after

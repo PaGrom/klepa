@@ -1,4 +1,4 @@
-"""Disk names for originals (spec D27).
+"""Disk names for originals (docs/architecture.md: Storage, D27).
 
 A file is stored as `<evidence_id>-<sanitized name>`: NFC, no path separators, no control or
 bidirectional characters, at most 255 bytes. The original name lives only in the database and

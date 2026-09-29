@@ -1,4 +1,4 @@
-"""Signed provenance cards next to each original (spec §5.3, D24)."""
+"""Signed provenance cards next to each original (docs/architecture.md: Storage, D24)."""
 
 from __future__ import annotations
 

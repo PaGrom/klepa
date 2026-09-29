@@ -1,4 +1,4 @@
-"""core.db: one SQLite database for Core state (spec D16)."""
+"""core.db: one SQLite database for Core state (docs/architecture.md: D16)."""
 
 from __future__ import annotations
 

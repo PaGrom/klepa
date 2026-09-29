@@ -5,7 +5,7 @@ locale = "ru"      # en, ru, sr or uk: what Core says, the shared folder name, p
 
 [paths]
 data_dir = "/Users/you/KlepaData"                # 0700, local disk, not iCloud/CloudStorage
-documents_dir = "/Users/you/KlepaDocuments"      # stage 1a: a local folder; Google Drive comes with plan 1b
+documents_dir = "/Users/you/KlepaDocuments"      # a local folder for now; Google Drive comes with stage 1b
 
 [telegram]
 token_file = "/Users/you/KlepaData/keys/family-bot.token"   # 0600, typed via stdin, never pasted in chat

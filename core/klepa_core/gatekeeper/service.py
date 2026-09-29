@@ -1,4 +1,4 @@
-"""Gatekeeper, stage 1a: Core owns the family bot (spec D33, §6.1).
+"""Gatekeeper, stage 1a: Core owns the family bot (docs/architecture.md: Intake, D33).
 
 In this plan Core answers text itself. Serving text to the OpenClaw host arrives in plan 1c.
 """

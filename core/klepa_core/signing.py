@@ -1,4 +1,4 @@
-"""Canonical JSON and HMAC-SHA256 signatures for cards, manifests and journals (spec D24)."""
+"""Canonical JSON and HMAC-SHA256 signatures for cards, manifests and journals (docs/architecture.md: D24)."""
 
 from __future__ import annotations
 

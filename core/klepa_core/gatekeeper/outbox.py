@@ -1,7 +1,7 @@
 """Core's own outbound messages: receipts and fixed replies (stage 1).
 
 Simplified delivery: PENDING → SENDING → CONFIRMED | RETRY_WAIT | UNKNOWN | FAILED.
-UNKNOWN is never retried automatically. The fenced state machine arrives in stage 4 (spec §6.3).
+UNKNOWN is never retried automatically. The fenced state machine arrives in stage 4 (docs/architecture.md: Delivery).
 """
 
 from __future__ import annotations

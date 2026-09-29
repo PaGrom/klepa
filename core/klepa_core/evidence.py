@@ -1,4 +1,4 @@
-"""Evidence store (spec §5.3-5.5): originals are written once and never changed.
+"""Evidence store (docs/architecture.md: Storage): originals are written once and never changed.
 
 Order of writes: the file lands in incoming/ first (a temporary file with F_FULLFSYNC, then a rename that
 never replaces), then its row in core.db, then a verified copy and a signed card in the documents folder.

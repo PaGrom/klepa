@@ -1,9 +1,23 @@
 [project]
 name = "klepa-engine"
 version = "0.1.0"
-description = "Family memory engine for agent hosts. Stage 1a: Core receives files from Telegram."
+description = "Family second-brain engine for agent hosts: a Telegram gatekeeper that stores documents durably and keeps personal spaces private."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.13"
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Framework :: AsyncIO",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Chat",
+]
 dependencies = ["aiohttp>=3.10"]
+
+[project.urls]
+Homepage = "https://github.com/PaGrom/klepa"
+Issues = "https://github.com/PaGrom/klepa/issues"
 
 [dependency-groups]
 dev = [

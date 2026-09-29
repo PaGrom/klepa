@@ -1,4 +1,4 @@
-"""Acceptance scenarios for stage 1a (spec §13.2: 2, 3, 5, 7, 12, 14, 28, 36; too large; Review Focus 1-3)."""
+"""Acceptance scenarios for stage 1a (docs/architecture.md: Testing)."""
 
 import asyncio
 import errno
