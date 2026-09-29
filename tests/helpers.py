@@ -24,6 +24,7 @@ api_root = "{api_root}"
 [intake]
 batch_window_seconds = 0.2
 poll_timeout_seconds = 1
+album_quiet_seconds = 0.3
 
 [[members]]
 person_id = "owner"
@@ -41,6 +42,14 @@ role = "member"
 
 def sent_texts(fake) -> list[str]:
     return [item["params"]["text"] for item in fake.sent]
+
+
+def pdf(i: int) -> bytes:
+    return b"%PDF-1.4\n" + f"test document {i}\n".encode() * 50
+
+
+def receipts(fake) -> list[str]:
+    return [text for text in sent_texts(fake) if text.startswith(("📄", "🎧"))]
 
 
 def query(cfg, sql, *args):

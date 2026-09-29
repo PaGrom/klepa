@@ -7,7 +7,7 @@ import unicodedata
 
 import pytest
 
-from helpers import MEMBER, OWNER, STRANGER, copied_count, evidence_rows, query, run_until, sent_texts
+from helpers import MEMBER, OWNER, STRANGER, copied_count, evidence_rows, pdf, query, receipts, run_until, sent_texts
 from klepa_core import evidence as evidence_module
 from klepa_core.app import run_service
 from klepa_core.cards import card_file_name, read_card
@@ -21,14 +21,6 @@ EN = load_locale("en")
 
 class Crash(Exception):
     """Stands in for power loss or kill -9 at a chosen point."""
-
-
-def pdf(i: int) -> bytes:
-    return b"%PDF-1.4\n" + f"test document {i}\n".encode() * 50
-
-
-def receipts(fake) -> list[str]:
-    return [text for text in sent_texts(fake) if text.startswith(("📄", "🎧"))]
 
 
 def stored_files(cfg) -> list:

@@ -105,3 +105,11 @@ def test_accepts_data_dir_elsewhere_in_home(make_config, install, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
     good = BASE_CONFIG.replace("{data_dir}", str(home / "KlepaData"))
     assert make_config(text=good).data_dir == home / "KlepaData"
+
+
+def test_album_quiet_period_defaults_to_a_minute(make_config):
+    assert make_config().album_quiet_seconds == 0.3
+    text = BASE_CONFIG.replace("album_quiet_seconds = 0.3\n", "")
+    assert make_config(text=text).album_quiet_seconds == 60.0
+    with pytest.raises(ConfigError, match="album_quiet_seconds"):
+        make_config(text=BASE_CONFIG.replace("album_quiet_seconds = 0.3", "album_quiet_seconds = -1"))

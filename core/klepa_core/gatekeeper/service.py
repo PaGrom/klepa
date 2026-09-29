@@ -127,9 +127,15 @@ class Gatekeeper:
                 return True
         return False
 
-    def _receipt_queued(self, row: Any) -> bool:
-        """Copy only closed batches: until the receipt is queued, an album may still turn personal."""
-        return self.journal.state(row["update_id"]) == "done"
+    def _ready_to_copy(self, row: Any) -> bool:
+        """Copy only closed batches, and album items only after the album has been quiet for a while:
+        until then a late item may still carry a private caption (#15)."""
+        if self.journal.state(row["update_id"]) != "done":
+            return False
+        if row["media_group_id"] is None:
+            return True
+        last = self.store.album_last_received(row["chat_id"], row["media_group_id"])
+        return last is not None and time.time() - last >= self.cfg.album_quiet_seconds
 
     def _incoming(self, update_id: int, c: Classified, data: bytes, space_id: str) -> IncomingFile:
         att = c.attachment
@@ -277,5 +283,5 @@ class Gatekeeper:
 
     async def copy_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            await self.store.copy_pending(ready=self._receipt_queued)
+            await self.store.copy_pending(ready=self._ready_to_copy)
             await _sleep_or_stop(stop, self.copy_interval)

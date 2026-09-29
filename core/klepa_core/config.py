@@ -44,6 +44,7 @@ class Config:
     members: tuple[Member, ...]
     max_file_bytes: int
     batch_window_seconds: float
+    album_quiet_seconds: float
     poll_timeout_seconds: int
     private_keywords: tuple[str, ...]
 
@@ -164,6 +165,10 @@ def load_config(path: Path) -> Config:
     if default_space not in ("shared", "personal"):
         raise ConfigError("spaces.default must be 'shared' or 'personal'")
 
+    album_quiet_seconds = float(intake.get("album_quiet_seconds", 60.0))
+    if album_quiet_seconds < 0:
+        raise ConfigError("intake.album_quiet_seconds must not be negative")
+
     return Config(
         data_dir=data_dir,
         documents_dir=_abs_path(paths.get("documents_dir"), "paths.documents_dir"),
@@ -176,6 +181,7 @@ def load_config(path: Path) -> Config:
         members=_members(raw.get("members")),
         max_file_bytes=int(intake.get("max_file_bytes", 20 * 1024 * 1024)),
         batch_window_seconds=float(intake.get("batch_window_seconds", 2.0)),
+        album_quiet_seconds=album_quiet_seconds,
         poll_timeout_seconds=int(intake.get("poll_timeout_seconds", 30)),
         private_keywords=tuple(str(k) for k in intake.get("private_keywords", locale.private_keywords)),
     )

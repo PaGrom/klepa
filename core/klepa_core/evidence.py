@@ -203,6 +203,21 @@ class EvidenceStore:
             (space_id, chat_id, media_group_id, space_id),
         ).rowcount
 
+    def album_last_received(self, chat_id: int, media_group_id: str) -> float | None:
+        """Unix time at which the latest stored item of an album arrived."""
+        row = self.conn.execute(
+            "SELECT MAX(received_at) AS last FROM evidence WHERE chat_id=? AND media_group_id=?",
+            (chat_id, media_group_id),
+        ).fetchone()
+        return None if row["last"] is None else datetime.fromisoformat(row["last"]).timestamp()
+
+    def album_copied_count(self, chat_id: int, media_group_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE chat_id=? AND media_group_id=? AND copy_state='copied'",
+            (chat_id, media_group_id),
+        ).fetchone()
+        return int(row[0])
+
     async def copy_pending(self, ready: Callable[[sqlite3.Row], bool] | None = None) -> int:
         rows = self.conn.execute("SELECT * FROM evidence WHERE copy_state='pending' ORDER BY received_at").fetchall()
         copied = 0
