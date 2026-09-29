@@ -23,7 +23,8 @@ def sanitize_original_name(name: str | None) -> str:
         if unicodedata.category(ch).startswith("C"):
             continue  # control, format (bidi overrides included), surrogate, private use, unassigned
         kept.append("_" if ch in _SEPARATORS else ch)
-    cleaned = "".join(kept).strip().lstrip(".").strip()
+    # Normalize again: a dropped format character may have kept a combining mark apart.
+    cleaned = unicodedata.normalize("NFC", "".join(kept)).strip().lstrip(".").strip()
     return cleaned or "file"
 
 

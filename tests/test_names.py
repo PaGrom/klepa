@@ -31,6 +31,11 @@ def test_sanitize_normalizes_to_nfc():
     assert sanitize_original_name(nfd) == unicodedata.normalize("NFC", "Café.pdf")
 
 
+def test_sanitize_is_nfc_after_dropping_format_characters():
+    # A zero-width space keeps the accent apart during a first normalization.
+    assert sanitize_original_name("e\u200b\u0301.txt") == unicodedata.normalize("NFC", "e\u0301.txt")
+
+
 def test_disk_name_prefixes_evidence_id():
     assert disk_name(EID, "Scan.pdf") == f"{EID}-Scan.pdf"
 
