@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import secrets
 import stat
 from pathlib import Path
@@ -33,3 +34,39 @@ def load_or_create_key(path: Path, nbytes: int = 32) -> bytes:
     if len(data) < 32:
         raise KeyFileError(f"{path.name} is shorter than 32 bytes")
     return data
+
+
+def _check(key: bytes) -> str:
+    return hashlib.sha256(key).hexdigest()[:8]
+
+
+def paper_copy(key: bytes) -> list[str]:
+    """The key as hex in groups of four for a paper copy (spec 5.3), then a check value that catches a mistyped
+    group when the key is typed back in."""
+    text = key.hex()
+    groups = [text[i : i + 4] for i in range(0, len(text), 4)]
+    lines = [" ".join(groups[i : i + 8]) for i in range(0, len(groups), 8)]
+    return [*lines, f"check {_check(key)}"]
+
+
+def key_from_paper(text: str) -> bytes:
+    """The key back from its paper copy. Raises KeyFileError when it is malformed or does not match its check."""
+    words = text.split()
+    if len(words) < 3 or words[-2] != "check":
+        raise KeyFileError("the paper copy ends with 'check' and its value")
+    try:
+        key = bytes.fromhex("".join(words[:-2]))
+    except ValueError:
+        raise KeyFileError("the paper copy holds hex digits only") from None
+    if len(key) < 32 or _check(key) != words[-1].lower():
+        raise KeyFileError("the paper copy does not match its check value; look for a mistyped group")
+    return key
+
+
+def restore_key(path: Path, key: bytes) -> None:
+    """Write a key typed in from its paper copy. Never replaces an existing key."""
+    ensure_private_dir(path.parent)
+    try:
+        write_exclusive(path.parent, path.name, key, mode=0o600)
+    except FileExistsError:
+        raise KeyFileError(f"{path.name} already exists; move it away first") from None

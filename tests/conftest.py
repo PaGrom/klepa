@@ -1,8 +1,11 @@
+import subprocess
+
 import aiohttp
 import pytest
 
 from faketg import FakeTelegram
 from helpers import BASE_CONFIG, SERVICE_TOKEN, TEST_TOKEN
+from klepa_core import macos
 from klepa_core.config import load_config
 from klepa_core.telegram.client import BotApi
 
@@ -73,3 +76,13 @@ async def service_tg():
 async def service_api(service_tg):
     async with aiohttp.ClientSession() as session:
         yield BotApi(session, service_tg.url, SERVICE_TOKEN)
+
+
+@pytest.fixture(autouse=True)
+def no_launchctl_or_tmutil(monkeypatch):
+    """No test ever changes the machine's launchd agents or Time Machine settings."""
+
+    def pretend(argv):
+        return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+    monkeypatch.setattr(macos, "_run", pretend)

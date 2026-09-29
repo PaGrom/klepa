@@ -1,8 +1,19 @@
+import io
+import os
 import stat
+import sys
 
 import pytest
 
-from klepa_core.keys import KeyFileError, ensure_private_dir, load_or_create_key
+from klepa_core.__main__ import main
+from klepa_core.keys import (
+    KeyFileError,
+    ensure_private_dir,
+    key_from_paper,
+    load_or_create_key,
+    paper_copy,
+    restore_key,
+)
 
 
 def test_creates_private_key_once(tmp_path):
@@ -28,3 +39,36 @@ def test_refuses_open_directory(tmp_path):
     directory.chmod(0o755)
     with pytest.raises(KeyFileError):
         ensure_private_dir(directory)
+
+
+def test_the_paper_copy_types_back_in_and_catches_a_typo(tmp_path):
+    key = bytes(range(32))
+    lines = paper_copy(key)
+    assert len(lines) == 3
+    assert lines[0].startswith("0001 0203 ")
+    assert lines[-1].startswith("check ")
+    assert key_from_paper("\n".join(lines)) == key
+    with pytest.raises(KeyFileError, match="check value"):
+        key_from_paper("\n".join(lines).replace("0001", "0010", 1))
+    path = tmp_path / "keys" / "snapshot-signing.key"
+    restore_key(path, key)
+    assert path.read_bytes() == key
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    with pytest.raises(KeyFileError, match="already exists"):
+        restore_key(path, key)
+
+
+def test_paper_backup_and_restore_through_the_cli(make_config, install, capsys, monkeypatch):
+    cfg = make_config()
+    config = str(install["tmp"] / "config.toml")
+    previous = os.umask(0o022)
+    try:
+        assert main(["keys", "paper-backup", "--config", config]) == 0
+        paper = capsys.readouterr().out.split("\n\n", 1)[1]  # what the owner writes down: the lines after the note
+        key = cfg.signing_key_path.read_bytes()
+        cfg.signing_key_path.rename(install["tmp"] / "lost.key")  # the disk is gone
+        monkeypatch.setattr(sys, "stdin", io.StringIO(paper))
+        assert main(["keys", "restore", "--config", config]) == 0
+    finally:
+        os.umask(previous)
+    assert cfg.signing_key_path.read_bytes() == key
