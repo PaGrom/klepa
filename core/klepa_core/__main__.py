@@ -14,7 +14,7 @@ import aiohttp
 from . import db, macos
 from .app import AlreadyRunning, acquire_lock, init_layout, run_service
 from .config import Config, ConfigError, load_config, read_service_token
-from .keys import KeyFileError, ensure_private_dir, key_from_paper, load_or_create_key, paper_copy, restore_key
+from .keys import KeyFileError, ensure_private_dir, key_from_paper, load_key, paper_copy, restore_key
 from .logs import configure_logging
 from .servicebot import bind_owner_chat, new_bind_code
 from .telegram.client import BotApi
@@ -104,7 +104,7 @@ def _service(action: str) -> int:
 def _keys(cfg: Config, action: str) -> int:
     if action == "paper-backup":
         print(PAPER_NOTE)
-        print("\n".join(paper_copy(load_or_create_key(cfg.signing_key_path))))
+        print("\n".join(paper_copy(load_key(cfg.signing_key_path))))
         return 0
     print("Type the lines of the paper copy, then press Ctrl-D:", file=sys.stderr)
     restore_key(cfg.signing_key_path, key_from_paper(sys.stdin.read()))

@@ -61,14 +61,26 @@ def test_the_paper_copy_types_back_in_and_catches_a_typo(tmp_path):
 def test_paper_backup_and_restore_through_the_cli(make_config, install, capsys, monkeypatch):
     cfg = make_config()
     config = str(install["tmp"] / "config.toml")
+    key = load_or_create_key(cfg.signing_key_path)  # init made it
     previous = os.umask(0o022)
     try:
         assert main(["keys", "paper-backup", "--config", config]) == 0
         paper = capsys.readouterr().out.split("\n\n", 1)[1]  # what the owner writes down: the lines after the note
-        key = cfg.signing_key_path.read_bytes()
         cfg.signing_key_path.rename(install["tmp"] / "lost.key")  # the disk is gone
         monkeypatch.setattr(sys, "stdin", io.StringIO(paper))
         assert main(["keys", "restore", "--config", config]) == 0
     finally:
         os.umask(previous)
     assert cfg.signing_key_path.read_bytes() == key
+
+
+def test_paper_backup_never_makes_a_key(make_config, install, capsys):
+    cfg = make_config()
+    previous = os.umask(0o022)
+    try:
+        # No key yet, or a wrong --config: printing a fresh key would give the owner a worthless paper copy.
+        assert main(["keys", "paper-backup", "--config", str(install["tmp"] / "config.toml")]) == 2
+    finally:
+        os.umask(previous)
+    assert not cfg.signing_key_path.exists()
+    assert "check" not in capsys.readouterr().out

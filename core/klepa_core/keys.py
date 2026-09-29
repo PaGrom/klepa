@@ -27,6 +27,17 @@ def load_or_create_key(path: Path, nbytes: int = 32) -> bytes:
     if not path.exists():
         with contextlib.suppress(FileExistsError):
             write_exclusive(path.parent, path.name, secrets.token_bytes(nbytes), mode=0o600)
+    return _checked_key(path)
+
+
+def load_key(path: Path) -> bytes:
+    """An existing key; never makes one (a paper copy of a fresh key would be worthless)."""
+    if not path.exists():
+        raise KeyFileError(f"{path.name} is missing: run init first, or check --config")
+    return _checked_key(path)
+
+
+def _checked_key(path: Path) -> bytes:
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode & 0o077:
         raise KeyFileError(f"{path.name} must be mode 0600 (is {mode:o})")
