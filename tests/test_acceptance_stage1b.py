@@ -1,8 +1,10 @@
 """Acceptance scenarios for stage 1b (docs/architecture.md: Testing)."""
 
 import asyncio
+import functools
 import json
 import os
+import threading
 import time
 
 import pytest
@@ -22,12 +24,14 @@ from helpers import (
     sent_texts,
     with_service_bot,
 )
-from klepa_core import db
+from klepa_core import app, db
 from klepa_core.app import init_layout, run_service
+from klepa_core.documents import DocumentsFolder
+from klepa_core.evidence import EvidenceStore
 from klepa_core.gatekeeper.service import Gatekeeper
 from klepa_core.keys import load_or_create_key
 from klepa_core.servicebot import ServiceBot
-from klepa_core.snapshot import verify_snapshot
+from klepa_core.snapshot import Snapshotter, verify_snapshot
 
 
 async def test_album_caption_arriving_after_the_first_receipt_still_keeps_the_album_private(fake_tg, make_config):
@@ -191,3 +195,46 @@ async def test_service_token_never_lands_on_disk(fake_tg, service_tg, make_confi
     for path in list(cfg.data_dir.rglob("*")) + list(cfg.documents_dir.rglob("*")):
         if path.is_file() and path.name != "service-bot.token":
             assert secret not in path.read_bytes(), path
+
+
+async def test_a_failing_snapshot_sweep_never_stops_intake(fake_tg, service_tg, make_config, install, monkeypatch):
+    cfg = service_cfg(make_config, install, fake_tg, service_tg)
+
+    def broken(self):
+        raise PermissionError(13, "Permission denied")  # e.g. a snapshot folder Core may no longer remove
+
+    monkeypatch.setattr(Snapshotter, "sweep", broken)
+    fake_tg.add_document(OWNER, "a.pdf", pdf(1))
+    await run_until(cfg, lambda: copied_count(cfg) == 1)
+    assert query(cfg, "SELECT id FROM event_log WHERE kind='snapshot_sweep_failed'")
+
+
+async def test_a_hanging_documents_folder_never_blocks_intake_or_the_service_bot(
+    fake_tg, service_tg, make_config, install, monkeypatch
+):
+    cfg = service_cfg(make_config, install, fake_tg, service_tg)
+    release = threading.Event()
+    write_copy = EvidenceStore._write_copy
+
+    def hanging(self, *args):
+        release.wait(60)  # e.g. a macOS permission prompt nobody answers
+        return write_copy(self, *args)
+
+    monkeypatch.setattr(EvidenceStore, "_write_copy", hanging)
+    monkeypatch.setattr(app, "DocumentsFolder", functools.partial(DocumentsFolder, timeout=0.5))
+    fake_tg.add_document(OWNER, "a.pdf", pdf(1))
+    asked: set[str] = set()
+
+    def progress():
+        if not asked and receipts(fake_tg):
+            service_tg.add_text(OWNER, "/status")
+            asked.add("status")
+        attention = any(t.startswith("⚠️ Needs attention") for t in sent_texts(service_tg))
+        return bool(receipts(fake_tg)) and bool(documents_alerts(service_tg)) and attention
+
+    try:
+        await run_until(cfg, progress)
+    finally:
+        release.set()
+    status = next(t for t in sent_texts(service_tg) if t.startswith("⚠️ Needs attention"))
+    assert "unavailable (DocumentsTimeout)" in status

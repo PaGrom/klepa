@@ -87,6 +87,15 @@ def _service_token(cfg: Config, events: EventLog) -> str | None:
         return None
 
 
+async def _sweep_snapshots(snapshots: Snapshotter, events: EventLog) -> None:
+    """Clean up half-built snapshots of a crash (the data disk only). A failure here never keeps intake down."""
+    try:
+        await asyncio.to_thread(snapshots.sweep)
+    except Exception as exc:
+        events.log("snapshot_sweep_failed", {"error": type(exc).__name__})
+        log.warning("the snapshot sweep failed: %s", type(exc).__name__)
+
+
 class Backups:
     """The daily snapshot, and retries of its copy into the documents folder."""
 
@@ -165,13 +174,13 @@ async def run_service(
         token = read_token(cfg)
         key = load_or_create_key(cfg.signing_key_path)
         snapshots = Snapshotter(cfg, key)
-        await asyncio.to_thread(snapshots.sweep)  # half-built snapshots of a crash; the data disk only
         documents = DocumentsFolder(cfg.documents_dir)
         conn = db.connect(cfg.core_db_path)
         journal = InboundJournal(cfg.journal_path)
         try:
             events = EventLog(conn)
             crashed = _stopped_unexpectedly(conn)
+            await _sweep_snapshots(snapshots, events)
             service_token = _service_token(cfg, events)
             store = EvidenceStore(
                 conn, cfg.incoming_dir, cfg.documents_dir, key, cfg.timezone, events, documents=documents
