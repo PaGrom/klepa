@@ -295,6 +295,19 @@ async def test_review_focus_truncated_download_is_retried_and_stored_intact(fake
     assert query(cfg, "SELECT id FROM event_log WHERE kind='attachment_retry'")
 
 
+async def test_a_file_that_never_downloads_is_given_up_and_the_sender_told(fake_tg, make_config):
+    cfg = make_config(api_root=fake_tg.url)
+    update = fake_tg.add_document(OWNER, "a.pdf", pdf(1) * 50)
+    fake_tg.fail("download", drop=True, times=100)
+    await run_until(cfg, lambda: sent_texts(fake_tg) == [EN.text("failed")], timeout=20)
+    assert evidence_rows(cfg) == []
+    journal = InboundJournal(cfg.journal_path)
+    try:
+        assert journal.state(update["update_id"]) == "failed"
+    finally:
+        journal.close()
+    assert len(query(cfg, "SELECT id FROM event_log WHERE kind='attachment_retry'")) == 4
+
 async def test_review_focus_restart_in_the_middle_of_an_album(fake_tg, make_config, monkeypatch):
     cfg = make_config(api_root=fake_tg.url)
     for i in range(5):

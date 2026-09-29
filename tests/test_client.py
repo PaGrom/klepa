@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from helpers import OWNER, TEST_TOKEN
@@ -70,3 +72,13 @@ async def test_get_file_too_big(fake_tg, api):
     update = fake_tg.add_document(OWNER, "big.pdf", b"z", file_size=25 * 1024 * 1024)
     with pytest.raises(BadRequest, match="too big"):
         await api.get_file(update["message"]["document"]["file_id"])
+
+
+async def test_stalled_download_fails_fast(fake_tg, api):
+    update = fake_tg.add_document(OWNER, "a.pdf", b"y" * 100_000)
+    info = await api.get_file(update["message"]["document"]["file_id"])
+    fake_tg.fail("download", stall=True)
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(DownloadFailed):
+        await api.download(info["file_path"], 1_000_000, read_timeout=0.3)
+    assert asyncio.get_running_loop().time() - started < 1.5

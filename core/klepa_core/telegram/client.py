@@ -91,12 +91,14 @@ class BotApi:
     async def get_file(self, file_id: str) -> dict[str, Any]:
         return await self.call("getFile", {"file_id": file_id}, timeout=30)
 
-    async def download(self, file_path: str, max_bytes: int) -> bytes:
+    async def download(self, file_path: str, max_bytes: int, *, read_timeout: float = 60.0) -> bytes:
+        """A silent connection fails after `read_timeout`, so one stalled download cannot hold intake for long."""
         url = f"{self._base}/file/bot{self._token}/{file_path}"
         chunks: list[bytes] = []
         total = 0
+        timeout = aiohttp.ClientTimeout(total=600, sock_connect=30, sock_read=read_timeout)
         try:
-            async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=600)) as resp:
+            async with self._session.get(url, timeout=timeout) as resp:
                 if resp.status != 200:
                     raise DownloadFailed(f"download: HTTP {resp.status}")
                 expected = resp.content_length

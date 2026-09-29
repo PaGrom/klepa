@@ -20,6 +20,9 @@ from .intake import Classified, classify
 from .outbox import Outbox
 from .receipts import ReceiptBatcher
 
+MAX_FILE_ATTEMPTS = 5  # failed downloads or saves of one file before the sender is asked to send it again
+
+
 async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(stop.wait(), timeout=seconds)
@@ -40,6 +43,7 @@ class Gatekeeper:
         self.retry_seconds = retry_seconds
         self.members: dict[int, Member] = cfg.members_by_telegram_id()
         self._retry_at: dict[int, float] = {}
+        self._attempts: dict[int, int] = {}
 
     async def process_pending(self) -> None:
         """Finish journaled updates left 'new' by a crash or a failed attempt."""
@@ -126,10 +130,7 @@ class Gatekeeper:
             if "too big" in exc.description.lower():
                 self._too_large(update_id, c, space_id)
                 return
-            self.events.log("attachment_failed", {"update_id": update_id, "code": exc.code})
-            self.outbox.enqueue_text(f"failed:{c.chat_id}:{c.message_id}", c.chat_id, self.cfg.locale.text("failed"),
-                                     reply_to=c.message_id)
-            self.journal.mark(update_id, "failed", f"getFile {exc.code}")
+            self._give_up(update_id, c, f"getFile {exc.code}")
             return
         except (NotSent, Ambiguous, TooManyRequests, Unauthorized, DownloadFailed) as exc:
             self._retry_later(update_id, c, exc)
@@ -140,6 +141,7 @@ class Gatekeeper:
             self._retry_later(update_id, c, exc)
             return
         self._retry_at.pop(update_id, None)
+        self._attempts.pop(update_id, None)
         if row["update_id"] != update_id and self.journal.state(row["update_id"]) == "done":
             # The same message came again under a new update_id after its receipt was queued.
             self.batcher.release(c.chat_id)
@@ -150,10 +152,24 @@ class Gatekeeper:
     def _retry_later(self, update_id: int, c: Classified, exc: Exception) -> None:
         assert c.chat_id is not None
         self.batcher.release(c.chat_id)
+        if isinstance(exc, (DownloadFailed, Ambiguous, OSError)):  # trouble with this file, not with the channel
+            self._attempts[update_id] = self._attempts.get(update_id, 0) + 1
+            if self._attempts[update_id] >= MAX_FILE_ATTEMPTS:
+                self._give_up(update_id, c, type(exc).__name__)
+                return
         # Type and errno only: an OSError's text carries a file path.
         self.events.log("attachment_retry", {"update_id": update_id, "error": type(exc).__name__,
                                              "errno": getattr(exc, "errno", None)})
         self._retry_at[update_id] = time.monotonic() + self.retry_seconds
+
+    def _give_up(self, update_id: int, c: Classified, reason: str) -> None:
+        assert c.chat_id is not None and c.message_id is not None
+        self._attempts.pop(update_id, None)
+        self._retry_at.pop(update_id, None)
+        self.events.log("attachment_failed", {"update_id": update_id, "reason": reason})
+        self.outbox.enqueue_text(f"failed:{c.chat_id}:{c.message_id}", c.chat_id, self.cfg.locale.text("failed"),
+                                 reply_to=c.message_id)
+        self.journal.mark(update_id, "failed", reason)
 
     def _too_large(self, update_id: int, c: Classified, space_id: str) -> None:
         assert c.attachment is not None and c.chat_id is not None and c.message_id is not None

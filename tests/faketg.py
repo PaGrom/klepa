@@ -113,10 +113,11 @@ class FakeTelegram:
         return update
 
     def fail(self, method: str, *, status: int = 500, description: str = "Internal Server Error",
-             retry_after: float | None = None, drop: bool = False, times: int = 1) -> None:
+             retry_after: float | None = None, drop: bool = False, stall: bool = False, times: int = 1) -> None:
         for _ in range(times):
             self.failures.setdefault(method, []).append(
-                {"status": status, "description": description, "retry_after": retry_after, "drop": drop})
+                {"status": status, "description": description, "retry_after": retry_after, "drop": drop,
+                 "stall": stall})
 
     # ---- HTTP --------------------------------------------------------------------------------
     async def _api(self, request: web.Request) -> web.StreamResponse:
@@ -185,11 +186,13 @@ class FakeTelegram:
             return web.Response(status=404)
         queue = self.failures.get("download")
         if queue:
-            queue.pop(0)
+            failure = queue.pop(0)
             response = web.StreamResponse(status=200)
             response.content_length = len(entry["data"])
             await response.prepare(request)
             await response.write(entry["data"][: len(entry["data"]) // 2])
+            if failure["stall"]:
+                await asyncio.sleep(2)  # the connection stays open and silent
             request.transport.close()
             return response
         return web.Response(body=entry["data"], content_type="application/octet-stream")
