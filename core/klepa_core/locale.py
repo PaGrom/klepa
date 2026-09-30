@@ -29,6 +29,7 @@ SERVICE_FIELDS: dict[str, tuple[str, ...]] = {
     "ok": (),
     "unavailable": ("error",),
     "alert_documents_unavailable": ("error",),
+    "alert_documents_timeout": ("error", "interpreter"),
     "alert_permission_denied": ("error", "interpreter"),
     "alert_channel_dead": ("error",),
     "alert_snapshot_failed": ("error",),

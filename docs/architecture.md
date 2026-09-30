@@ -142,7 +142,7 @@ Code: `klepa_core/servicebot.py`, `klepa_core/alerts.py`, `klepa_core/health.py`
 - every send is an event in the log.
 
 **Alerts,** at most one per class per period:
-- the documents folder is unavailable, or macOS denies access (the alert names the interpreter to allow);
+- the documents folder is unavailable, macOS denies access, or the folder does not answer (the last two name the interpreter to allow; a folder that hangs often means a macOS prompt is waiting for an answer);
 - Telegram refuses the family bot's polling;
 - the daily snapshot failed;
 - Core restarted after an unexpected stop;

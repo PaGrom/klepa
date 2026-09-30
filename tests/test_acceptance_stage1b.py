@@ -225,9 +225,12 @@ async def test_a_hanging_documents_folder_never_blocks_intake_or_the_service_bot
     fake_tg.add_document(OWNER, "a.pdf", pdf(1))
     asked: set[str] = set()
 
+    def hang_alerts():
+        return [text for text in sent_texts(service_tg) if text.startswith("⚠️ The documents folder does not answer")]
+
     def progress():
         # Ask only once the copy has timed out: from then on the folder is stuck, and the probe must say so.
-        if not asked and documents_alerts(service_tg):
+        if not asked and hang_alerts():
             service_tg.add_text(OWNER, "/status")
             asked.add("status")
         attention = any(t.startswith("⚠️ Needs attention") for t in sent_texts(service_tg))
@@ -239,3 +242,4 @@ async def test_a_hanging_documents_folder_never_blocks_intake_or_the_service_bot
         release.set()
     status = next(t for t in sent_texts(service_tg) if t.startswith("⚠️ Needs attention"))
     assert "unavailable (DocumentsTimeout)" in status
+    assert "prompt" in hang_alerts()[0]

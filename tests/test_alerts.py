@@ -93,3 +93,15 @@ def test_unknown_alert_is_a_programming_error(setup):
     cfg, conn, events, outbox, _ = setup
     with pytest.raises(ValueError, match="unknown alert"):
         Alerts(conn, outbox, events, cfg.locale).raise_("sky_is_falling")
+
+
+def test_a_folder_that_does_not_answer_points_at_a_waiting_macos_prompt(setup):
+    cfg, conn, events, outbox, now = setup
+    bind(conn)
+    alerts = Alerts(conn, outbox, events, cfg.locale, clock=lambda: now[0], documents_grace=0)
+    # The live run: macOS waited 13 hours for an answer, and the alert gave no hint.
+    assert alerts.documents_failed("DocumentsTimeout", errno.ETIMEDOUT)
+    (text,) = (text for _, text in queued(conn))
+    assert text.startswith("⚠️ The documents folder does not answer (DocumentsTimeout)")
+    assert "prompt" in text
+    assert "python" in text.lower()

@@ -23,6 +23,7 @@ from .locale import Locale
 
 DEFAULT_LIMITS: dict[str, float] = {
     "documents_unavailable": 6 * 3600,
+    "documents_timeout": 6 * 3600,
     "permission_denied": 6 * 3600,
     "channel_dead": 3600,
     "snapshot_failed": 12 * 3600,
@@ -88,9 +89,11 @@ class Alerts:
             self._documents_failing_since = now
         if now - self._documents_failing_since < self.documents_grace:
             return False
+        interpreter = str(Path(sys.executable).resolve())  # the binary macOS asks about
         if code in (errno.EPERM, errno.EACCES):
-            interpreter = str(Path(sys.executable).resolve())  # the binary macOS asks about
             self.raise_("permission_denied", error=error, interpreter=interpreter)
+        elif code == errno.ETIMEDOUT:  # a hang: often a macOS prompt waiting for an answer
+            self.raise_("documents_timeout", error=error, interpreter=interpreter)
         else:
             self.raise_("documents_unavailable", error=error)
         return True
