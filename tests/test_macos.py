@@ -1,3 +1,4 @@
+import os
 import plistlib
 import stat
 import subprocess
@@ -101,3 +102,30 @@ def test_keys_are_excluded_from_time_machine_and_a_failure_is_reported(tmp_path)
     assert macos.exclude_from_time_machine(tmp_path, run=run) is None
     assert run.calls == [["tmutil", "addexclusion", str(tmp_path)]]
     assert macos.exclude_from_time_machine(tmp_path, run=FakeRun({"addexclusion"})) == "boom"
+
+
+def test_init_keeps_token_files_outside_keys_out_of_time_machine(make_config, install, monkeypatch):
+    from helpers import BASE_CONFIG
+    from klepa_core.__main__ import main
+
+    elsewhere = install["tmp"] / "secrets" / "family-bot.token"  # the config may keep a token outside keys/
+    elsewhere.parent.mkdir()
+    elsewhere.write_text("123:TEST-TOKEN")
+    elsewhere.chmod(0o600)
+    make_config(text=BASE_CONFIG.replace("{token_file}", str(elsewhere)))
+    calls = []
+
+    def record(argv):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+
+    monkeypatch.setattr(macos, "_run", record)
+    previous = os.umask(0o022)
+    try:
+        assert main(["init", "--config", str(install["tmp"] / "config.toml")]) == 0
+    finally:
+        os.umask(previous)
+    assert calls == [
+        ["tmutil", "addexclusion", str(install["data_dir"] / "keys")],
+        ["tmutil", "addexclusion", str(elsewhere)],
+    ]

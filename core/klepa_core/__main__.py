@@ -83,9 +83,15 @@ def _bind_service_bot(cfg: Config) -> int:
 
 
 def _exclude_keys_from_backups(cfg: Config) -> None:
-    problem = macos.exclude_from_time_machine(cfg.keys_dir)
-    if problem is not None:
-        print(f"klepa-core: warning: keys/ is not excluded from Time Machine: {problem}", file=sys.stderr)
+    """keys/ and the bot tokens never go into Time Machine backups (spec 5.3), wherever the config keeps them."""
+    paths = [cfg.keys_dir]
+    for token_file in (cfg.token_file, cfg.service_token_file):
+        if token_file is not None and not token_file.is_relative_to(cfg.keys_dir):
+            paths.append(token_file)
+    for path in paths:
+        problem = macos.exclude_from_time_machine(path)
+        if problem is not None:
+            print(f"klepa-core: warning: {path.name} is not excluded from Time Machine: {problem}", file=sys.stderr)
 
 
 def _service(action: str) -> int:
