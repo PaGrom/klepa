@@ -248,7 +248,7 @@ A stage is done when its acceptance scenarios pass on the test stand.
 | Stage | Scope |
 |---|---|
 | 1a | Core intake: journal, attachments, receipts, spaces, signed cards, locales. **Done.** |
-| 1b | Service bot for alerts and buttons; signed daily snapshots with a generation number; the daily "all good" line; Core as a launchd service with its own interpreter; at start it probes the documents folder and names the macOS permission it lacks. |
+| 1b | Service bot for alerts and buttons; signed daily snapshots with a generation number; the daily "all good" line; Core as a launchd service with its own interpreter; at start it probes the documents folder and names the macOS permission it lacks. **Done.** |
 | 1c | A dedicated OpenClaw install with a reference config; egress proxy; host-facing API with a fake token and accept-and-hold; adapter plugin with heartbeat; supervision with a live probe at start. |
 | 2 | Processing in a sandbox: transcription and OCR, text versions of attachments, search and send tools, photo drafts to PDF, a page viewer. |
 | 3 | Knowledge: facts with verified quotes, instructions, session taint, disclosure journal, `make_private`. |

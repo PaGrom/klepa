@@ -8,7 +8,7 @@ Klepa is a family second-brain engine for AI agent hosts.
 
 Family members send documents, photos and voice messages to a Telegram bot. Klepa keeps every original safe on the family's own Mac and files it into a shared or a personal space. In later stages it will let an agent host such as OpenClaw answer questions about those files, without ever holding the keys to the family's data.
 
-> **Status: stage 1a.** Core receives files from Telegram and stores them durably. No agent host is connected yet. Run it only against a test bot and with test data.
+> **Status: stage 1b.** Core receives files from Telegram and stores them durably, runs as a launchd service, takes signed daily snapshots and reports to the owner through a service bot. No agent host is connected yet. Run it only against test bots and with test data.
 
 ## Principles
 
@@ -120,7 +120,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and the rules.
 | Stage | Scope | Status |
 |---|---|---|
 | 1a | Core receives files from Telegram and stores them durably | done |
-| 1b | Service bot, signed daily snapshots, Core as a launchd service | planned |
+| 1b | Service bot, signed daily snapshots, Core as a launchd service | done |
 | 1c | OpenClaw behind the gatekeeper: egress proxy, host interface, supervision | planned |
 | 2 | Processing: transcription and OCR in a sandbox, photo drafts to PDF, page viewer | planned |
 | 3 | Knowledge: facts with verified quotes, `make_private`, disclosure journal | planned |
