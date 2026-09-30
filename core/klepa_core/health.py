@@ -10,6 +10,7 @@ import errno
 import os
 import secrets
 import sqlite3
+import stat
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from .durable import write_exclusive
 from .journal import InboundJournal
 
 PROBE_PREFIX = ".klepa-probe-"
+STALE_PROBE_SECONDS = 600.0
 SNAPSHOT_MAX_AGE_SECONDS = 48 * 3600
 UNKNOWN_WINDOW_SECONDS = 48 * 3600  # an unconfirmed send is reported in the daily lines of two days
 
@@ -53,14 +55,29 @@ def probe_documents(documents_dir: Path) -> Probe:
         try:
             if (documents_dir / name).read_bytes() != data:
                 return Probe(False, "ProbeMismatch")
-            if name not in os.listdir(documents_dir):
+            names = os.listdir(documents_dir)
+            if name not in names:
                 return Probe(False, "ProbeNotListed")
+            _remove_stale_probes(documents_dir, names)
         finally:
             with contextlib.suppress(OSError):
                 (documents_dir / name).unlink()
     except OSError as exc:
         return Probe(False, type(exc).__name__, exc.errno)
     return Probe(True)
+
+
+def _remove_stale_probes(documents_dir: Path, names: list[str]) -> None:
+    """Remove probe files left by a Core that was stopped while its probe hung; never anything else."""
+    now = time.time()
+    for name in names:
+        if not name.startswith(PROBE_PREFIX):
+            continue
+        path = documents_dir / name
+        with contextlib.suppress(OSError):
+            info = path.lstat()
+            if stat.S_ISREG(info.st_mode) and now - info.st_mtime > STALE_PROBE_SECONDS:
+                path.unlink()
 
 
 async def check_documents(documents: DocumentsFolder) -> Probe:

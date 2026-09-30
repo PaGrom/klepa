@@ -1,6 +1,7 @@
 import errno
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -175,3 +176,14 @@ def test_line_carries_no_family_data(health_check):
     assert "Secret" not in text
     assert "just for me" not in text
     assert "waiting to copy: 1" in text
+
+
+def test_a_probe_file_left_by_a_stopped_core_is_cleaned_up(tmp_path):
+    stale = tmp_path / ".klepa-probe-0123456789abcdef"  # Core was stopped while its probe hung
+    stale.write_bytes(b"left behind")
+    old = time.time() - 3600
+    os.utime(stale, (old, old))
+    keep = tmp_path / "Shared"
+    keep.mkdir()
+    assert probe_documents(tmp_path) == Probe(True)
+    assert list(tmp_path.iterdir()) == [keep]
