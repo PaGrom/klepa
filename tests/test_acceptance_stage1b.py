@@ -226,11 +226,12 @@ async def test_a_hanging_documents_folder_never_blocks_intake_or_the_service_bot
     asked: set[str] = set()
 
     def progress():
-        if not asked and receipts(fake_tg):
+        # Ask only once the copy has timed out: from then on the folder is stuck, and the probe must say so.
+        if not asked and documents_alerts(service_tg):
             service_tg.add_text(OWNER, "/status")
             asked.add("status")
         attention = any(t.startswith("⚠️ Needs attention") for t in sent_texts(service_tg))
-        return bool(receipts(fake_tg)) and bool(documents_alerts(service_tg)) and attention
+        return bool(receipts(fake_tg)) and attention
 
     try:
         await run_until(cfg, progress)
