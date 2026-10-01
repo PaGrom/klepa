@@ -278,7 +278,7 @@ async def run_service(
                 alerts = Alerts(conn, service_outbox, events, cfg.locale, documents_grace=documents_grace)
                 try:
                     host = _host(cfg, conn, journal, api, outbox, alerts, events, token, host_timing)
-                except (KeyFileError, OSError) as exc:
+                except (KeyFileError, OSError, ValueError) as exc:
                     # Broken host secrets turn the host off. Core keeps receiving and answers text itself.
                     events.log("host_off", {"error": type(exc).__name__})
                     log.warning("the host is off: %s", type(exc).__name__)

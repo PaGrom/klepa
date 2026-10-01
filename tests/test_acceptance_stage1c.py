@@ -379,9 +379,10 @@ async def test_while_core_is_down_the_host_gets_nothing_and_then_the_backlog_com
         await wait_until(lambda: s.host.texts()[-2:] == ["one", "two"], timeout=15)
 
 
-async def test_broken_host_secrets_turn_the_host_off_and_core_runs_on(host_cfg, fake_tg, service_tg):
+@pytest.mark.parametrize("content", [b"", b"\xff\xfe" * 30])  # left empty by a crash; not even text
+async def test_broken_host_secrets_turn_the_host_off_and_core_runs_on(host_cfg, fake_tg, service_tg, content):
     host_cfg.host_token_path.parent.mkdir(mode=0o700, exist_ok=True)
-    host_cfg.host_token_path.write_text("")  # a crash left the file empty
+    host_cfg.host_token_path.write_bytes(content)
     host_cfg.host_token_path.chmod(0o600)
     core, stop = start_core(host_cfg)
     try:

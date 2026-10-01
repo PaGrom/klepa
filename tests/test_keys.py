@@ -103,3 +103,18 @@ def test_the_hosts_fake_token_must_stay_private(tmp_path):
     path.chmod(0o644)
     with pytest.raises(KeyFileError, match="0600"):
         ensure_host_token(path, "123456")
+
+
+def test_a_bot_id_must_be_digits(tmp_path):
+    # A family token without its id part must never end up whole in a file the host reads.
+    with pytest.raises(KeyFileError, match="bot id"):
+        ensure_host_token(tmp_path / "keys" / "host-bot.token", "123456:SECRET")
+
+
+def test_a_token_file_that_is_not_text_is_refused_cleanly(tmp_path):
+    path = tmp_path / "keys" / "host-bot.token"
+    path.parent.mkdir(mode=0o700)
+    path.write_bytes(b"\xff\xfe" * 30)
+    path.chmod(0o600)
+    with pytest.raises(KeyFileError, match="not text"):
+        ensure_host_token(path, "123456")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import re
 import secrets
 import stat
 from pathlib import Path
@@ -51,6 +52,8 @@ def ensure_host_token(path: Path, bot_id: str) -> str:
     """The host's fake family bot token (spec 4.6): 256 random bits, made once per installation, mode 0600. The
     part before the colon is the real bot's id, which is public, so the token looks like the bot's own to the
     host. It is a secret all the same: whoever knows it reads what the gatekeeper serves the host."""
+    if not re.fullmatch(r"\d{1,20}", bot_id):
+        raise KeyFileError("the family bot token has no bot id before its colon")
     ensure_private_dir(path.parent)
     if not path.exists():
         with contextlib.suppress(FileExistsError):  # whole or not at all: a crash never leaves a short token
@@ -58,7 +61,10 @@ def ensure_host_token(path: Path, bot_id: str) -> str:
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode & 0o077:
         raise KeyFileError(f"{path.name} must be mode 0600 (is {mode:o})")
-    token = path.read_text(encoding="utf-8").strip()
+    try:
+        token = path.read_bytes().decode("utf-8").strip()
+    except UnicodeDecodeError:
+        raise KeyFileError(f"{path.name} is not text") from None
     if len(token.partition(":")[2]) < 43:
         raise KeyFileError(f"{path.name} does not hold a token of 256 bits")
     return token
