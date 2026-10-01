@@ -62,13 +62,18 @@ class HostQueue:
         return cursor.rowcount == 1
 
     def add_probe(self) -> int:
-        """The synthetic message of the live probe (spec 4.6), in the probe peer's own chat.
+        """The synthetic message of the live probe (spec 4.6), in the probe peer's own chat. Every earlier probe is
+        retired first.
 
         Its message id grows with the clock as well, so the host, which remembers chat_id:message_id pairs on
         disk, never takes a new probe for a repeat, even after core.db was replaced.
         """
         now = self.clock()
         with transaction(self.conn):
+            # A probe that a stopped Core never retired must not take this probe's turn.
+            self.conn.execute(
+                "UPDATE host_message SET answered_at=? WHERE kind='probe' AND answered_at IS NULL", (now,)
+            )
             last = self.conn.execute(
                 "SELECT COALESCE(MAX(message_id), 0) FROM host_message WHERE chat_id=?", (self.probe_peer,)
             ).fetchone()[0]

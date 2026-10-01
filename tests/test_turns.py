@@ -121,3 +121,12 @@ def test_the_probe_turn_is_marked(setup):
 )
 def test_session_of(session_key, ok):
     assert session_of(session_key, OWNER) is ok
+
+
+def test_a_probe_left_by_a_stopped_core_never_takes_the_next_probes_turn(setup):
+    turns, queue, _, _ = setup
+    queue.add_probe()  # Core stopped in the middle of this probe: it was given to the host and never retired
+    queue.serve(None, 100, everything)
+    probe = queue.add_probe()
+    queue.serve(None, 100, everything)
+    assert start(turns, "run-p", PEER).host_message_id == probe
