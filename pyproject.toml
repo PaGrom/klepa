@@ -49,7 +49,7 @@ src = ["core", "tests"]
 select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "PT", "RUF"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["klepa_core", "helpers", "faketg"]
+known-first-party = ["klepa_core", "helpers", "faketg", "fakeadapter", "fakehost"]
 
 [tool.ruff.lint.per-file-ignores]
 # Letters that look Latin but are Cyrillic are the point of this module.
