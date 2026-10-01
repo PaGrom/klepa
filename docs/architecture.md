@@ -197,7 +197,7 @@ A message is built from the inbound journal when the host polls, so no message t
 
 **The host's messages** (`host/outbox.py`, `host/sanitize.py`):
 - **Accept and hold.** Every `sendMessage` is written to `outbound` durably before the host hears "sent", under a message id from Core's own range (2^41 and up).
-- **Release.** A worker sends the messages one chat at a time, in order, while the adapter's heartbeat is at most 15 seconds old.
+- **Release.** A worker sends the messages one chat at a time, in order, once the gateway has passed the start gate and while the adapter's heartbeat is at most 15 seconds old.
 - **Drop.** A message that has not gone out within ten minutes is dropped with the rest of its chat's queue, and the person gets Core's apology. So does a message Telegram refuses, and the owner gets an alert.
 - **No links.** The host's HTML is rewritten from an allow-list. Formatting survives, links do not: an anchor becomes its text and its address in a code span, and bare web addresses go into code spans too, so no web address from the host is clickable and a hidden one is always shown. E-mail addresses, @mentions and bare names without a path are left to stage 2, together with links that came in the person's own message.
 - **No text kept.** A finished send keeps no text, and a snapshot never holds one that waits.
@@ -209,7 +209,7 @@ A message is built from the inbound journal when the host polls, so no message t
 - `prompt_built` comes from `before_prompt_build`, and `turn_start` from `before_agent_run`. A turn is registered only when it answers an issued message from that sender in that chat, and only after `before_prompt_build` ran for that run. In stage 1 every turn is blocked.
 
 **Supervision** (`host/supervisor.py`, D26):
-- **STARTING.** The gateway runs but gets no messages until it passes the start gate: a full heartbeat within 30 seconds, the gateway ready, and a live probe. The probe is a synthetic message from a peer that no member has. The adapter must report `before_prompt_build` and `before_agent_run` for it, and the host must then write the block to the probe's chat: the turn ended there, without the model. Hooks without `allowConversationAccess` never report, so such a host never gets messages.
+- **STARTING.** The gateway runs but gets no messages and sends nothing until it passes the start gate: a full heartbeat within 30 seconds, the gateway ready, and a live probe. The probe is a synthetic message from a peer that no member has. The adapter must report `before_prompt_build` and `before_agent_run` for it, and the host must then write the block to the probe's chat: the turn ended there, without the model. Hooks without `allowConversationAccess` never report, so such a host never gets messages.
 - **RUNNING.** The host gets messages. A new `boot_id` means the gateway restarted; it passes the gate again, without alerts.
 - **HOLD.** Three minutes without a heartbeat, or the owner's Pause. The host gets no new messages, its sends are held, turns are blocked, and people get a fixed reply at most once per ten minutes per chat. Core keeps receiving files.
 - **STOPPED.** A failed check: the start gate, or a heartbeat that stops matching. For people it looks like HOLD.

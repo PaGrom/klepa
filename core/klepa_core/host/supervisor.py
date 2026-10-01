@@ -1,8 +1,9 @@
 """Supervision of the host gateway (spec 4.6, D26, D20).
 
 States:
-- STARTING: the gateway runs, but gets no messages until it passes the start gate (the spec's "start"
-  paragraph): a full heartbeat within 30 s, the gateway ready, and the live probe;
+- STARTING: the gateway runs, but gets no messages and sends nothing until it passes the start gate (the spec's
+  "start" paragraph): a full heartbeat within 30 s, the gateway ready, and the live probe. Its turns register, so
+  an answer the host repeats after a restart waits and then goes out once;
 - RUNNING: the host gets messages while the heartbeat is at most 15 s old, and its sends leave on the same
   condition. A short pause delays answers without an alarm;
 - HOLD: after three minutes without a heartbeat, or the owner's Pause. No new messages for the host, its sends
@@ -229,8 +230,9 @@ class Supervisor:
         return self.last_heartbeat is not None and self.mono() - self.last_heartbeat <= self.timing.release_within
 
     def may_release(self) -> bool:
-        """The host's sends leave only while the gateway is up and the heartbeat is fresh (spec 4.2)."""
-        return self.state in (GatewayState.STARTING, GatewayState.RUNNING) and self.heartbeat_fresh()
+        """The host's sends leave only from a gateway that passed the start gate, while its heartbeat is fresh
+        (spec 4.2). A restarted gateway's answers wait the few seconds of its gate: its hooks are not proven yet."""
+        return self.state is GatewayState.RUNNING and self.heartbeat_fresh()
 
     def may_serve(self, host_message_id: int, kind: str) -> bool:
         """Text only while RUNNING with a fresh heartbeat: a gateway that restarted is a new boot that has not

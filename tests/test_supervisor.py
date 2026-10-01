@@ -205,12 +205,13 @@ async def test_a_new_boot_passes_the_gate_again_without_alerts(make):
         await gate(supervisor)
         supervisor.on_heartbeat("boot-bbbbbbbb", FULL)  # the gateway restarted (scenario 41)
         assert supervisor.state is GatewayState.STARTING
-        assert supervisor.may_release()  # the new boot's heartbeat is fresh: answers still leave
+        assert not supervisor.may_release()  # a boot that has not passed the gate sends nothing yet
         await wait_until(lambda: supervisor.probe_id is not None)
         supervisor.on_probe_turn(supervisor.probe_id)
         supervisor.on_probe_blocked()
         await wait_until(lambda: supervisor.state is GatewayState.RUNNING)
     assert supervisor.gated_boot == "boot-bbbbbbbb"
+    assert supervisor.may_release()
     assert alerts.raised == []
 
 
