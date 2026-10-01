@@ -32,7 +32,7 @@ Telegram (service bot)  <-->  Core
 - **Watchdog** (stage 4). A tiny launchd job that can only send a fixed alarm.
 - **Maintenance agent** (stage 7). It works in a strict mode, and Core executes its plan from an allow-list.
 
-Stages 1a and 1b implement the gatekeeper's intake, storage, receipts and spaces, the service bot, snapshots and the launchd service. The parts marked with a stage come later (see [Roadmap](#roadmap)).
+Stages 1a and 1b implement the gatekeeper's intake, storage, receipts and spaces, the service bot, snapshots and the launchd service. Stage 1c adds Core's side of the host: the gatekeeper's API for the host, supervision and the egress proxy (see [Host interface](#host-interface)). The parts marked with a stage come later (see [Roadmap](#roadmap)).
 
 ## Intake
 
@@ -51,7 +51,7 @@ Code: `klepa_core/gatekeeper/`, `klepa_core/journal.py`, `klepa_core/telegram/`.
    - Kinds: documents, photos (the largest size), voice messages, audio and video.
    - Size: the Bot API hands bots at most 20 MB. Larger files are recorded as `too_large`, and the sender is asked to send them another way.
    - Failures: a failed download or save is retried. After five failures the sender is asked to send the file again. A silent connection times out after 60 seconds.
-5. **Text.** In stage 1a text and commands get fixed replies. From stage 1c text goes to the host.
+5. **Text.** Without a host, text and commands get fixed replies. With a host set up, members' text goes to the host (see [Host interface](#host-interface)). Commands never do: Core answers them itself.
 
 **Identity comes from Telegram.** A file's sender (`authenticated_subject`) is the Telegram sender of the update Core received itself, never a name claimed in a caption.
 
@@ -63,13 +63,14 @@ The data directory must be mode 0700, on a local disk, and never inside iCloud o
 
 ```
 <data_dir>/
-├─ keys/                      0700: the signing key and the bot tokens, each 0600
+├─ keys/                      0700: the signing key, the bot tokens, the host's fake token and the adapter key, each 0600
 ├─ incoming/YYYY/MM/          originals, <evidence id>-<name>
 ├─ inbound-journal/inbound.db
 ├─ core.db                    members, spaces, evidence, outbound, event log
 ├─ core.lock                  one Core per data directory
 ├─ snapshots/                 signed snapshots of core.db, <day>-g<generation>/
 ├─ logs/                      Core's stdout and stderr under launchd, 0600, tokens redacted
+├─ run/adapter.sock           the adapter plugin's Unix socket, 0600 (with a host)
 └─ .metadata_never_index      keeps Spotlight out
 ```
 
@@ -115,6 +116,7 @@ It is signed with HMAC-SHA256 over canonical JSON. A card without a valid signat
 - A snapshot is built under a `.partial-` name and renamed when complete, locally and then in `documents/_klepa/snapshots/<day>-g<generation>/`. A crash leaves nothing under a final name, and the start-up sweep removes the rest.
 - Retention counts good snapshots only: the latest of each of the last 14 days and the first of each of the last 12 months. A snapshot that failed its integrity check stays two weeks for diagnosis and is never copied.
 - `privacy_journal_head` is reserved for stage 3.
+- The host's messages that wait to be sent are blanked in the copy: a snapshot never holds a family conversation.
 - The signing key lives in `keys/` and on paper: `keys paper-backup` prints it for the owner.
 
 ## Spaces and privacy
@@ -146,13 +148,18 @@ Code: `klepa_core/servicebot.py`, `klepa_core/alerts.py`, `klepa_core/health.py`
 - Telegram refuses the family bot's polling;
 - the daily snapshot failed;
 - Core restarted after an unexpected stop;
-- an album became private after part of it was copied.
+- an album became private after part of it was copied;
+- the host failed its start gate or a check while running;
+- the host's adapter has been silent for three minutes;
+- two clients poll the gatekeeper at once;
+- the host has not polled for five minutes;
+- the egress proxy does not start.
 
-**The daily line.** Once a day (09:00 by default) the bot sends one line: the last intake; the newest snapshot's
+**The daily line.** Once a day (09:00 by default) the bot sends one line: the host's state; the last intake; the newest snapshot's
 generation, hash and integrity; the state of the documents folder; and the counts of waiting copies, copy conflicts
 and sends left unconfirmed in the last 48 hours. It says "Needs attention" when any of these is wrong. A missing line
 means trouble. The Status button under the line sends a fresh one. Its id is one-time, 128-bit, and bound to the chat,
-the message and a lifetime of a week.
+the message and a lifetime of a week. With a host set up, Pause or Resume sits next to Status.
 
 **The documents probe.** Core writes, reads back, lists and removes a small file with a unique name. Listing matters:
 macOS lets a background process without permission write a known path in a protected folder but refuses to list it.
@@ -163,6 +170,59 @@ before it starts, so a job that brings Core down is not repeated in a loop.
 **Fault isolation.** Only family intake can stop Core; launchd then starts it again. The service bot, the scheduler,
 the snapshot copier and the start-up probe restart themselves after a failure, and a broken service bot token turns
 only the service bot off.
+
+## Host interface
+
+Code: `klepa_core/host/`.
+
+Stage 1c puts the agent host behind the gatekeeper. Core's side runs when the config has a `[host]` section ([configuration](configuration.md)); the host's own install and the adapter plugin come next.
+
+**The gatekeeper's API** (`host/api.py`). The host talks to a Telegram-shaped API on `127.0.0.1` with a fake token:
+- the fake token holds 256 random bits and is made once per installation in `keys/host-bot.token` (0600). It is a secret of its own and never the real one;
+- the methods are an exact allow-list: `getUpdates`, `getMe`, `sendChatAction` and `sendMessage`, plus `deleteWebhook`, `deleteMyCommands` and `setMyCommands`, which are answered here and never passed on;
+- `sendMessage` keeps `chat_id`, `text`, `parse_mode` (HTML only) and a reply to an issued message or to the host's own message in the same chat. Everything else is dropped, and link previews are always off;
+- editing, deleting, pinning, reactions, copies, forwards, files and every other method are refused;
+- the `Host` header must be exactly the gatekeeper's address, and a request with `Origin` or `Sec-Fetch-*` is refused, so no web page can reach the port through DNS rebinding;
+- one long poll at a time: a second one gets 409, and the owner gets an alert;
+- at most 32 connections at a time, so a local process that holds idle connections can starve the host but never Core;
+- the host may write only to a member's private chat with an open conversation: a message it was given and has not answered, or an answer less than ten minutes old;
+- every call is an event in the log.
+
+**What the host gets** (`host/queue.py`):
+- members' text messages, each chat strictly in order, and only while the host is RUNNING with a heartbeat at most 15 seconds old;
+- Core's own update numbering, which never goes back, even after a restore;
+- the fields `message_id`, `from`, `chat`, `date` and `text` only. A forwarded message is marked.
+
+A message is built from the inbound journal when the host polls, so no message text lands in `core.db`. Commands, attachments and other updates never reach the host.
+
+**The host's messages** (`host/outbox.py`, `host/sanitize.py`):
+- **Accept and hold.** Every `sendMessage` is written to `outbound` durably before the host hears "sent", under a message id from Core's own range (2^41 and up).
+- **Release.** A worker sends the messages one chat at a time, in order, while the adapter's heartbeat is at most 15 seconds old.
+- **Drop.** A message that has not gone out within ten minutes is dropped with the rest of its chat's queue, and the person gets Core's apology. So does a message Telegram refuses, and the owner gets an alert.
+- **No links.** The host's HTML is rewritten from an allow-list. Formatting survives, links do not: an anchor becomes its text and its address in a code span, and bare web addresses go into code spans too, so no web address from the host is clickable and a hidden one is always shown. E-mail addresses, @mentions and bare names without a path are left to stage 2, together with links that came in the person's own message.
+- **No text kept.** A finished send keeps no text, and a snapshot never holds one that waits.
+
+**The adapter link** (`host/adapter.py`, `host/turns.py`). The adapter plugin talks to Core over a Unix socket, 0600 in a 0700 directory:
+- every message is HMAC-SHA256 signed over its exact bytes with `keys/adapter.key` and carries `(boot_id, seq)`. Core's answers are signed too. A message without the right signature changes nothing;
+- `heartbeat`, every 5 seconds, carries the policy the host runs with, the plugin's hash, its registrations, the model and the runtime;
+- `dispatch` comes from `before_dispatch`. In stage 1 Core answers people itself: "for now I only accept files";
+- `prompt_built` comes from `before_prompt_build`, and `turn_start` from `before_agent_run`. A turn is registered only when it answers an issued message from that sender in that chat, and only after `before_prompt_build` ran for that run. In stage 1 every turn is blocked.
+
+**Supervision** (`host/supervisor.py`, D26):
+- **STARTING.** The gateway runs but gets no messages until it passes the start gate: a full heartbeat within 30 seconds, the gateway ready, and a live probe. The probe is a synthetic message from a peer that no member has. The adapter must report `before_prompt_build` and `before_agent_run` for it, and the host must then write the block to the probe's chat: the turn ended there, without the model. Hooks without `allowConversationAccess` never report, so such a host never gets messages.
+- **RUNNING.** The host gets messages. A new `boot_id` means the gateway restarted; it passes the gate again, without alerts.
+- **HOLD.** Three minutes without a heartbeat, or the owner's Pause. The host gets no new messages, its sends are held, turns are blocked, and people get a fixed reply at most once per ten minutes per chat. Core keeps receiving files.
+- **STOPPED.** A failed check: the start gate, or a heartbeat that stops matching. For people it looks like HOLD.
+
+The service bot's line names the state. Resume passes the start gate again.
+
+**The egress proxy** (`host/egress.py`). All the host's HTTP goes through Core's proxy on `127.0.0.1`, CONNECT tunnels and plain requests alike:
+- the exact host name and port are checked against `host.egress_allow` before any DNS lookup, so a refused name never reaches DNS;
+- an allowed name must resolve to public addresses only;
+- the one loopback destination is the gatekeeper;
+- everything else is refused: the proxy fails closed;
+- a tunnel idle for ten minutes is closed; lookups run on threads of their own, with a timeout;
+- a refusal is logged with a hash of the name, because a name may itself carry data.
 
 ## Delivery
 
@@ -203,8 +263,8 @@ Receipts use the matching form ("1 file", "2 files"). Loading a locale checks th
 - **Trust boundary.** The trust boundary is the macOS user account that runs Core.
 - **Keys and backups.** `keys/` is excluded from Time Machine at `init` and at `service install`. The snapshot signing key has a paper copy.
 - **Logs.** Under launchd, Core's stderr goes to `logs/` (0600), and anything shaped like a bot token is redacted.
-- **Egress** (stage 1c). The host reaches only the model API, through Core's proxy. The proxy checks the exact host name before any DNS lookup and fails closed.
-- **Per-call signatures** (stage 1c). Every call to a Core tool is signed with an HMAC by the adapter, and the model never sees the key.
+- **The host.** It holds a fake token, and reaches Telegram only through the gatekeeper and the internet only through the egress proxy, which checks the exact host name before any DNS lookup and fails closed. The adapter's messages are signed with a key the model never sees.
+- **Per-call signatures** (stage 2). Every call to a Core tool is signed with an HMAC by the adapter, and the model never sees the key.
 
 ## Testing
 
@@ -224,6 +284,16 @@ Receipts use the matching form ("1 file", "2 files"). Loading a locale checks th
   - S36 — a shuffled and repeated album;
   - also: files that are too large, an unavailable or missing documents folder, a truncated download, a full disk and a restart in the middle of an album.
 - **Acceptance scenarios for stage 1b** (`tests/test_acceptance_stage1b.py`): an album whose private caption arrives after the first receipt; the snapshot and the daily line once a day across a restart; the documents folder missing at start and gone in the middle of a run; a revoked family bot token; a restart after a crash; strangers and family members writing to the service bot; a broken service bot token; a failing service loop; the service token never on disk.
+- **Acceptance scenarios for stage 1c, Core's side** (`tests/test_acceptance_stage1c.py`), with a fake host (`tests/fakehost.py`) and a fake adapter plugin (`tests/fakeadapter.py`):
+  - the host gets text only after the live probe, and the stage 1 answer comes back through it;
+  - S16 — no adapter, or hooks without conversation access: the host never gets a message;
+  - S14 — unsigned or foreign adapter messages change nothing;
+  - S43 — commands never reach the host;
+  - S44 — the narrow interface: a wrong token, a foreign `Host`, `Origin`, a second poll, refused methods, a stripped keyboard, a quote from another chat;
+  - S38 — sends held while the adapter is silent leave in order, a restart keeps them, and ten minutes drop them with an apology;
+  - S41 — a gateway restart passes the gate again quietly, and the waiting turn registers;
+  - S12 — while Core is down the host gets nothing, then the backlog in order;
+  - also: HOLD after silence and back, Pause and Resume, and the host's traffic through the egress proxy.
 - **No real system changes.** Tests never run `launchctl` or `tmutil` (`tests/conftest.py`).
 - **Test data.** Tests use synthetic members only.
 - **Test locale.** Tests run on the English locale. `tests/test_languages.py` checks the other languages.

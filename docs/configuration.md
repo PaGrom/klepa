@@ -58,6 +58,19 @@ Optional. Without it Core runs without a service bot, and alerts are only logged
 | `token_file` | yes | Absolute path to a file that holds only the service bot's token, mode 0600. It must differ from `telegram.token_file`. A missing or unreadable token turns the service bot off; Core keeps running. |
 | `api_root` | no | Defaults to `telegram.api_root`. |
 
+## `[host]`
+
+Optional. With it, members' text goes to an agent host behind the gatekeeper ([architecture](architecture.md#host-interface)); without it, Core answers text itself.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `api_port` | `19201` | The gatekeeper's Telegram-shaped API for the host, on `127.0.0.1`. The host's API root is `http://127.0.0.1:<api_port>`, exactly. |
+| `proxy_port` | `19202` | The egress proxy on `127.0.0.1`, the host's proxy for all its HTTP. |
+| `egress_allow` | `[]` | Exact `"name:port"` destinations the host may reach through the proxy, for example `"api.anthropic.com:443"`. No masks and no addresses. The gatekeeper is always allowed. |
+| `socket` | `<data_dir>/run/adapter.sock` | The adapter plugin's Unix socket, in a directory of its own (0700). The path must fit in 103 bytes. |
+
+At its first `run` with this section Core makes two secrets, each 0600 in `keys/`: `host-bot.token`, the host's fake family bot token, and `adapter.key`, which signs the messages between the adapter plugin and Core. The host's configuration points at both files; neither goes into chats, logs or the repository.
+
 ## `[[members]]`
 
 One table per family member. Exactly one member has the role `owner`.

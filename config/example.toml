@@ -39,3 +39,9 @@ daily_line_at = "09:00"    # the service bot's daily line; "off" disables
 # The service bot: alerts, the daily line and a Status button, for the owner only.
 [service_bot]
 token_file = "/Users/you/KlepaData/keys/service-bot.token"   # 0600, typed via stdin, not the family bot's
+
+# The agent host behind the gatekeeper (optional). Without this section Core answers text itself.
+# [host]
+# api_port = 19201                         # the host's API root: http://127.0.0.1:19201
+# proxy_port = 19202                       # the host's proxy for all its HTTP
+# egress_allow = ["api.anthropic.com:443"] # exact names and ports; no masks, no addresses
