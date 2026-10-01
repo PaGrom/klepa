@@ -103,6 +103,48 @@ SCHEMA_V2 = (
     "CREATE INDEX outbound_bot_state ON outbound(bot, state, next_attempt_at)",
 )
 
+# Stage 1c: the host behind the gatekeeper (docs/architecture.md: Host interface). No message text is stored here:
+# core.db goes into snapshots, so a served message is built from the inbound journal when the host polls.
+SCHEMA_V3 = (
+    """CREATE TABLE host_message (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_update_id INTEGER UNIQUE,
+        kind TEXT NOT NULL,
+        chat_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        sender_id INTEGER NOT NULL,
+        date INTEGER NOT NULL,
+        forwarded INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL,
+        answered_at REAL,
+        UNIQUE (chat_id, message_id))""",
+    # update_id is never handed out twice, not even after a restore: max(previous + 1, unix time).
+    """CREATE TABLE host_update (
+        update_id INTEGER PRIMARY KEY,
+        host_message_id INTEGER NOT NULL UNIQUE REFERENCES host_message(id),
+        issued_at REAL NOT NULL,
+        acked_at REAL)""",
+    """CREATE TABLE host_run (
+        run_id TEXT PRIMARY KEY,
+        boot_id TEXT NOT NULL,
+        chat_id INTEGER,
+        sender_id INTEGER,
+        prompt_built_at REAL,
+        host_message_id INTEGER REFERENCES host_message(id),
+        registered_at REAL,
+        expires_at REAL)""",
+    """CREATE TABLE host_notice (
+        chat_id INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        sent_at REAL NOT NULL,
+        PRIMARY KEY (chat_id, kind))""",
+    """CREATE TABLE host_setting (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL)""",
+    "CREATE INDEX host_message_chat ON host_message(chat_id, id)",
+    "CREATE INDEX outbound_origin_state ON outbound(origin, state)",
+)
+
 
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -142,6 +184,12 @@ def migrate(conn: sqlite3.Connection) -> int:
                 conn.execute(statement)
             conn.execute("INSERT INTO schema_version(version) VALUES (2)")
         current = 2
+    if current < 3:
+        with transaction(conn):
+            for statement in SCHEMA_V3:
+                conn.execute(statement)
+            conn.execute("INSERT INTO schema_version(version) VALUES (3)")
+        current = 3
     return current
 
 

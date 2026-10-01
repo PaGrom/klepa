@@ -108,3 +108,10 @@ async def test_button_press_arrives_as_callback_query(fake_tg, api):
     callback = (await api.get_updates(None, 0))[-1]["callback_query"]
     assert (callback["data"], callback["from"]["id"]) == ("abc", OWNER)
     assert callback["message"]["message_id"] == sent["message_id"]
+
+
+async def test_html_messages_and_the_typing_action(fake_tg, api):
+    await api.send_message(OWNER, "<b>x</b>", parse_mode="HTML")
+    assert fake_tg.sent[-1]["params"]["parse_mode"] == "HTML"
+    await api.send_chat_action(OWNER, "typing")
+    assert fake_tg.calls[-1] == "sendChatAction"

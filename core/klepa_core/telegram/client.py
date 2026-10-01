@@ -123,13 +123,20 @@ class BotApi:
         text: str,
         reply_to_message_id: int | None = None,
         reply_markup: dict[str, Any] | None = None,
+        *,
+        parse_mode: str | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {"chat_id": chat_id, "text": text, "link_preview_options": {"is_disabled": True}}
+        if parse_mode is not None:
+            params["parse_mode"] = parse_mode
         if reply_to_message_id is not None:
             params["reply_parameters"] = {"message_id": reply_to_message_id, "allow_sending_without_reply": True}
         if reply_markup is not None:
             params["reply_markup"] = reply_markup
         return await self._call_for_object("sendMessage", params, timeout=30)
+
+    async def send_chat_action(self, chat_id: int, action: str) -> None:
+        await self.call("sendChatAction", {"chat_id": chat_id, "action": action}, timeout=10)
 
     async def get_me(self) -> dict[str, Any]:
         return await self._call_for_object("getMe", {}, timeout=30)

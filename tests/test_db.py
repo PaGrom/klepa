@@ -13,11 +13,12 @@ def test_connect_sets_durability_pragmas(tmp_path):
 
 def test_migrate_is_idempotent(tmp_path):
     conn = db.connect(tmp_path / "core.db")
-    assert db.migrate(conn) == 2
-    assert db.migrate(conn) == 2
+    assert db.migrate(conn) == 3
+    assert db.migrate(conn) == 3
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     expected = {"member", "space", "evidence", "outbound", "event_log", "schema_version", "service_binding"}
     assert expected | {"button_action", "alert_state", "snapshot", "job_run"} <= tables
+    assert {"host_message", "host_update", "host_run", "host_notice", "host_setting"} <= tables
 
 
 def test_seed_creates_members_and_spaces(tmp_path, make_config):
@@ -55,7 +56,7 @@ def test_v1_database_is_upgraded_in_place(tmp_path):
         "INSERT INTO outbound(idempotency_key, origin, method, chat_id, payload, state, created_at, updated_at) "
         "VALUES ('k', 'core', 'sendMessage', 1, '{}', 'PENDING', 't', 't')"
     )
-    assert db.migrate(conn) == 2
+    assert db.migrate(conn) == 3
     assert conn.execute("SELECT bot FROM outbound").fetchone()[0] == "family"
 
 
@@ -76,3 +77,12 @@ def test_owner_service_chat(tmp_path, make_config):
     assert db.owner_service_chat(conn) is None
     conn.execute("INSERT INTO service_binding(person_id, chat_id, bound_at) VALUES ('owner', 111111, 't')")
     assert db.owner_service_chat(conn) == 111111
+
+
+def test_host_messages_take_kinds_that_later_stages_add(tmp_path):
+    conn = db.connect(tmp_path / "core.db")
+    db.migrate(conn)
+    conn.execute(
+        "INSERT INTO host_message(kind, chat_id, message_id, sender_id, date, created_at) "
+        "VALUES ('attachment_text', 1, 1, 1, 1, 0)"
+    )

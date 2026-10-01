@@ -42,6 +42,14 @@ class InboundJournal:
         rows = self.conn.execute("SELECT update_id, raw FROM inbound_update WHERE state='new' ORDER BY update_id")
         return [(row["update_id"], json.loads(row["raw"])) for row in rows]
 
+    def get(self, update_id: int) -> dict[str, Any] | None:
+        """One journaled update, whatever its state."""
+        row = self.conn.execute("SELECT raw FROM inbound_update WHERE update_id=?", (update_id,)).fetchone()
+        if row is None:
+            return None
+        update = json.loads(row["raw"])
+        return update if isinstance(update, dict) else None
+
     def state(self, update_id: int) -> str | None:
         row = self.conn.execute("SELECT state FROM inbound_update WHERE update_id=?", (update_id,)).fetchone()
         return row["state"] if row else None

@@ -52,3 +52,11 @@ def test_last_received_at(tmp_path):
     journal.append_batch([u(1)], "2026-10-05T07:00:00.000+00:00")
     journal.append_batch([u(2)], "2026-10-05T08:00:00.000+00:00")
     assert journal.last_received_at() == "2026-10-05T08:00:00.000+00:00"
+
+
+def test_get_returns_an_update_in_any_state(tmp_path):
+    journal = InboundJournal(tmp_path / "inbound.db")
+    journal.append_batch([u(5, text="hi")], "t")
+    journal.mark(5, "done")
+    assert journal.get(5)["message"]["text"] == "hi"
+    assert journal.get(6) is None
