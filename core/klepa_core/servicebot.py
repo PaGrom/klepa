@@ -16,6 +16,7 @@ from .db import owner_service_chat, transaction
 from .events import EventLog, utc_now_iso
 from .gatekeeper.outbox import Outbox
 from .health import Health, Probe
+from .host.supervisor import Supervisor
 from .telegram.client import (
     Ambiguous,
     BadRequest,
@@ -93,6 +94,7 @@ class ServiceBot:
         *,
         probe: Callable[[], Awaitable[Probe]],
         clock: Callable[[], float] = time.time,
+        supervisor: Supervisor | None = None,
     ) -> None:
         self.cfg = cfg
         self.api = api
@@ -102,6 +104,7 @@ class ServiceBot:
         self.events = events
         self.probe = probe
         self.clock = clock
+        self.supervisor = supervisor  # the Pause and Resume buttons, when a host is set up
         self.owner = next(member for member in cfg.members if member.role == "owner")
         self._rejected_at: dict[int | None, float] = {}
 
@@ -125,22 +128,31 @@ class ServiceBot:
         self._rejected_at[from_id] = now
         self.events.log("service_update_rejected", {"from_id": from_id})
 
+    def _actions(self) -> list[str]:
+        if self.supervisor is None:
+            return ["status"]
+        return ["status", "resume" if self.supervisor.paused else "pause"]
+
     async def send_status(self, key: str) -> bool:
-        """Queue the status line with a fresh one-time Status button. Idempotent by key."""
+        """Queue the status line with fresh one-time buttons: Status, and Pause or Resume when a host is set up.
+        Idempotent by key."""
         chat_id = owner_service_chat(self.conn)
         if chat_id is None:
             return False
         text, _ = self.health.line(await self.probe())
-        action_id = secrets.token_hex(16)  # 128 bits
-        button = {"text": self.cfg.locale.service_text("status_button"), "callback_data": action_id}
+        buttons = [(secrets.token_hex(16), action) for action in self._actions()]  # 128 bits each
+        row = [
+            {"text": self.cfg.locale.service_text(f"{action}_button"), "callback_data": action_id}
+            for action_id, action in buttons
+        ]
         with transaction(self.conn):
-            if not self.outbox.enqueue_text(key, chat_id, text, reply_markup={"inline_keyboard": [[button]]}):
+            if not self.outbox.enqueue_text(key, chat_id, text, reply_markup={"inline_keyboard": [row]}):
                 return False
-            self.conn.execute(
-                "INSERT INTO button_action(id, action, chat_id, outbound_key, expires_at) "
-                "VALUES (?, 'status', ?, ?, ?)",
-                (action_id, chat_id, key, self.clock() + BUTTON_TTL_SECONDS),
-            )
+            for action_id, action in buttons:
+                self.conn.execute(
+                    "INSERT INTO button_action(id, action, chat_id, outbound_key, expires_at) VALUES (?, ?, ?, ?, ?)",
+                    (action_id, action, chat_id, key, self.clock() + BUTTON_TTL_SECONDS),
+                )
         return True
 
     async def send_daily_line(self, day: str) -> None:
@@ -175,6 +187,7 @@ class ServiceBot:
         sender = callback.get("from") or {}
         action_id = str(callback.get("data") or "")
         valid = False
+        action = "status"
         if self._is_owner(chat, sender):
             row = self.conn.execute("SELECT * FROM button_action WHERE id=?", (action_id,)).fetchone()
             if (
@@ -188,9 +201,14 @@ class ServiceBot:
                     "UPDATE button_action SET used_at=? WHERE id=? AND used_at IS NULL", (utc_now_iso(), action_id)
                 )
                 valid = claimed.rowcount == 1
+                action = str(row["action"])
         else:
             self._rejected(sender)
         if valid:
+            if self.supervisor is not None and action == "pause":
+                self.supervisor.pause()
+            elif self.supervisor is not None and action == "resume":
+                self.supervisor.resume()
             await self.send_status(f"status:press:{action_id}")
         try:
             await self.api.answer_callback_query(

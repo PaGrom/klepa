@@ -8,6 +8,8 @@ from klepa_core import db
 from klepa_core.events import EventLog
 from klepa_core.gatekeeper.outbox import Outbox
 from klepa_core.health import Health, Probe
+from klepa_core.host.queue import HostQueue
+from klepa_core.host.supervisor import GatewayState, Supervisor
 from klepa_core.journal import InboundJournal
 from klepa_core.servicebot import BUTTON_TTL_SECONDS, ServiceBot, bind_owner_chat, new_bind_code
 
@@ -166,3 +168,30 @@ async def test_an_update_that_fails_is_skipped_and_the_bot_goes_on(running, serv
         await asyncio.wait_for(task, 5)
     assert events.kinds().count("service_update_failed") == 1
     assert len(calls) == 2
+
+
+async def test_pause_and_resume_buttons_hold_and_restart_the_host(running, setup, service_tg, service_api, tmp_path):
+    bot, outbox, events, _ = running
+    cfg, conn = setup
+    queue = HostQueue(conn, InboundJournal(tmp_path / "host-inbound.db"), cfg.members_by_telegram_id(), 2**51 + 7)
+    bot.supervisor = Supervisor(conn, queue, events)
+    bot.health.host_state = bot.supervisor.describe
+    assert await bot.send_status("status:1")
+    await outbox.send_due()
+    first = service_tg.sent[-1]
+    buttons = first["params"]["reply_markup"]["inline_keyboard"][0]
+    assert [button["text"] for button in buttons] == ["Status", "Pause"]
+    service_tg.press(MEMBER, first["message"], buttons[1]["callback_data"])  # not the owner: nothing happens
+    await deliver(service_api, bot)
+    assert not bot.supervisor.paused
+    service_tg.press(OWNER, first["message"], buttons[1]["callback_data"])
+    await deliver(service_api, bot)
+    await outbox.send_due()
+    assert (bot.supervisor.state, bot.supervisor.paused) == (GatewayState.HOLD, True)
+    second = service_tg.sent[-1]
+    assert "host: paused" in second["params"]["text"]
+    buttons = second["params"]["reply_markup"]["inline_keyboard"][0]
+    assert [button["text"] for button in buttons] == ["Status", "Resume"]
+    service_tg.press(OWNER, second["message"], buttons[1]["callback_data"])
+    await deliver(service_api, bot)
+    assert (bot.supervisor.state, bot.supervisor.paused) == (GatewayState.STARTING, False)
