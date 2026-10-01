@@ -405,3 +405,18 @@ async def test_a_refusal_is_logged_once_a_minute(gatekeeper):
     for _ in range(3):
         await call(host_api, "editMessageText", {"chat_id": OWNER, "message_id": 1, "text": "x"})
     assert conn.execute("SELECT COUNT(*) FROM event_log WHERE kind='host_call'").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "issued", "reason"),
+    [("x" * 5000, True, "too long"), ("hello", False, "no open conversation")],
+)
+async def test_an_answer_refused_before_it_is_taken_raises_an_alert(gatekeeper, text, issued, reason):
+    host_api, queue, journal, *_, alerts, _ = gatekeeper
+    if issued:
+        issue(queue, journal, 1, OWNER, 10)
+        await call(host_api, "getUpdates", {"timeout": 0})
+    status, body = await call(host_api, "sendMessage", {"chat_id": OWNER, "text": text})
+    assert status == 400
+    assert reason in body["description"]
+    assert alerts.raised == ["host_send_refused"]  # the person may be left without an answer

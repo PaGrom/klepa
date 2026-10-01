@@ -54,4 +54,5 @@ alert_host_silent = "⚠️ Adapter hosta ćuti već tri minuta. Host je na ček
 alert_host_conflict = "⚠️ Dva klijenta istovremeno traže poruke od čuvara. Sme da radi samo jedan gateway hosta: potraži drugi."
 alert_host_not_polling = "⚠️ Host već pet minuta ne traži poruke od čuvara, iako je adapter živ."
 alert_host_send_failed = "⚠️ Telegram nije prihvatio odgovor hosta ({error}). Osoba je zamoljena da ponovo pošalje poruku."
+alert_host_send_refused = "⚠️ Čuvar nije primio odgovor hosta ({reason}). Osoba je možda ostala bez odgovora."
 alert_egress_failed = "⚠️ Proksi za odlazni saobraćaj ne može da se pokrene ({error}). Host ne može da dođe do modela."

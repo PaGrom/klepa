@@ -53,4 +53,5 @@ alert_host_silent = "⚠️ The host's adapter has been silent for three minutes
 alert_host_conflict = "⚠️ Two clients poll the gatekeeper at once. Only one host gateway may run: look for a second one."
 alert_host_not_polling = "⚠️ The host has not asked the gatekeeper for messages for five minutes, although its adapter is alive."
 alert_host_send_failed = "⚠️ Telegram refused an answer from the host ({error}). The person was asked to send their message again."
+alert_host_send_refused = "⚠️ The gatekeeper did not take an answer of the host ({reason}). The person may have got no answer."
 alert_egress_failed = "⚠️ The egress proxy does not start ({error}). The host cannot reach the model."

@@ -330,13 +330,20 @@ class HostApi:
             return target
         raise BadParams("message to be replied not found")
 
+    def _not_taken(self, chat_id: int, reason: str, description: str) -> BadParams:
+        """An answer for a member that the gatekeeper will not take: the person may be left without one, so the
+        owner hears of it, at most once an hour."""
+        if self.alerts is not None and chat_id != self.queue.probe_peer:
+            self.alerts.raise_("host_send_refused", reason=reason)
+        return BadParams(description)
+
     def _send_message(self, params: dict[str, Any]) -> web.Response:
         chat_id = self._chat(params)
         text = params.get("text")
         if not isinstance(text, str):
             raise BadParams("message text is empty")
         if len(text) > MAX_SOURCE_CHARS:
-            raise BadParams("message is too long")
+            raise self._not_taken(chat_id, "too_long", "message is too long")
         mode = params.get("parse_mode")
         if mode not in (None, "") and str(mode).lower() != "html":
             raise BadParams("only parse_mode HTML is allowed")
@@ -344,7 +351,7 @@ class HostApi:
         if not clean.plain.strip():
             raise BadParams("message text is empty")
         if clean.units > MAX_TEXT_UNITS:
-            raise BadParams("message is too long")
+            raise self._not_taken(chat_id, "too_long", "message is too long")
         reply_to = self._reply_to(chat_id, params)
         if chat_id == self.queue.probe_peer:
             # The host's "Your message could not be sent: …" for the probe: nobody reads it, and it proves the
@@ -354,9 +361,9 @@ class HostApi:
                 self.supervisor.on_probe_blocked()
             message_id = _PROBE_MESSAGE_ID
         elif not self.queue.conversation_open(chat_id):
-            raise BadParams("no open conversation in this chat")
+            raise self._not_taken(chat_id, "no_conversation", "no open conversation in this chat")
         elif self.outbox.waiting(chat_id) >= MAX_WAITING_PER_CHAT:
-            raise BadParams("too many messages wait in this chat")
+            raise self._not_taken(chat_id, "too_many_waiting", "too many messages wait in this chat")
         else:
             message_id = self.outbox.accept(chat_id, clean.html, reply_to)
         message = {"message_id": message_id, "date": int(self.clock()), "chat": {"id": chat_id, "type": "private"}}

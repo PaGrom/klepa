@@ -153,6 +153,7 @@ Code: `klepa_core/servicebot.py`, `klepa_core/alerts.py`, `klepa_core/health.py`
 - the host's adapter has been silent for three minutes;
 - two clients poll the gatekeeper at once;
 - the host has not polled for five minutes;
+- Telegram refused an answer of the host, or the gatekeeper did not take one: the person may be left without it;
 - the egress proxy does not start.
 
 **The daily line.** Once a day (09:00 by default) the bot sends one line: the host's state; the last intake; the newest snapshot's

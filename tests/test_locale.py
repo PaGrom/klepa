@@ -57,6 +57,7 @@ alert_host_silent = "silent"
 alert_host_conflict = "conflict"
 alert_host_not_polling = "not polling"
 alert_host_send_failed = "refused {error}"
+alert_host_send_refused = "not taken {reason}"
 alert_egress_failed = "egress {error}"
 """
 
