@@ -187,3 +187,17 @@ def test_a_probe_file_left_by_a_stopped_core_is_cleaned_up(tmp_path):
     keep.mkdir()
     assert probe_documents(tmp_path) == Probe(True)
     assert list(tmp_path.iterdir()) == [keep]
+
+
+def test_the_line_names_the_hosts_state_and_only_running_is_good(health_check):
+    checker, _, _, _ = health_check
+    assert "host: not connected" in checker.line(Probe(True))[0]
+    checker.host_state = lambda: "host_running"
+    text, ok = checker.line(Probe(True))
+    assert ok
+    assert "✅ All good · host: running · " in text
+    for state, words in (("host_stopped", "stopped"), ("host_paused", "paused"), ("host_starting", "starting")):
+        checker.host_state = lambda state=state: state
+        text, ok = checker.line(Probe(True))
+        assert not ok
+        assert f"host: {words}" in text

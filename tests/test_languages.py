@@ -86,6 +86,7 @@ def test_service_texts_render(code):
     line = loc.service_text(
         "line",
         headline=loc.service_text("attention"),
+        host=loc.service_text("host_paused"),
         last_intake=loc.service_text("never"),
         snapshot=loc.service_text("no_snapshot"),
         documents=loc.service_text("unavailable", error="PermissionError"),

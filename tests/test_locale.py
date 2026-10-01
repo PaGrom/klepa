@@ -12,6 +12,8 @@ no_commands = "c"
 unsupported = "d"
 too_large = "e"
 failed = "f"
+hold = "g"
+held_dropped = "h"
 
 [receipts]
 one_file = "got it"
@@ -25,16 +27,24 @@ private_keywords = ["just for me"]
 
 [service]
 status_button = "Status"
+pause_button = "Pause"
+resume_button = "Resume"
 not_yet = "later"
 button_expired = "expired"
 all_good = "good"
 attention = "attention"
-line = "{headline} {last_intake} {snapshot} {documents} {pending_copies} {failed_copies} {unknown_sends}"
+line = "{headline} {host} {last_intake} {snapshot} {documents} {pending_copies} {failed_copies} {unknown_sends}"
 snapshot = "{generation} {hash} {integrity}"
 never = "never"
 no_snapshot = "none"
 ok = "ok"
 unavailable = "unavailable {error}"
+host_off = "off"
+host_starting = "starting"
+host_running = "running"
+host_hold = "hold"
+host_paused = "paused"
+host_stopped = "stopped"
 alert_documents_unavailable = "docs {error}"
 alert_documents_timeout = "timeout {error} {interpreter}"
 alert_permission_denied = "denied {error} {interpreter}"
@@ -42,6 +52,12 @@ alert_channel_dead = "dead {error}"
 alert_snapshot_failed = "snapshot {error}"
 alert_restarted = "restarted"
 alert_album_private_after_copy = "album {count}"
+alert_host_failed = "host {reason}"
+alert_host_silent = "silent"
+alert_host_conflict = "conflict"
+alert_host_not_polling = "not polling"
+alert_host_send_failed = "refused {error}"
+alert_egress_failed = "egress {error}"
 """
 
 
@@ -106,6 +122,8 @@ def test_complete_locale_from_a_directory_loads(tmp_path):
     ("mutation", "message"),
     [
         (lambda t: t.replace('failed = "f"\n', ""), "failed"),
+        (lambda t: t.replace('hold = "g"\n', ""), "hold"),
+        (lambda t: t.replace('held_dropped = "h"\n', ""), "held_dropped"),
         (lambda t: t.replace('plural = "one-other"', 'plural = "one-few-many"'), "few"),
         (lambda t: t.replace('voices = "got {n} voice messages"', 'voices = "got voice messages"'), "voices"),
         (lambda t: t.replace('private_keywords = ["just for me"]', "private_keywords = []"), "private_keywords"),
@@ -124,6 +142,7 @@ def test_english_service_texts():
     line = en.service_text(
         "line",
         headline=en.service_text("all_good"),
+        host=en.service_text("host_running"),
         last_intake="2026-10-05 09:00",
         snapshot=en.service_text("snapshot", generation=3, hash="a1b2c3d4", integrity="ok"),
         documents=en.service_text("ok"),
@@ -131,7 +150,7 @@ def test_english_service_texts():
         failed_copies=0,
         unknown_sends=0,
     )
-    assert line.startswith("✅ All good")
+    assert line.startswith("✅ All good · host: running")
     assert "#3 a1b2c3d4" in line
     denied = en.service_text("alert_permission_denied", error="PermissionError", interpreter="/Applications/X")
     assert "/Applications/X" in denied
@@ -141,6 +160,10 @@ def test_english_service_texts():
     ("mutation", "message"),
     [
         (lambda t: t.replace('status_button = "Status"\n', ""), "service.status_button"),
+        (lambda t: t.replace('pause_button = "Pause"\n', ""), "service.pause_button"),
+        (lambda t: t.replace('host_paused = "paused"\n', ""), "service.host_paused"),
+        (lambda t: t.replace("{headline} {host} ", "{headline} "), "needs {host}"),
+        (lambda t: t.replace('alert_host_failed = "host {reason}"', 'alert_host_failed = "host"'), "needs {reason}"),
         (lambda t: t.replace('unavailable = "unavailable {error}"', 'unavailable = "gone"'), "needs {error}"),
         (lambda t: t.replace('ok = "ok"', 'ok = "ok {surprise}"'), "unknown placeholder"),
     ],

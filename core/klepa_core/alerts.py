@@ -29,6 +29,12 @@ DEFAULT_LIMITS: dict[str, float] = {
     "snapshot_failed": 12 * 3600,
     "restarted": 600,
     "album_private_after_copy": 0,
+    "host_failed": 3600,
+    "host_silent": 3600,
+    "host_conflict": 3600,
+    "host_not_polling": 3600,
+    "host_send_failed": 3600,
+    "egress_failed": 3600,
 }
 DOCUMENTS_GRACE_SECONDS = 300.0
 

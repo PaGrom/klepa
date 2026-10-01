@@ -15,14 +15,31 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any
 
-TEXT_KEYS = ("stage1", "start", "no_commands", "unsupported", "too_large", "failed")
+TEXT_KEYS = ("stage1", "start", "no_commands", "unsupported", "too_large", "failed", "hold", "held_dropped")
 SERVICE_FIELDS: dict[str, tuple[str, ...]] = {
     "status_button": (),
+    "pause_button": (),
+    "resume_button": (),
     "not_yet": (),
     "button_expired": (),
     "all_good": (),
     "attention": (),
-    "line": ("headline", "last_intake", "snapshot", "documents", "pending_copies", "failed_copies", "unknown_sends"),
+    "line": (
+        "headline",
+        "host",
+        "last_intake",
+        "snapshot",
+        "documents",
+        "pending_copies",
+        "failed_copies",
+        "unknown_sends",
+    ),
+    "host_off": (),
+    "host_starting": (),
+    "host_running": (),
+    "host_hold": (),
+    "host_paused": (),
+    "host_stopped": (),
     "snapshot": ("generation", "hash", "integrity"),
     "never": (),
     "no_snapshot": (),
@@ -35,6 +52,12 @@ SERVICE_FIELDS: dict[str, tuple[str, ...]] = {
     "alert_snapshot_failed": ("error",),
     "alert_restarted": (),
     "alert_album_private_after_copy": ("count",),
+    "alert_host_failed": ("reason",),
+    "alert_host_silent": (),
+    "alert_host_conflict": (),
+    "alert_host_not_polling": (),
+    "alert_host_send_failed": ("error",),
+    "alert_egress_failed": ("error",),
 }
 _CODE = re.compile(r"^[a-z]{2,3}$")
 

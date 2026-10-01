@@ -90,12 +90,19 @@ async def check_documents(documents: DocumentsFolder) -> Probe:
 
 class Health:
     def __init__(
-        self, cfg: Config, conn: sqlite3.Connection, journal: InboundJournal, clock: Callable[[], float] = time.time
+        self,
+        cfg: Config,
+        conn: sqlite3.Connection,
+        journal: InboundJournal,
+        clock: Callable[[], float] = time.time,
+        *,
+        host_state: Callable[[], str] | None = None,
     ) -> None:
         self.cfg = cfg
         self.conn = conn
         self.journal = journal
         self.clock = clock
+        self.host_state = host_state  # the service text key of the gateway's state, when a host is set up
         self.tz = ZoneInfo(cfg.timezone)
 
     def _local(self, iso: str) -> str:
@@ -137,11 +144,14 @@ class Health:
         window = datetime.fromtimestamp(now - UNKNOWN_WINDOW_SECONDS, UTC).isoformat(timespec="milliseconds")
         unknown = self._count("SELECT COUNT(*) FROM outbound WHERE state='UNKNOWN' AND updated_at >= ?", window)
         snapshot, snapshot_ok = self._snapshot(now)
-        fine = probe.ok and failed == 0 and unknown == 0 and snapshot_ok
+        host = "host_off" if self.host_state is None else self.host_state()
+        host_ok = host in ("host_off", "host_running")
+        fine = probe.ok and failed == 0 and unknown == 0 and snapshot_ok and host_ok
         documents = loc.service_text("ok") if probe.ok else loc.service_text("unavailable", error=probe.error)
         text = loc.service_text(
             "line",
             headline=loc.service_text("all_good" if fine else "attention"),
+            host=loc.service_text(host),
             last_intake=self._local(last) if last else loc.service_text("never"),
             snapshot=snapshot,
             documents=documents,
