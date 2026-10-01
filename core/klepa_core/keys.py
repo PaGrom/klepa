@@ -8,7 +8,7 @@ import secrets
 import stat
 from pathlib import Path
 
-from .durable import write_exclusive
+from .durable import write_exclusive, write_new_atomically
 
 
 class KeyFileError(Exception):
@@ -45,6 +45,23 @@ def _checked_key(path: Path) -> bytes:
     if len(data) < 32:
         raise KeyFileError(f"{path.name} is shorter than 32 bytes")
     return data
+
+
+def ensure_host_token(path: Path, bot_id: str) -> str:
+    """The host's fake family bot token (spec 4.6): 256 random bits, made once per installation, mode 0600. The
+    part before the colon is the real bot's id, which is public, so the token looks like the bot's own to the
+    host. It is a secret all the same: whoever knows it reads what the gatekeeper serves the host."""
+    ensure_private_dir(path.parent)
+    if not path.exists():
+        with contextlib.suppress(FileExistsError):  # whole or not at all: a crash never leaves a short token
+            write_new_atomically(path.parent, path.name, f"{bot_id}:{secrets.token_urlsafe(32)}".encode(), mode=0o600)
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o077:
+        raise KeyFileError(f"{path.name} must be mode 0600 (is {mode:o})")
+    token = path.read_text(encoding="utf-8").strip()
+    if len(token.partition(":")[2]) < 43:
+        raise KeyFileError(f"{path.name} does not hold a token of 256 bits")
+    return token
 
 
 def _check(key: bytes) -> str:

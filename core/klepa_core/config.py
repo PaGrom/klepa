@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import stat
 import tomllib
@@ -18,6 +19,12 @@ _FORBIDDEN_DATA_ROOTS = ("Library/CloudStorage", "Library/Mobile Documents")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 # iCloud's "Desktop & Documents Folders" option syncs these; Core cannot tell whether it is on.
 _SYNCABLE_HOME_FOLDERS = ("Desktop", "Documents")
+_HOSTNAME = re.compile(
+    r"^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
+_MAX_SOCKET_PATH_BYTES = 103  # sun_path on macOS holds 104 bytes with the closing NUL
+DEFAULT_HOST_API_PORT = 19201
+DEFAULT_EGRESS_PORT = 19202
 
 
 class ConfigError(Exception):
@@ -30,6 +37,16 @@ class Member:
     telegram_id: int
     name: str
     role: str
+
+
+@dataclass(frozen=True)
+class HostConfig:
+    """The agent host behind the gatekeeper (docs/architecture.md: Host interface)."""
+
+    api_port: int
+    proxy_port: int
+    egress_allow: tuple[tuple[str, int], ...]
+    socket_path: Path
 
 
 @dataclass(frozen=True)
@@ -52,6 +69,7 @@ class Config:
     daily_line_at: time_of_day | None
     poll_timeout_seconds: int
     private_keywords: tuple[str, ...]
+    host: HostConfig | None = None
 
     @property
     def keys_dir(self) -> Path:
@@ -72,6 +90,16 @@ class Config:
     @property
     def signing_key_path(self) -> Path:
         return self.keys_dir / "snapshot-signing.key"
+
+    @property
+    def host_token_path(self) -> Path:
+        """The host's fake family bot token (spec 4.6): a secret of its own, never the real token."""
+        return self.keys_dir / "host-bot.token"
+
+    @property
+    def adapter_key_path(self) -> Path:
+        """The key that signs messages between the adapter plugin and Core (spec 4.5)."""
+        return self.keys_dir / "adapter.key"
 
     def members_by_telegram_id(self) -> dict[int, Member]:
         return {m.telegram_id: m for m in self.members}
@@ -135,6 +163,50 @@ def _safe_api_root(url: str) -> bool:
     if parts.scheme == "https":
         return bool(parts.hostname)
     return parts.scheme == "http" and parts.hostname in _LOOPBACK_HOSTS
+
+
+def _port(value: object, key: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 65535:
+        raise ConfigError(f"{key} must be a port number")
+    return value
+
+
+def _egress_entry(item: object, i: int) -> tuple[str, int]:
+    """One exact 'name:port' entry: a host name, never an address and never a mask (spec 4.3)."""
+    text = item.strip().lower() if isinstance(item, str) else ""
+    name, _, port = text.rpartition(":")
+    name = name.removesuffix(".")
+    try:
+        ipaddress.ip_address(name.strip("[]"))
+    except ValueError:
+        pass
+    else:
+        raise ConfigError(f"host.egress_allow[{i}] must name a host, not an address")
+    if not _HOSTNAME.match(name) or not (port.isascii() and port.isdigit()) or not 1 <= int(port) <= 65535:
+        raise ConfigError(f"host.egress_allow[{i}] must be an exact 'name:port', for example 'api.anthropic.com:443'")
+    return name, int(port)
+
+
+def _host(raw: object, data_dir: Path) -> HostConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigError("[host] must be a table")
+    api_port = _port(raw.get("api_port", DEFAULT_HOST_API_PORT), "host.api_port")
+    proxy_port = _port(raw.get("proxy_port", DEFAULT_EGRESS_PORT), "host.proxy_port")
+    if api_port == proxy_port:
+        raise ConfigError("host.api_port and host.proxy_port must differ")
+    items = raw.get("egress_allow", [])
+    if not isinstance(items, list):
+        raise ConfigError("host.egress_allow must be a list")
+    egress_allow = tuple(_egress_entry(item, i) for i, item in enumerate(items))
+    socket_path = _abs_path(raw["socket"], "host.socket") if "socket" in raw else data_dir / "run" / "adapter.sock"
+    if len(str(socket_path).encode()) > _MAX_SOCKET_PATH_BYTES:
+        raise ConfigError(f"the adapter socket path is longer than {_MAX_SOCKET_PATH_BYTES} bytes; set host.socket")
+    parent = socket_path.parent
+    if parent.is_dir() and stat.S_IMODE(parent.stat().st_mode) & 0o077:
+        raise ConfigError("host.socket must be in a directory of its own, mode 0700")
+    return HostConfig(api_port=api_port, proxy_port=proxy_port, egress_allow=egress_allow, socket_path=socket_path)
 
 
 def parse_time_of_day(text: str) -> time_of_day | None:
@@ -225,6 +297,7 @@ def load_config(path: Path) -> Config:
         daily_line_at=daily_line_at,
         poll_timeout_seconds=int(intake.get("poll_timeout_seconds", 30)),
         private_keywords=tuple(str(k) for k in intake.get("private_keywords", locale.private_keywords)),
+        host=_host(raw.get("host"), data_dir),
     )
 
 
@@ -251,12 +324,12 @@ def read_service_token(cfg: Config) -> str:
     if cfg.service_token_file is None:
         raise ConfigError("service_bot is not configured")
     token = _read_secret(cfg.service_token_file, "service bot token file")
-    if _bot_id(token) == _bot_id(read_token(cfg)):
+    if bot_id(token) == bot_id(read_token(cfg)):
         # Two pollers on one bot would each take updates meant for the other: family files would go missing.
         raise ConfigError("the service bot token belongs to the family bot; the service bot needs a bot of its own")
     return token
 
 
-def _bot_id(token: str) -> str:
+def bot_id(token: str) -> str:
     """The bot's numeric id, the part of a token before the colon; not a secret on its own."""
     return token.split(":", 1)[0]

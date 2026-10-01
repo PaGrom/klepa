@@ -1,6 +1,7 @@
 """Shared test data. Synthetic members only: real names and IDs never go into the repository."""
 
 import asyncio
+import socket
 import sqlite3
 from contextlib import closing
 
@@ -16,6 +17,35 @@ def with_service_bot(text: str, token_file, api_root: str, *, snapshot_at="off",
     text = text.replace('snapshot_at = "off"', f'snapshot_at = "{snapshot_at}"')
     text = text.replace('daily_line_at = "off"', f'daily_line_at = "{daily_line_at}"')
     return text + f'\n[service_bot]\ntoken_file = "{token_file}"\napi_root = "{api_root}"\n'
+
+
+def with_host(text: str, socket_path, api_port: int, proxy_port: int, allow: tuple[str, ...] = ()) -> str:
+    """Config text with a host behind the gatekeeper."""
+    entries = ", ".join(f'"{entry}"' for entry in allow)
+    return text + (
+        f'\n[host]\napi_port = {api_port}\nproxy_port = {proxy_port}\nsocket = "{socket_path}"\n'
+        f"egress_allow = [{entries}]\n"
+    )
+
+
+def free_port() -> int:
+    """A port nobody listens on right now. Tests only: another process could take it first."""
+    with closing(socket.socket()) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+class Clock:
+    """A clock that tests set by hand."""
+
+    def __init__(self, now: float = 1_800_000_000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 BASE_CONFIG = """

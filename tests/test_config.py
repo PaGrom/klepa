@@ -155,3 +155,53 @@ def test_the_service_bot_must_be_another_bot(make_config, install):
     with pytest.raises(ConfigError, match="family bot") as info:
         read_service_token(cfg)
     assert "SECRET" not in str(info.value)
+
+
+def test_the_host_section_is_optional(make_config):
+    assert make_config().host is None
+
+
+def test_host_section_defaults(make_config, short_dir):
+    data_dir = short_dir / "data"  # the default socket lives in the data directory; tmp_path is too long for it
+    text = BASE_CONFIG.replace("{data_dir}", str(data_dir)) + '\n[host]\negress_allow = ["API.Anthropic.com.:443"]\n'
+    cfg = make_config(text=text)
+    assert cfg.host is not None
+    assert (cfg.host.api_port, cfg.host.proxy_port) == (19201, 19202)
+    assert cfg.host.egress_allow == (("api.anthropic.com", 443),)
+    assert cfg.host.socket_path == data_dir / "run" / "adapter.sock"
+    assert cfg.host_token_path == data_dir / "keys" / "host-bot.token"
+    assert cfg.adapter_key_path == data_dir / "keys" / "adapter.key"
+
+
+@pytest.mark.parametrize(
+    ("section", "message"),
+    [
+        ('egress_allow = ["*.anthropic.com:443"]', "exact"),
+        ('egress_allow = ["api.anthropic.com"]', "exact"),
+        ('egress_allow = ["localhost:443"]', "exact"),
+        ('egress_allow = ["1.2.3.4:443"]', "not an address"),
+        ('egress_allow = ["[::1]:443"]', "not an address"),
+        ('egress_allow = "api.anthropic.com:443"', "list"),
+        ("api_port = 0", "port"),
+        ("proxy_port = 19201", "differ"),
+        ('socket = "relative.sock"', "absolute"),
+        ('socket = "/tmp/' + "x" * 120 + '.sock"', "longer than"),
+    ],
+)
+def test_bad_host_sections_are_refused(make_config, section, message):
+    socket = "" if section.startswith("socket") else 'socket = "/tmp/klepa-test.sock"\n'
+    with pytest.raises(ConfigError, match=message):
+        make_config(text=BASE_CONFIG + f"\n[host]\n{socket}{section}\n")
+
+
+def test_the_socket_needs_a_private_directory(make_config, short_dir):
+    open_dir = short_dir / "open"
+    open_dir.mkdir()
+    open_dir.chmod(0o777)
+    with pytest.raises(ConfigError, match="0700"):
+        make_config(text=BASE_CONFIG + f'\n[host]\nsocket = "{open_dir / "adapter.sock"}"\n')
+
+
+def test_a_port_in_other_digits_is_refused(make_config):
+    with pytest.raises(ConfigError, match="exact"):
+        make_config(text=BASE_CONFIG + '\n[host]\nsocket = "/tmp/klepa-test.sock"\negress_allow = ["x.example:4²"]\n')

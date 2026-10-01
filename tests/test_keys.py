@@ -8,6 +8,7 @@ import pytest
 from klepa_core.__main__ import main
 from klepa_core.keys import (
     KeyFileError,
+    ensure_host_token,
     ensure_private_dir,
     key_from_paper,
     load_or_create_key,
@@ -84,3 +85,21 @@ def test_paper_backup_never_makes_a_key(make_config, install, capsys):
         os.umask(previous)
     assert not cfg.signing_key_path.exists()
     assert "check" not in capsys.readouterr().out
+
+
+def test_the_hosts_fake_token_is_made_once_with_256_random_bits(tmp_path):
+    path = tmp_path / "keys" / "host-bot.token"
+    token = ensure_host_token(path, "123456")
+    bot_id, _, secret = token.partition(":")
+    assert (bot_id, len(secret) >= 43) == ("123456", True)
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert ensure_host_token(path, "999") == token  # never replaced
+    assert ensure_host_token(tmp_path / "keys" / "other.token", "123456") != token
+
+
+def test_the_hosts_fake_token_must_stay_private(tmp_path):
+    path = tmp_path / "keys" / "host-bot.token"
+    ensure_host_token(path, "123456")
+    path.chmod(0o644)
+    with pytest.raises(KeyFileError, match="0600"):
+        ensure_host_token(path, "123456")

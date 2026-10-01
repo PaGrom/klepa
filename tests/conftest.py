@@ -1,12 +1,16 @@
+import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 
 import aiohttp
 import pytest
 
 from faketg import FakeTelegram
 from helpers import BASE_CONFIG, SERVICE_TOKEN, TEST_TOKEN
-from klepa_core import macos
+from klepa_core import db, macos
 from klepa_core.config import load_config
+from klepa_core.journal import InboundJournal
 from klepa_core.telegram.client import BotApi
 
 
@@ -48,6 +52,27 @@ def make_config(install):
         return load_config(path)
 
     return make
+
+
+@pytest.fixture
+def short_dir():
+    """A short directory for Unix sockets: their path holds 104 bytes on macOS, and tmp_path is longer."""
+    path = Path(tempfile.mkdtemp(prefix="klepa-", dir="/tmp"))
+    yield path
+    shutil.rmtree(path, ignore_errors=True)
+
+
+@pytest.fixture
+def core_db(tmp_path, make_config):
+    """A migrated and seeded core.db with its inbound journal, for units that work on both."""
+    cfg = make_config()
+    conn = db.connect(tmp_path / "core.db")
+    db.migrate(conn)
+    db.seed(conn, cfg)
+    journal = InboundJournal(tmp_path / "inbound-journal.db")
+    yield cfg, conn, journal
+    journal.close()
+    conn.close()
 
 
 @pytest.fixture
