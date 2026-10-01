@@ -182,7 +182,7 @@ Stage 1c puts the agent host behind the gatekeeper. Core's side runs when the co
 - the methods are an exact allow-list: `getUpdates`, `getMe`, `sendChatAction` and `sendMessage`, plus `deleteWebhook`, `deleteMyCommands` and `setMyCommands`, which are answered here and never passed on;
 - `sendMessage` keeps `chat_id`, `text`, `parse_mode` (HTML only) and a reply to an issued message or to the host's own message in the same chat. Everything else is dropped, and link previews are always off;
 - editing, deleting, pinning, reactions, copies, forwards, files and every other method are refused;
-- the `Host` header must be exactly the gatekeeper's address, and a request with `Origin` or `Sec-Fetch-*` is refused, so no web page can reach the port through DNS rebinding;
+- the `Host` header must be exactly the gatekeeper's address, so no web page can reach the port through DNS rebinding, and what only browsers send is refused: `Origin`, `Sec-Fetch-Site`, `Sec-Fetch-Dest`, `Sec-Fetch-User`. `Sec-Fetch-Mode` alone passes, because Node's fetch, which the host uses, sends it with every request;
 - one long poll at a time: a second one gets 409, and the owner gets an alert;
 - at most 32 connections at a time, so a local process that holds idle connections can starve the host but never Core;
 - the host may write only to a member's private chat with an open conversation: a message it was given and has not answered, or an answer less than ten minutes old;

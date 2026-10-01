@@ -3,8 +3,9 @@
 It polls the gatekeeper with the fake token and drives the fake adapter the way the host drives the plugin's
 hooks: before_dispatch first; a message that it does not handle goes on to before_prompt_build and
 before_agent_run, and a blocked turn makes the host write "Your message could not be sent: ..." to the chat
-(spike report, point 15). `conversation_hooks=False` is a plugin without allowConversationAccess: those two
-hooks never run (spike report, point 20).
+(spike report, point 15). Every call carries the headers of undici, the fetch of Node that OpenClaw uses.
+`conversation_hooks=False` is a plugin without allowConversationAccess: those two hooks never run (spike report,
+point 20).
 """
 
 from __future__ import annotations
@@ -17,6 +18,9 @@ from typing import Any
 import aiohttp
 
 from fakeadapter import FakeAdapter
+
+# What undici's fetch adds to every request; Sec-Fetch-Mode is the one a gatekeeper could mistake for a browser.
+NODE_FETCH_HEADERS = {"sec-fetch-mode": "cors", "accept": "*/*", "accept-language": "*", "user-agent": "node"}
 
 
 class FakeHost:
@@ -46,7 +50,10 @@ class FakeHost:
         async with (
             aiohttp.ClientSession() as session,
             session.post(
-                f"{self.url}/bot{self.token}/{method}", json=params or {}, headers=headers, proxy=self.proxy
+                f"{self.url}/bot{self.token}/{method}",
+                json=params or {},
+                headers=NODE_FETCH_HEADERS | (headers or {}),
+                proxy=self.proxy,
             ) as resp,
         ):
             return resp.status, await resp.json()

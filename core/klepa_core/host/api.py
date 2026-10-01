@@ -7,9 +7,10 @@ The host holds a fake token and reaches the family bot only through here. The in
 - sendMessage with chat_id, text, parse_mode and a forced link_preview_options only; everything else is dropped.
 
 Everything else, editing, deleting, pinning, reactions, copies, forwards, files, is refused. The port listens on
-loopback, checks the Host header exactly and refuses browser requests (Origin, Sec-Fetch-*), so no web page can
-reach it through DNS rebinding. It takes a limited number of connections, so a local process holding idle ones
-can starve the host but never Core. It has no control paths.
+loopback and checks the Host header exactly, so no web page can reach it through DNS rebinding. It also refuses
+what only browsers send: Origin, Sec-Fetch-Site, Sec-Fetch-Dest and Sec-Fetch-User. Sec-Fetch-Mode alone passes:
+undici, the fetch of Node that OpenClaw uses, sends it with every request. It takes a limited number of
+connections, so a local process holding idle ones can starve the host but never Core. It has no control paths.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ _PATH = re.compile(r"^/bot(?P<token>[^/]+)/(?P<method>[^/]+)$")
 _METHOD_NAME = re.compile(r"^[A-Za-z]{1,64}$")
 _NUMBER = re.compile(r"-?\d{1,20}")
 _PROBE_MESSAGE_ID = 1  # the probe's own chat never reaches Telegram
+_BROWSER_ONLY = frozenset({"sec-fetch-site", "sec-fetch-dest", "sec-fetch-user"})
 
 
 class BadParams(Exception):
@@ -183,7 +185,7 @@ class HostApi:
             return "host"
         if "Origin" in request.headers:
             return "origin"
-        if any(name.lower().startswith("sec-fetch-") for name in request.headers):
+        if any(name.lower() in _BROWSER_ONLY for name in request.headers):
             return "browser"
         return None
 

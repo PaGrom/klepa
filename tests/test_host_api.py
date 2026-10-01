@@ -16,6 +16,7 @@ from klepa_core.host.supervisor import PROBE_BLOCK
 from klepa_core.host.turns import TurnRegistry
 
 TOKEN = "123:" + "F" * 43
+UNDICI_HEADERS = {"sec-fetch-mode": "cors", "accept": "*/*", "accept-language": "*", "user-agent": "node"}
 PEER = 2**51 + 7
 
 
@@ -93,7 +94,8 @@ async def test_a_wrong_token_is_unauthorized(gatekeeper):
         {"Host": "localhost"},
         {"Origin": "http://evil.example"},
         {"Sec-Fetch-Site": "cross-site"},
-        {"Sec-Fetch-Mode": "no-cors"},
+        {"Sec-Fetch-Dest": "empty"},
+        {"Sec-Fetch-User": "?1"},
     ],
 )
 async def test_other_hosts_and_browsers_are_refused(gatekeeper, headers):
@@ -101,6 +103,13 @@ async def test_other_hosts_and_browsers_are_refused(gatekeeper, headers):
     if headers.get("Host") == "localhost":
         headers = {"Host": f"localhost:{host_api.port}"}
     assert (await call(host_api, "getMe", headers=headers))[0] == 403
+
+
+async def test_the_headers_of_nodes_fetch_pass(gatekeeper):
+    # undici, the fetch of Node that OpenClaw uses, sends Sec-Fetch-Mode on every request; browsers also send
+    # Sec-Fetch-Site and Sec-Fetch-Dest, and Origin across sites.
+    host_api, *_ = gatekeeper
+    assert (await call(host_api, "deleteWebhook", headers=UNDICI_HEADERS))[0] == 200
 
 
 @pytest.mark.parametrize(
