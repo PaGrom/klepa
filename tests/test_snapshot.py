@@ -177,3 +177,21 @@ def test_retention_counts_good_snapshots_only(setup):
     # The broken days displace no good snapshot, and they stay two weeks for diagnosis: from 09-22 on.
     assert [day for day in kept if day <= "2026-09-20"] == ["2026-09-01"] + [f"2026-09-{d:02d}" for d in range(7, 21)]
     assert [day for day in kept if day > "2026-09-20"] == days[21:]
+
+
+def test_a_held_answer_of_the_host_stays_out_of_the_snapshot(setup):
+    _, conn, snapshotter, _ = setup
+    conn.execute(
+        "INSERT INTO outbound(idempotency_key, origin, method, chat_id, payload, state, created_at, updated_at) "
+        "VALUES ('host:1', 'host', 'sendMessage', 1, '{\"text\": \"HELD-ANSWER\"}', 'PENDING', 't', 't')"
+    )
+    conn.execute(
+        "INSERT INTO outbound(idempotency_key, origin, method, chat_id, payload, state, created_at, updated_at) "
+        "VALUES ('receipt:1', 'core', 'sendMessage', 1, '{\"text\": \"CORE-RECEIPT\"}', 'PENDING', 't', 't')"
+    )
+    info = snapshotter.take()
+    data = (snapshotter.root / info.name / "core.db").read_bytes()
+    assert b"HELD-ANSWER" not in data
+    assert b"CORE-RECEIPT" in data
+    verify_snapshot(snapshotter.root / info.name, KEY)
+    assert conn.execute("SELECT payload FROM outbound WHERE idempotency_key='host:1'").fetchone()[0] != "{}"

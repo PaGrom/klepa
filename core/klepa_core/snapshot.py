@@ -81,6 +81,14 @@ def _sha256(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
+def _drop_host_text(path: Path) -> None:
+    """The host's messages that wait in outbound stay out of snapshots: snapshots go to the documents folder, and
+    a held answer is part of a family conversation. secure_delete overwrites the bytes the update frees."""
+    with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as copy:
+        copy.execute("PRAGMA secure_delete=ON")
+        copy.execute("UPDATE outbound SET payload='{}' WHERE origin='host' AND payload != '{}'")
+
+
 def _flush(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY)
     try:
@@ -161,6 +169,7 @@ class Snapshotter:
                 partial.mkdir(mode=0o700)
                 db_path = partial / "core.db"
                 conn.execute("VACUUM INTO ?", (str(db_path),))
+                _drop_host_text(db_path)
                 _flush(db_path)
                 integrity = check_integrity(db_path)
                 digest, size = _sha256(db_path)
