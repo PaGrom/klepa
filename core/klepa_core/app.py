@@ -7,8 +7,10 @@ import fcntl
 import functools
 import logging
 import os
+import resource
 import sqlite3
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import aiohttp
@@ -16,7 +18,7 @@ import aiohttp
 from . import db
 from .aio import keep_running, sleep_or_stop, until_stopped
 from .alerts import DOCUMENTS_GRACE_SECONDS, Alerts
-from .config import Config, ConfigError, read_service_token, read_token
+from .config import Config, ConfigError, bot_id, read_service_token, read_token
 from .documents import DocumentsFolder
 from .events import EventLog
 from .evidence import EvidenceStore
@@ -24,14 +26,22 @@ from .gatekeeper.outbox import Outbox
 from .gatekeeper.receipts import ReceiptBatcher
 from .gatekeeper.service import Gatekeeper
 from .health import Health, check_documents
+from .host.adapter import AdapterServer, probe_peer
+from .host.api import HostApi
+from .host.egress import EgressProxy
+from .host.outbox import HostOutbox
+from .host.queue import HostQueue
+from .host.supervisor import HostTiming, Supervisor
+from .host.turns import TurnRegistry
 from .journal import InboundJournal
-from .keys import ensure_private_dir, load_or_create_key
+from .keys import KeyFileError, ensure_host_token, ensure_private_dir, load_or_create_key
 from .schedule import DailyJob, Scheduler
 from .servicebot import ServiceBot
 from .snapshot import SnapshotError, Snapshotter
 from .telegram.client import BotApi
 
 SNAPSHOT_COPY_RETRY_SECONDS = 300.0
+OPEN_FILES = 8192  # launchd gives an agent 256; sockets, the host's tunnels and SQLite need more
 SNAPSHOT_FOLDER_TIMEOUT_SECONDS = 600.0  # copying a snapshot may take a while on a slow volume
 Loop = Callable[[asyncio.Event], Awaitable[None]]
 log = logging.getLogger("klepa_core")
@@ -56,6 +66,18 @@ def init_layout(cfg: Config) -> None:
         db.seed(conn, cfg)
     finally:
         conn.close()
+
+
+def raise_file_limit(wanted: int = OPEN_FILES) -> int:
+    """Raise the soft limit on open files towards `wanted`; returns the limit in force."""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    target = wanted if hard == resource.RLIM_INFINITY else min(wanted, hard)
+    if soft < target:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        except (ValueError, OSError) as exc:
+            log.warning("cannot raise the open file limit: %s", type(exc).__name__)
+    return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
 
 
 def acquire_lock(path: Path) -> int:
@@ -150,6 +172,60 @@ async def _check_documents_at_start(documents: DocumentsFolder, alerts: Alerts, 
         await sleep_or_stop(stop, alerts.documents_grace)
 
 
+@dataclass(frozen=True)
+class HostParts:
+    queue: HostQueue
+    supervisor: Supervisor
+    loops: list[tuple[str, Loop]]
+
+
+def _host(
+    cfg: Config,
+    conn: sqlite3.Connection,
+    journal: InboundJournal,
+    api: BotApi,
+    outbox: Outbox,
+    alerts: Alerts,
+    events: EventLog,
+    token: str,
+    timing: HostTiming | None,
+) -> HostParts | None:
+    """The host behind the gatekeeper (docs/architecture.md: Host interface). None when no host is set up."""
+    if cfg.host is None:
+        return None
+    host_token = ensure_host_token(cfg.host_token_path, bot_id(token))
+    key = load_or_create_key(cfg.adapter_key_path)
+    members = cfg.members_by_telegram_id()
+    queue = HostQueue(conn, journal, members, probe_peer(key))
+    turns = TurnRegistry(conn, queue)
+    hold_text = cfg.locale.text("hold")
+    supervisor = Supervisor(
+        conn,
+        queue,
+        events,
+        alerts=alerts,
+        timing=timing,
+        on_hold=functools.partial(queue.send_hold_replies, outbox, hold_text),
+    )
+    host_outbox = HostOutbox(
+        conn, api, supervisor, queue, turns, outbox, events, cfg.locale, timing=timing, alerts=alerts
+    )
+    host_api = HostApi(
+        host_token, cfg.host.api_port, members, queue, supervisor, host_outbox, api, events, alerts=alerts
+    )
+    adapter = AdapterServer(cfg.host.socket_path, key, supervisor, turns, queue, events, cfg.locale)
+    gatekeeper = [("127.0.0.1", cfg.host.api_port)]
+    egress = EgressProxy(cfg.host.proxy_port, cfg.host.egress_allow, gatekeeper, events, alerts=alerts)
+    loops: list[tuple[str, Loop]] = [
+        ("host_api", host_api.serve_forever),
+        ("adapter", adapter.serve_forever),
+        ("egress", egress.serve_forever),
+        ("supervisor", supervisor.run),
+        ("host_outbox", host_outbox.run),
+    ]
+    return HostParts(queue, supervisor, loops)
+
+
 def _daily_jobs(cfg: Config, backups: Backups, service_bot: ServiceBot | None) -> list[DailyJob]:
     jobs: list[DailyJob] = []
     if cfg.snapshot_at is not None:
@@ -166,8 +242,10 @@ async def run_service(
     copy_interval: float = 5.0,
     retry_seconds: float = 30.0,
     documents_grace: float = DOCUMENTS_GRACE_SECONDS,
+    host_timing: HostTiming | None = None,
 ) -> None:
     ensure_private_dir(cfg.data_dir)
+    raise_file_limit()
     lock_fd = acquire_lock(cfg.data_dir / "core.lock")
     try:
         init_layout(cfg)
@@ -191,16 +269,29 @@ async def run_service(
                 api = BotApi(session, cfg.api_root, token)
                 outbox = Outbox(conn, api, events)
                 outbox.recover()
-                health = Health(cfg, conn, journal)
                 service_outbox: Outbox | None = None
-                service_bot: ServiceBot | None = None
+                service_api: BotApi | None = None
                 if service_token is not None:
                     service_api = BotApi(session, cfg.service_api_root, service_token)
                     service_outbox = Outbox(conn, service_api, events, bot="service")
                     service_outbox.recover()
-                    probe = functools.partial(check_documents, documents)
-                    service_bot = ServiceBot(cfg, service_api, conn, service_outbox, health, events, probe=probe)
                 alerts = Alerts(conn, service_outbox, events, cfg.locale, documents_grace=documents_grace)
+                try:
+                    host = _host(cfg, conn, journal, api, outbox, alerts, events, token, host_timing)
+                except (KeyFileError, OSError) as exc:
+                    # Broken host secrets turn the host off. Core keeps receiving and answers text itself.
+                    events.log("host_off", {"error": type(exc).__name__})
+                    log.warning("the host is off: %s", type(exc).__name__)
+                    alerts.raise_("host_failed", reason=f"secrets:{type(exc).__name__}")
+                    host = None
+                supervisor = None if host is None else host.supervisor
+                health = Health(cfg, conn, journal, host_state=None if supervisor is None else supervisor.describe)
+                service_bot: ServiceBot | None = None
+                if service_api is not None and service_outbox is not None:
+                    probe = functools.partial(check_documents, documents)
+                    service_bot = ServiceBot(
+                        cfg, service_api, conn, service_outbox, health, events, probe=probe, supervisor=supervisor
+                    )
                 backups = Backups(snapshots, documents, alerts, events)
                 batcher = ReceiptBatcher(outbox, journal, cfg.batch_window_seconds, cfg.locale)
                 gatekeeper = Gatekeeper(
@@ -214,6 +305,7 @@ async def run_service(
                     copy_interval=copy_interval,
                     retry_seconds=retry_seconds,
                     alerts=alerts,
+                    host=None if host is None else host.queue,
                 )
                 scheduler = Scheduler(conn, cfg.timezone, _daily_jobs(cfg, backups, service_bot), events)
                 side_loops: list[tuple[str, Loop]] = [
@@ -223,6 +315,8 @@ async def run_service(
                 ]
                 if service_bot is not None and service_outbox is not None:
                     side_loops += [("service_bot", service_bot.poll_forever), ("service_outbox", service_outbox.run)]
+                if host is not None:
+                    side_loops += host.loops
                 events.log("core_started")
                 if crashed:
                     alerts.raise_("restarted")

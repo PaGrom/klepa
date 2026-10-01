@@ -1,6 +1,7 @@
-"""Gatekeeper, stage 1a: Core owns the family bot (docs/architecture.md: Intake, D33).
+"""Gatekeeper: Core owns the family bot (docs/architecture.md: Intake, D33).
 
-In this plan Core answers text itself. Serving text to the OpenClaw host arrives in plan 1c.
+Members' text goes to the host when one is set up (docs/architecture.md: Host interface); without a host Core
+answers it itself. Commands, attachments and everything else stay with Core.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from ..alerts import Alerts
 from ..config import Config, Member
 from ..events import EventLog, utc_now_iso
 from ..evidence import EvidenceStore, IncomingFile
+from ..host.queue import HostQueue
 from ..journal import InboundJournal
 from ..spaces import decide_space, is_private_caption
 from ..telegram.client import (
@@ -47,6 +49,7 @@ class Gatekeeper:
         copy_interval: float = 5.0,
         retry_seconds: float = 30.0,
         alerts: Alerts | None = None,
+        host: HostQueue | None = None,
     ) -> None:
         self.cfg = cfg
         self.api = api
@@ -58,6 +61,7 @@ class Gatekeeper:
         self.copy_interval = copy_interval
         self.retry_seconds = retry_seconds
         self.alerts = alerts
+        self.host = host
         self._album_alerted: set[tuple[int, str]] = set()
         self.members: dict[int, Member] = cfg.members_by_telegram_id()
         self._retry_at: dict[int, float] = {}
@@ -81,6 +85,8 @@ class Gatekeeper:
             self.journal.mark(update_id, "rejected", c.reason)
         elif c.action == "command":
             self._reply(update_id, c, "start" if c.command == "start" else "no_commands")
+        elif c.action == "text" and self.host is not None:
+            self._to_host(update_id, c)
         elif c.action == "text":
             self._reply(update_id, c, "stage1")
         elif c.action == "unsupported":
@@ -93,6 +99,16 @@ class Gatekeeper:
         assert c.message_id is not None
         self.outbox.enqueue_text(
             f"reply:{c.chat_id}:{c.message_id}", c.chat_id, self.cfg.locale.text(text_key), reply_to=c.message_id
+        )
+        self.journal.mark(update_id, "done")
+
+    def _to_host(self, update_id: int, c: Classified) -> None:
+        assert self.host is not None
+        assert c.chat_id is not None
+        assert c.message_id is not None
+        assert c.from_id is not None
+        self.host.enqueue(
+            update_id, c.chat_id, c.message_id, c.from_id, c.date or int(time.time()), forwarded=c.forwarded
         )
         self.journal.mark(update_id, "done")
 
