@@ -194,4 +194,9 @@ def test_a_held_answer_of_the_host_stays_out_of_the_snapshot(setup):
     assert b"HELD-ANSWER" not in data
     assert b"CORE-RECEIPT" in data
     verify_snapshot(snapshotter.root / info.name, KEY)
+    copy = sqlite3.connect(snapshotter.root / info.name / "core.db")
+    # Restored, the copy must not hand the worker a message without text: it counts as not sent.
+    row = copy.execute("SELECT state, last_error FROM outbound WHERE idempotency_key='host:1'").fetchone()
+    copy.close()
+    assert row == ("FAILED", "snapshot")
     assert conn.execute("SELECT payload FROM outbound WHERE idempotency_key='host:1'").fetchone()[0] != "{}"

@@ -83,9 +83,14 @@ def _sha256(path: Path) -> tuple[str, int]:
 
 def _drop_host_text(path: Path) -> None:
     """The host's messages that wait in outbound stay out of snapshots: snapshots go to the documents folder, and
-    a held answer is part of a family conversation. secure_delete overwrites the bytes the update frees."""
+    a held answer is part of a family conversation. In the copy they count as not sent, so a restore never hands
+    the worker a message without text. secure_delete overwrites the bytes the updates free."""
     with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as copy:
         copy.execute("PRAGMA secure_delete=ON")
+        copy.execute(
+            "UPDATE outbound SET state='FAILED', last_error='snapshot' "
+            "WHERE origin='host' AND state IN ('PENDING','SENDING','RETRY_WAIT')"
+        )
         copy.execute("UPDATE outbound SET payload='{}' WHERE origin='host' AND payload != '{}'")
 
 

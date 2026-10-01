@@ -125,8 +125,15 @@ class HostOutbox:
         for chat_id, row in heads.items():
             if row["state"] == "SENDING":
                 continue
-            payload = json.loads(row["payload"])
-            if now - float(payload["accepted_at"]) >= self.timing.drop_after:  # a retry or a sleep, all the same
+            try:
+                payload = json.loads(row["payload"])
+                accepted_at = float(payload["accepted_at"])
+                if not isinstance(payload["text"], str):
+                    raise TypeError("text")
+            except (ValueError, KeyError, TypeError):  # never stuck on a row that cannot be sent
+                self._drop(chat_id, "unreadable")
+                continue
+            if now - accepted_at >= self.timing.drop_after:  # a retry or a sleep, all the same
                 self._drop(chat_id, "held_expired")
                 continue
             if not self.supervisor.may_release():

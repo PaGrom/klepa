@@ -214,3 +214,19 @@ def test_finished_sends_lose_their_text_on_start(setup, core_db, api):
     turns = TurnRegistry(conn, queue, clock=clock)
     HostOutbox(conn, api, gate, queue, turns, Outbox(conn, api, EventLog(conn)), EventLog(conn), cfg.locale)
     assert conn.execute("SELECT payload FROM outbound WHERE idempotency_key='host:x'").fetchone()[0] == "{}"
+
+
+async def test_an_unreadable_message_is_dropped_and_other_chats_go_on(setup, fake_tg):
+    outbox, queue, journal, conn, _, _ = setup
+    issue(queue, journal, 1, OWNER, 10)
+    issue(queue, journal, 2, MEMBER, 20)
+    conn.execute(
+        "INSERT INTO outbound(idempotency_key, origin, method, chat_id, payload, state, created_at, updated_at) "
+        "VALUES ('host:restored', 'host', 'sendMessage', ?, '{}', 'PENDING', 't', 't')",
+        (OWNER,),
+    )
+    outbox.accept(MEMBER, "other chat", None)
+    await outbox.release_due()
+    row = conn.execute("SELECT state, last_error FROM outbound WHERE idempotency_key='host:restored'").fetchone()
+    assert tuple(row) == ("FAILED", "unreadable")
+    assert [item["params"]["text"] for item in fake_tg.sent] == ["other chat"]
