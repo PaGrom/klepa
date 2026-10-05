@@ -1,0 +1,17 @@
+{
+  "id": "klepa-adapter",
+  "name": "Klepa adapter",
+  "description": "Links the gateway to Klepa Core: the turn gate, the heartbeat and the stage-1 replies.",
+  "version": "0.1.0",
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["socket", "keyFile", "policy"],
+    "properties": {
+      "socket": { "type": "string", "minLength": 1 },
+      "keyFile": { "type": "string", "minLength": 1 },
+      "policy": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+    }
+  }
+}

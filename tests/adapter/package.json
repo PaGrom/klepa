@@ -1,0 +1,13 @@
+{
+  "name": "klepa-adapter-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test adapter.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "typescript": "6.0.3"
+  }
+}

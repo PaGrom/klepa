@@ -1,0 +1,7 @@
+{
+  "name": "klepa-openclaw-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "openclaw": { "extensions": ["./index.ts"], "compat": { "pluginApi": ">=2026.9.4" } }
+}

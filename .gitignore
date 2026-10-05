@@ -222,3 +222,6 @@ __marimo__/
 *.key
 *.db
 local/
+
+# The adapter tests take their tools from npm.
+node_modules
