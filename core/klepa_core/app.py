@@ -26,12 +26,15 @@ from .gatekeeper.outbox import Outbox
 from .gatekeeper.receipts import ReceiptBatcher
 from .gatekeeper.service import Gatekeeper
 from .health import Health, check_documents
+from .host import reference
 from .host.adapter import AdapterServer, probe_peer
 from .host.api import HostApi
 from .host.egress import EgressProxy
+from .host.gateway import LaunchdGateway
 from .host.outbox import HostOutbox
 from .host.queue import HostQueue
-from .host.supervisor import HostTiming, Supervisor
+from .host.runtime import OPENCLAW_VERSION, Runtime, adapter_sha256
+from .host.supervisor import Expectations, GatewayControl, HostTiming, Supervisor
 from .host.turns import TurnRegistry
 from .journal import InboundJournal
 from .keys import KeyFileError, ensure_host_token, ensure_private_dir, load_or_create_key
@@ -196,14 +199,18 @@ def _host(
     host_token = ensure_host_token(cfg.host_token_path, bot_id(token))
     key = load_or_create_key(cfg.adapter_key_path)
     members = cfg.members_by_telegram_id()
-    queue = HostQueue(conn, journal, members, probe_peer(key))
+    probe = probe_peer(key)
+    queue = HostQueue(conn, journal, members, probe)
     turns = TurnRegistry(conn, queue)
     hold_text = cfg.locale.text("hold")
+    expect, control = _gateway(cfg, probe)
     supervisor = Supervisor(
         conn,
         queue,
         events,
         alerts=alerts,
+        expect=expect,
+        control=control,
         timing=timing,
         on_hold=functools.partial(queue.send_hold_replies, outbox, hold_text),
     )
@@ -224,6 +231,18 @@ def _host(
         ("host_outbox", host_outbox.run),
     ]
     return HostParts(queue, supervisor, loops)
+
+
+def _gateway(cfg: Config, probe: int) -> tuple[Expectations | None, GatewayControl | None]:
+    """Core's own gateway under launchd, held to the reference table (spec 4.6, 7.1); or one somebody else runs,
+    which only the heartbeat and the live probe gate."""
+    assert cfg.host is not None
+    if cfg.host.gateway != "launchd":
+        return None, None
+    layout = reference.layout_of(cfg)
+    table = reference.table(reference.settings_of(cfg, probe), layout)
+    control = LaunchdGateway(Runtime(cfg.host.runtime_dir), layout, table, cfg.host.gateway_port)
+    return reference.expectations(table, adapter_sha256(), OPENCLAW_VERSION), control
 
 
 def _daily_jobs(cfg: Config, backups: Backups, service_bot: ServiceBot | None) -> list[DailyJob]:

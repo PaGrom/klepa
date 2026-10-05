@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import os
 import signal
 import sys
@@ -14,6 +15,8 @@ import aiohttp
 from . import db, macos
 from .app import AlreadyRunning, acquire_lock, init_layout, run_service
 from .config import Config, ConfigError, load_config, read_service_token
+from .host import install as host
+from .host.runtime import HostRuntimeError
 from .keys import KeyFileError, ensure_private_dir, key_from_paper, load_key, paper_copy, restore_key
 from .logs import configure_logging
 from .servicebot import bind_owner_chat, new_bind_code
@@ -38,6 +41,9 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument("--python", type=Path, default=Path(sys.executable))
     for name in ("uninstall", "restart", "status"):
         service.add_parser(name)
+    gateway = commands.add_parser("host").add_subparsers(dest="action", required=True)
+    for name in ("install", "login", "status", "uninstall"):
+        gateway.add_parser(name).add_argument("--config", required=True, type=Path)
     keys = commands.add_parser("keys").add_subparsers(dest="action", required=True)
     for name in ("paper-backup", "restore"):
         keys.add_parser(name).add_argument("--config", required=True, type=Path)
@@ -98,6 +104,7 @@ def _service(action: str) -> int:
     """The launchd commands that need no config."""
     if action == "uninstall":
         macos.uninstall()
+        macos.unload_gateway()  # without Core nobody gives the gateway messages; it goes too
         print("klepa-core: the launchd agent is removed")
     elif action == "restart":
         macos.restart()
@@ -118,6 +125,31 @@ def _keys(cfg: Config, action: str) -> int:
     return 0
 
 
+def _host(cfg: Config, action: str) -> int:
+    """The gateway's runtime and model access (spec 7.1). Core starts and watches the gateway itself."""
+    if action == "install":
+        runtime = host.install(cfg)
+        print("klepa-core: the gateway's runtime is installed. Next:")
+        print("  1. Give the gateway the model: in your own terminal run `claude setup-token`, then")
+        print("     klepa-core host login --config <this config>, and paste the token when it asks.")
+        print("  2. Restart Core (service restart): it starts the gateway and checks it before it gets messages.")
+        print(f"  OpenClaw as the engine runs it, for your own use: {runtime.wrapper}")
+        return 0
+    if action == "login":
+        token = getpass.getpass("Paste the setup-token (it is not shown): ")
+        now = host.login(cfg, token)
+        print(f"klepa-core: the setup-token is stored for the gateway ({host.PROFILE_ID})")
+        print("The running gateway uses it now." if now else "The gateway reads it when Core starts it.")
+        return 0
+    if action == "status":
+        for line in host.status(cfg):
+            print(line)
+        return 0
+    host.uninstall(cfg)
+    print("klepa-core: the gateway is unloaded; its runtime and folder stay")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     os.umask(0o077)
@@ -135,6 +167,8 @@ def main(argv: list[str] | None = None) -> int:
             return _bind_service_bot(cfg)
         if args.command == "keys":
             return _keys(cfg, args.action)
+        if args.command == "host":
+            return _host(cfg, args.action)
         if args.command == "service":
             path = macos.install(cfg, args.config, args.python)
             _exclude_keys_from_backups(cfg)
@@ -152,6 +186,9 @@ def main(argv: list[str] | None = None) -> int:
     except macos.ServiceError as exc:
         print(f"klepa-core: {exc}", file=sys.stderr)
         return 5
+    except HostRuntimeError as exc:
+        print(f"klepa-core: {exc}", file=sys.stderr)
+        return 6
 
 
 if __name__ == "__main__":

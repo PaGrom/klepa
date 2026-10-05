@@ -101,6 +101,11 @@ def uninstall(*, agents_dir: Path | None = None, run: Runner | None = None, uid:
     (_agents(agents_dir) / f"{LABEL}.plist").unlink(missing_ok=True)
 
 
+def unload_gateway(*, run: Runner | None = None, uid: int | None = None) -> None:
+    """Unload the engine's gateway agent, if loaded (host/gateway.py); its files stay."""
+    _runner(run)(["launchctl", "bootout", f"{_target(uid)}/klepa.gateway"])
+
+
 def restart(*, run: Runner | None = None, uid: int | None = None) -> None:
     """Restart Core, for example after it was allowed into the documents folder."""
     result = _runner(run)(["launchctl", "kickstart", "-k", f"{_target(uid)}/{LABEL}"])

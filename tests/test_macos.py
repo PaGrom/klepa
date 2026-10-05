@@ -5,6 +5,7 @@ import subprocess
 
 import pytest
 
+from klepa_core import __main__ as cli
 from klepa_core import macos
 from klepa_core.config import ConfigError
 
@@ -129,3 +130,14 @@ def test_init_keeps_token_files_outside_keys_out_of_time_machine(make_config, in
         ["tmutil", "addexclusion", str(install["data_dir"] / "keys")],
         ["tmutil", "addexclusion", str(elsewhere)],
     ]
+
+
+def test_the_gateway_is_unloaded_with_core(monkeypatch):
+    run = FakeRun()
+    macos.unload_gateway(run=run, uid=501)
+    assert run.calls == [["launchctl", "bootout", "gui/501/klepa.gateway"]]
+    calls: list[list[str]] = []
+    monkeypatch.setattr(macos, "_run", lambda argv: calls.append(list(argv)) or subprocess.CompletedProcess(argv, 0))
+    assert cli.main(["service", "uninstall"]) == 0
+    assert [call[:2] for call in calls] == [["launchctl", "bootout"], ["launchctl", "bootout"]]
+    assert [call[2].rsplit("/", 1)[1] for call in calls] == ["klepa.core", "klepa.gateway"]
