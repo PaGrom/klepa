@@ -16,7 +16,7 @@ from .db import owner_service_chat, transaction
 from .events import EventLog, utc_now_iso
 from .gatekeeper.outbox import Outbox
 from .health import Health, Probe
-from .host.supervisor import Supervisor
+from .host.supervisor import GatewayState, Supervisor
 from .telegram.client import (
     Ambiguous,
     BadRequest,
@@ -129,24 +129,29 @@ class ServiceBot:
         self.events.log("service_update_rejected", {"from_id": from_id})
 
     def _actions(self) -> list[str]:
+        """Status, and with a host set up Pause, or Resume while the host is paused or Core stopped it: a stopped
+        host stays down until Resume."""
         if self.supervisor is None:
             return ["status"]
-        return ["status", "resume" if self.supervisor.paused else "pause"]
+        held = self.supervisor.paused or self.supervisor.state is GatewayState.STOPPED
+        return ["status", "resume" if held else "pause"]
 
     async def send_status(self, key: str) -> bool:
-        """Queue the status line with fresh one-time buttons: Status, and Pause or Resume when a host is set up.
-        Idempotent by key."""
+        """Queue the status line with fresh one-time buttons. Idempotent by key."""
         chat_id = owner_service_chat(self.conn)
         if chat_id is None:
             return False
         text, _ = self.health.line(await self.probe())
+        return self._send_with_buttons(key, chat_id, text)
+
+    def _send_with_buttons(self, key: str, chat_id: int, text: str, reply_to: int | None = None) -> bool:
         buttons = [(secrets.token_hex(16), action) for action in self._actions()]  # 128 bits each
         row = [
             {"text": self.cfg.locale.service_text(f"{action}_button"), "callback_data": action_id}
             for action_id, action in buttons
         ]
         with transaction(self.conn):
-            if not self.outbox.enqueue_text(key, chat_id, text, reply_markup={"inline_keyboard": [row]}):
+            if not self.outbox.enqueue_text(key, chat_id, text, reply_to, reply_markup={"inline_keyboard": [row]}):
                 return False
             for action_id, action in buttons:
                 self.conn.execute(
@@ -174,7 +179,8 @@ class ServiceBot:
         if words[:1] in (["/status"], ["/start"]):
             await self.send_status(f"status:msg:{msg['message_id']}")
             return
-        self.outbox.enqueue_text(
+        # The buttons come with the reply, so a person who types "pause" finds Pause one tap away.
+        self._send_with_buttons(
             f"service_reply:{msg['message_id']}",
             int(chat["id"]),
             self.cfg.locale.service_text("not_yet"),

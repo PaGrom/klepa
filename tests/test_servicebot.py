@@ -195,3 +195,42 @@ async def test_pause_and_resume_buttons_hold_and_restart_the_host(running, setup
     service_tg.press(OWNER, second["message"], buttons[1]["callback_data"])
     await deliver(service_api, bot)
     assert (bot.supervisor.state, bot.supervisor.paused) == (GatewayState.STARTING, False)
+
+
+def with_host(bot, setup, events, tmp_path):
+    cfg, conn = setup
+    queue = HostQueue(conn, InboundJournal(tmp_path / "host-inbound.db"), cfg.members_by_telegram_id(), 2**51 + 7)
+    bot.supervisor = Supervisor(conn, queue, events)
+    bot.health.host_state = bot.supervisor.describe
+    return bot.supervisor
+
+
+async def test_a_word_gets_the_fixed_reply_with_the_buttons(running, setup, service_tg, service_api, tmp_path):
+    """A person who types "pause" finds Pause one tap away, under the reply."""
+    bot, outbox, events, _ = running
+    supervisor = with_host(bot, setup, events, tmp_path)
+    service_tg.add_text(OWNER, "pause")
+    await deliver(service_api, bot)
+    await outbox.send_due()
+    reply = service_tg.sent[-1]
+    assert reply["params"]["text"].startswith("The mechanic arrives")
+    buttons = reply["params"]["reply_markup"]["inline_keyboard"][0]
+    assert [button["text"] for button in buttons] == ["Status", "Pause"]
+    service_tg.press(OWNER, reply["message"], buttons[1]["callback_data"])
+    await deliver(service_api, bot)
+    assert (supervisor.state, supervisor.paused) == (GatewayState.HOLD, True)
+
+
+async def test_a_host_core_stopped_offers_resume(running, setup, service_tg, service_api, tmp_path):
+    """After a failed check the host is STOPPED until Resume, so the line offers Resume, not Pause."""
+    bot, outbox, events, _ = running
+    supervisor = with_host(bot, setup, events, tmp_path)
+    await supervisor._fail("probe")
+    assert await bot.send_status("status:1")
+    await outbox.send_due()
+    line = service_tg.sent[-1]
+    buttons = line["params"]["reply_markup"]["inline_keyboard"][0]
+    assert [button["text"] for button in buttons] == ["Status", "Resume"]
+    service_tg.press(OWNER, line["message"], buttons[1]["callback_data"])
+    await deliver(service_api, bot)
+    assert (supervisor.state, supervisor.reason) == (GatewayState.STARTING, "resumed")

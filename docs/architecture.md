@@ -160,7 +160,8 @@ Code: `klepa_core/servicebot.py`, `klepa_core/alerts.py`, `klepa_core/health.py`
 generation, hash and integrity; the state of the documents folder; and the counts of waiting copies, copy conflicts
 and sends left unconfirmed in the last 48 hours. It says "Needs attention" when any of these is wrong. A missing line
 means trouble. The Status button under the line sends a fresh one. Its id is one-time, 128-bit, and bound to the chat,
-the message and a lifetime of a week. With a host set up, Pause or Resume sits next to Status.
+the message and a lifetime of a week. With a host set up, Pause sits next to Status, or Resume while the host is
+paused or Core stopped it. The reply to any other word in the service chat carries the same buttons.
 
 **The documents probe.** Core writes, reads back, lists and removes a small file with a unique name. Listing matters:
 macOS lets a background process without permission write a known path in a protected folder but refuses to list it.
