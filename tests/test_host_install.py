@@ -181,7 +181,7 @@ def test_status_shows_the_runtime_the_agent_the_model_and_cores_view(cfg):
         "runtime: Node v24.21.0, OpenClaw 2026.9.4",
         "gateway: not loaded (Core loads it when it runs)",
         "model token (anthropic:klepa): stored",
-        "Core: RUNNING since 2026-10-04T10:00:00Z",
+        "Core: not running; its last state was RUNNING since 2026-10-04T10:00:00Z",
     ]
 
 
@@ -204,6 +204,24 @@ def test_a_host_problem_ends_the_command_with_its_own_code(cfg, monkeypatch, cap
     monkeypatch.setattr(cli.host, "status", broken)
     assert cli.main(["host", "status", "--config", str(tmp_path / "config.toml")]) == 6
     assert "host install" in capsys.readouterr().err
+
+
+def test_cores_view_says_whether_core_runs(cfg):
+    """The event log keeps the supervisor's last state after Core stopped: only Core's lock tells whether it runs."""
+    conn = db.connect(cfg.core_db_path)
+    db.migrate(conn)
+    assert host._core_view(cfg) == "not running; has not supervised a gateway yet"
+    conn.execute(
+        "INSERT INTO event_log(at, kind, data) VALUES ('2026-10-04T10:00:00Z', 'host_state', ?)",
+        (json.dumps({"state": "STOPPED", "reason": "no_heartbeat"}),),
+    )
+    conn.close()
+    assert host._core_view(cfg) == "not running; its last state was STOPPED (no_heartbeat) since 2026-10-04T10:00:00Z"
+    lock = acquire_lock(cfg.data_dir / "core.lock")
+    try:
+        assert host._core_view(cfg) == "STOPPED (no_heartbeat) since 2026-10-04T10:00:00Z"
+    finally:
+        os.close(lock)
 
 
 def test_core_view_without_a_database(cfg):

@@ -123,7 +123,7 @@ def _agent_line(launchctl: gateway.Runner) -> str:
 
 
 def _core_view(cfg: Config) -> str:
-    """The supervisor's latest state from Core's event log."""
+    """Whether Core runs, and the supervisor's latest state from Core's event log, which keeps it after Core stopped."""
     if not cfg.core_db_path.exists():
         return "no database yet"
     try:
@@ -133,11 +133,23 @@ def _core_view(cfg: Config) -> str:
             ).fetchone()
     except sqlite3.Error as exc:
         return f"unreadable ({type(exc).__name__})"
+    runs = _core_runs(cfg)
     if row is None:
-        return "has not supervised a gateway yet"
+        return "has not supervised a gateway yet" if runs else "not running; has not supervised a gateway yet"
     data = json.loads(row[1])
     reason = f" ({data['reason']})" if data.get("reason") else ""
-    return f"{data.get('state')}{reason} since {row[0]}"
+    seen = f"{data.get('state')}{reason} since {row[0]}"
+    return seen if runs else f"not running; its last state was {seen}"
+
+
+def _core_runs(cfg: Config) -> bool:
+    """Core holds its lock while it runs: taking it for a moment tells."""
+    try:
+        lock = acquire_lock(cfg.data_dir / "core.lock")
+    except AlreadyRunning:
+        return True
+    os.close(lock)
+    return False
 
 
 def _agent() -> str:
