@@ -4,7 +4,7 @@ Thanks for helping with Klepa. The project keeps a family's documents, so correc
 
 ## Setup
 
-You need Python 3.13 and [uv](https://docs.astral.sh/uv/).
+You need Python 3.13 and [uv](https://docs.astral.sh/uv/), and Node 24 for the adapter plugin's tests.
 
 ```bash
 uv sync
@@ -17,9 +17,11 @@ uv run pytest
 uv run ruff check
 uv run ruff format --check
 uv run mypy
+cd tests/adapter && npm ci --ignore-scripts && npx tsc -p tsconfig.json && node --test adapter.test.ts
 ```
 
-CI runs the same checks, with tests on macOS and Linux.
+CI runs the same checks, with tests on macOS and Linux. Changes to the gateway also run `tests/test_gateway_live.py`
+against an installed runtime (see the README).
 
 ## How we work
 
@@ -31,6 +33,7 @@ CI runs the same checks, with tests on macOS and Linux.
 ## Style
 
 - ruff decides formatting (120 columns) and lint. mypy runs in strict mode over `core/klepa_core`.
+- The adapter plugin is TypeScript that runs without a build step: erasable syntax only, checked by `tsc` in strict mode.
 - Everything is in English: code, comments, docs, issues, commit messages.
 - Code carries no other languages. User-facing texts live in [`core/klepa_core/locales/`](core/klepa_core/locales/). The only test module with non-English text is `tests/test_languages.py`, because it checks that data.
 

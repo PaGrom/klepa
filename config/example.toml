@@ -44,4 +44,7 @@ token_file = "/Users/you/KlepaData/keys/service-bot.token"   # 0600, typed via s
 # [host]
 # api_port = 19201                         # the host's API root: http://127.0.0.1:19201
 # proxy_port = 19202                       # the host's proxy for all its HTTP
-# egress_allow = ["api.anthropic.com:443"] # exact names and ports; no masks, no addresses
+# egress_allow = ["api.anthropic.com:443"] # exact names and ports; no masks, no addresses; the model needs this one
+# gateway = "launchd"                      # Core runs its own OpenClaw gateway; install it with: host install
+# gateway_port = 19300                     # well away from another OpenClaw's ports (18789 and up by default)
+# model = "anthropic/claude-sonnet-5"      # the one model the gateway may use

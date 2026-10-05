@@ -68,8 +68,14 @@ Optional. With it, members' text goes to an agent host behind the gatekeeper ([a
 | `proxy_port` | `19202` | The egress proxy on `127.0.0.1`, the host's proxy for all its HTTP. |
 | `egress_allow` | `[]` | Exact `"name:port"` destinations the host may reach through the proxy, for example `"api.anthropic.com:443"`. No masks and no addresses. The gatekeeper is always allowed. |
 | `socket` | `<data_dir>/run/adapter.sock` | The adapter plugin's Unix socket, in a directory of its own (0700). The path must fit in 103 bytes. |
+| `gateway` | `"launchd"` | `"launchd"`: Core runs its own OpenClaw gateway under launchd (install it with `host install`). `"external"`: somebody else runs the gateway, and only the heartbeat and the live probe gate it. |
+| `gateway_port` | `19300` | The gateway's own port on `127.0.0.1`. OpenClaw also takes some ports above it, so keep it well away from another OpenClaw's (18789 by default). |
+| `model` | `"anthropic/claude-sonnet-5"` | The one model the gateway may use, through Anthropic's API. |
+| `runtime_dir` | `~/Library/Application Support/Klepa/openclaw` | Where `host install` puts Node, OpenClaw and the adapter plugin. |
 
-At its first `run` with this section Core makes two secrets, each 0600 in `keys/`: `host-bot.token`, the host's fake family bot token, and `adapter.key`, which signs the messages between the adapter plugin and Core. The host's configuration points at both files; neither goes into chats, logs or the repository.
+At its first `run` or `host install` with this section Core makes two secrets, each 0600 in `keys/`: `host-bot.token`, the host's fake family bot token, and `adapter.key`, which signs the messages between the adapter plugin and Core. The host's configuration points at both files; neither goes into chats, logs or the repository.
+
+The gateway reaches the model only through the egress proxy, so `egress_allow` needs `"api.anthropic.com:443"`; `host install` warns without it. Its own files live in `<data_dir>/host/`, which Core writes and the gateway may not change.
 
 ## `[[members]]`
 
@@ -94,6 +100,10 @@ python -m klepa_core service status
 python -m klepa_core service uninstall                          # stop Core for good and remove the agent
 python -m klepa_core keys paper-backup --config PATH            # print the signing key for a paper copy; run it yourself
 python -m klepa_core keys restore --config PATH                 # type the paper copy back in (stdin)
+python -m klepa_core host install --config PATH                 # put the gateway's Node, OpenClaw, adapter and config in place
+python -m klepa_core host login --config PATH                   # give the gateway the model's setup-token, typed without echo
+python -m klepa_core host status --config PATH                  # the runtime, the launchd agent, model access, Core's view
+python -m klepa_core host uninstall --config PATH               # unload the gateway; refused while Core runs, which would load it again
 ```
 
 Exit codes:
@@ -101,4 +111,5 @@ Exit codes:
 - `2` — invalid config or key file;
 - `3` — another Core already runs on this data directory;
 - `4` — the service bot was not bound;
-- `5` — launchd refused the agent, or the interpreter cannot run Core.
+- `5` — launchd refused the agent, or the interpreter cannot run Core;
+- `6` — the gateway's runtime could not be installed, or OpenClaw refused a step.

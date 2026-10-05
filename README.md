@@ -8,7 +8,7 @@ Klepa is a family second-brain engine for AI agent hosts.
 
 Family members send documents, photos and voice messages to a Telegram bot. Klepa keeps every original safe on the family's own Mac and files it into a shared or a personal space. In later stages it will let an agent host such as OpenClaw answer questions about those files, without ever holding the keys to the family's data.
 
-> **Status: stage 1c.** Core receives files from Telegram and stores them durably, runs as a launchd service, takes signed daily snapshots and reports to the owner through a service bot. Core's side of the agent host is in place: the gatekeeper's API for the host, supervision and the egress proxy. OpenClaw itself is not connected yet. Run it only against test bots and with test data.
+> **Status: stage 1c.** Core receives files from Telegram and stores them durably, runs as a launchd service, takes signed daily snapshots and reports to the owner through a service bot. OpenClaw runs behind the gatekeeper: Core installs its own pinned OpenClaw, starts it under launchd and checks it with a live probe before it gets messages. In stage 1 Core still answers people itself. Run it only against test bots and with test data.
 
 ## Principles
 
@@ -103,6 +103,22 @@ Core must not run in the foreground at the same time: the service holds the data
 7. **Check it.** Press Status in the service bot. The daily line comes at 09:00; a missing line means trouble.
    `service status` shows whether launchd runs Core; `service uninstall` stops it for good.
 
+## Running the agent host
+
+Core runs its own OpenClaw gateway, apart from any other OpenClaw on the Mac. It needs Core running as a service.
+
+1. **Configure it.** Add a `[host]` section with `egress_allow = ["api.anthropic.com:443"]`
+   ([configuration](docs/configuration.md#host)).
+2. **Install the runtime:** `"$KLEPA_HOME/venv/bin/python" -m klepa_core host install --config ~/KlepaData-test/config.toml`.
+   It downloads a pinned Node from nodejs.org (about 27 MB, checked against its SHA-256) and OpenClaw from npm with a
+   pinned lockfile (about 540 MB), then writes the gateway's config, which OpenClaw itself may not change.
+3. **Give it the model.** In your own terminal run `claude setup-token`, then
+   `"$KLEPA_HOME/venv/bin/python" -m klepa_core host login --config ~/KlepaData-test/config.toml` and paste the token
+   when it asks; it is not shown. Never paste it into a chat. Run `host login` again to replace the token; a running
+   gateway takes the new one at once.
+4. **Restart Core:** `"$KLEPA_HOME/venv/bin/python" -m klepa_core service restart`. Core starts the gateway, checks it,
+   and only then gives it messages. `host status` shows the runtime, the gateway, the model's token and Core's view.
+
 ## Development
 
 ```bash
@@ -111,7 +127,11 @@ uv run pytest          # unit and acceptance tests against a fake Telegram
 uv run ruff check      # lint
 uv run ruff format     # format
 uv run mypy            # strict type check
+cd tests/adapter && npm ci --ignore-scripts && npx tsc -p tsconfig.json && node --test adapter.test.ts
 ```
+
+The tests against the real gateway run only where `KLEPA_TEST_RUNTIME` names an installed runtime, for example
+`KLEPA_TEST_RUNTIME="$HOME/Library/Application Support/Klepa/openclaw" uv run pytest tests/test_gateway_live.py`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and the rules.
 
@@ -121,7 +141,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and the rules.
 |---|---|---|
 | 1a | Core receives files from Telegram and stores them durably | done |
 | 1b | Service bot, signed daily snapshots, Core as a launchd service | done |
-| 1c | OpenClaw behind the gatekeeper: egress proxy, host interface, supervision | in progress |
+| 1c | OpenClaw behind the gatekeeper: its own install, reference config, adapter plugin, egress proxy, supervision | in progress |
 | 2 | Processing: transcription and OCR in a sandbox, photo drafts to PDF, page viewer | planned |
 | 3 | Knowledge: facts with verified quotes, `make_private`, disclosure journal | planned |
 | 4 | Reminders and self-checks, fenced outbound delivery | planned |
