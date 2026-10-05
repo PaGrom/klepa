@@ -171,6 +171,20 @@ def test_host_section_defaults(make_config, short_dir):
     assert cfg.host.socket_path == data_dir / "run" / "adapter.sock"
     assert cfg.host_token_path == data_dir / "keys" / "host-bot.token"
     assert cfg.adapter_key_path == data_dir / "keys" / "adapter.key"
+    assert (cfg.host.gateway, cfg.host.gateway_port, cfg.host.model) == ("launchd", 19300, "anthropic/claude-sonnet-5")
+    assert cfg.host.runtime_dir == Path.home() / "Library" / "Application Support" / "Klepa" / "openclaw"
+    assert cfg.host_dir == data_dir / "host"
+
+
+def test_the_gateway_settings_can_be_set(make_config):
+    section = (
+        'socket = "/tmp/klepa-no-such-dir/adapter.sock"\ngateway = "external"\ngateway_port = 19400\n'
+        'model = "anthropic/claude-opus-5-5"\nruntime_dir = "/opt/klepa-runtime"\n'
+    )
+    cfg = make_config(text=BASE_CONFIG + f"\n[host]\n{section}")
+    assert cfg.host is not None
+    assert (cfg.host.gateway, cfg.host.gateway_port, cfg.host.model) == ("external", 19400, "anthropic/claude-opus-5-5")
+    assert cfg.host.runtime_dir == Path("/opt/klepa-runtime")
 
 
 @pytest.mark.parametrize(
@@ -186,6 +200,13 @@ def test_host_section_defaults(make_config, short_dir):
         ("proxy_port = 19201", "differ"),
         ('socket = "relative.sock"', "absolute"),
         ('socket = "/tmp/' + "x" * 120 + '.sock"', "longer than"),
+        ('gateway = "systemd"', "launchd"),
+        ("gateway_port = 19201", "differ"),
+        ("gateway_port = 70000", "port"),
+        ('model = "openai/gpt-5"', "Anthropic"),
+        ('model = "claude-cli/claude-sonnet-5"', "Anthropic"),
+        ('model = "anthropic/claude-3.5-sonnet"', "Anthropic"),
+        ('runtime_dir = "relative/dir"', "absolute"),
     ],
 )
 def test_bad_host_sections_are_refused(make_config, section, message):

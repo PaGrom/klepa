@@ -25,6 +25,12 @@ _HOSTNAME = re.compile(
 _MAX_SOCKET_PATH_BYTES = 103  # sun_path on macOS holds 104 bytes with the closing NUL
 DEFAULT_HOST_API_PORT = 19201
 DEFAULT_EGRESS_PORT = 19202
+DEFAULT_GATEWAY_PORT = 19300  # OpenClaw also takes the next ports (spec 12); 18789 and up is a default install's
+DEFAULT_MODEL = "anthropic/claude-sonnet-5"
+DEFAULT_RUNTIME_DIR = Path.home() / "Library" / "Application Support" / "Klepa" / "openclaw"
+GATEWAY_MODES = ("launchd", "external")
+# The provider is Anthropic's API, through the proxy; no dots, so the model can be part of a dotted settings key.
+_MODEL = re.compile(r"^anthropic/[a-z0-9][a-z0-9-]{0,63}$")
 
 
 class ConfigError(Exception):
@@ -47,6 +53,10 @@ class HostConfig:
     proxy_port: int
     egress_allow: tuple[tuple[str, int], ...]
     socket_path: Path
+    gateway: str = "launchd"  # Core runs the gateway under launchd; "external": somebody else runs it (tests)
+    gateway_port: int = DEFAULT_GATEWAY_PORT
+    model: str = DEFAULT_MODEL
+    runtime_dir: Path = DEFAULT_RUNTIME_DIR  # Node, OpenClaw and the adapter: program files, not data
 
 
 @dataclass(frozen=True)
@@ -95,6 +105,11 @@ class Config:
     def host_token_path(self) -> Path:
         """The host's fake family bot token (spec 4.6): a secret of its own, never the real token."""
         return self.keys_dir / "host-bot.token"
+
+    @property
+    def host_dir(self) -> Path:
+        """The gateway's config, state, workspace and logs: people's messages live there, so it is data."""
+        return self.data_dir / "host"
 
     @property
     def adapter_key_path(self) -> Path:
@@ -200,13 +215,32 @@ def _host(raw: object, data_dir: Path) -> HostConfig | None:
     if not isinstance(items, list):
         raise ConfigError("host.egress_allow must be a list")
     egress_allow = tuple(_egress_entry(item, i) for i, item in enumerate(items))
+    gateway = raw.get("gateway", "launchd")
+    if gateway not in GATEWAY_MODES:
+        raise ConfigError("host.gateway must be 'launchd' or 'external'")
+    gateway_port = _port(raw.get("gateway_port", DEFAULT_GATEWAY_PORT), "host.gateway_port")
+    if gateway_port in (api_port, proxy_port):
+        raise ConfigError("host.gateway_port must differ from host.api_port and host.proxy_port")
+    model = raw.get("model", DEFAULT_MODEL)
+    if not isinstance(model, str) or not _MODEL.match(model):
+        raise ConfigError("host.model must be an Anthropic model, for example 'anthropic/claude-sonnet-5'")
+    runtime_dir = _abs_path(raw["runtime_dir"], "host.runtime_dir") if "runtime_dir" in raw else DEFAULT_RUNTIME_DIR
     socket_path = _abs_path(raw["socket"], "host.socket") if "socket" in raw else data_dir / "run" / "adapter.sock"
     if len(str(socket_path).encode()) > _MAX_SOCKET_PATH_BYTES:
         raise ConfigError(f"the adapter socket path is longer than {_MAX_SOCKET_PATH_BYTES} bytes; set host.socket")
     parent = socket_path.parent
     if parent.is_dir() and stat.S_IMODE(parent.stat().st_mode) & 0o077:
         raise ConfigError("host.socket must be in a directory of its own, mode 0700")
-    return HostConfig(api_port=api_port, proxy_port=proxy_port, egress_allow=egress_allow, socket_path=socket_path)
+    return HostConfig(
+        api_port=api_port,
+        proxy_port=proxy_port,
+        egress_allow=egress_allow,
+        socket_path=socket_path,
+        gateway=gateway,
+        gateway_port=gateway_port,
+        model=model,
+        runtime_dir=runtime_dir,
+    )
 
 
 def parse_time_of_day(text: str) -> time_of_day | None:

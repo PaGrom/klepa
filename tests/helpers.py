@@ -19,12 +19,14 @@ def with_service_bot(text: str, token_file, api_root: str, *, snapshot_at="off",
     return text + f'\n[service_bot]\ntoken_file = "{token_file}"\napi_root = "{api_root}"\n'
 
 
-def with_host(text: str, socket_path, api_port: int, proxy_port: int, allow: tuple[str, ...] = ()) -> str:
-    """Config text with a host behind the gatekeeper."""
+def with_host(
+    text: str, socket_path, api_port: int, proxy_port: int, allow: tuple[str, ...] = (), gateway: str = "external"
+) -> str:
+    """Config text with a host behind the gatekeeper; by default a gateway the test runs itself."""
     entries = ", ".join(f'"{entry}"' for entry in allow)
     return text + (
         f'\n[host]\napi_port = {api_port}\nproxy_port = {proxy_port}\nsocket = "{socket_path}"\n'
-        f"egress_allow = [{entries}]\n"
+        f'egress_allow = [{entries}]\ngateway = "{gateway}"\n'
     )
 
 
