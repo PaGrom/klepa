@@ -5,6 +5,7 @@ import pytest
 
 from helpers import Clock, wait_until
 from klepa_core.events import EventLog
+from klepa_core.host import supervisor as module
 from klepa_core.host.queue import HostQueue
 from klepa_core.host.supervisor import Expectations, GatewayState, HostTiming, Supervisor, check_heartbeat
 
@@ -28,15 +29,33 @@ class FakeAlerts:
 
 
 class FakeControl:
-    def __init__(self, ready=None):
+    """Core's control of the gateway. Managed: Core starts it and watches its process, as with launchd."""
+
+    def __init__(self, ready=None, *, managed=False, start=None):
         self.answer = ready
+        self.managed = managed
+        self.start_answer = start
         self.stops = 0
+        self.starts = 0
+        self.running = None
+
+    async def start(self):
+        self.starts += 1
+        if self.start_answer is None and self.running is None:
+            self.running = f"process-{self.starts}"
+        return self.start_answer
 
     async def ready(self):
         return self.answer
 
     async def stop(self):
         self.stops += 1
+        self.running = None
+
+    async def process(self):
+        if self.running == "unknown":
+            raise module.GatewayUnknown("launchctl print failed")
+        return self.running
 
 
 @pytest.fixture
@@ -59,6 +78,11 @@ def make(core_db):
         return supervisor, alerts, queue
 
     return build
+
+
+def managed(**changes):
+    """Timings for Core's own gateway: its process is checked at every step."""
+    return HostTiming(**({"first_heartbeat": 1.0, "probe": 1.0, "process_check": 0.01, "tick": 0.01} | changes))
 
 
 @contextlib.asynccontextmanager
@@ -110,6 +134,13 @@ def test_a_full_heartbeat_has_no_problems():
 )
 def test_heartbeat_problems_are_named(change, expect, problem):
     assert problem in check_heartbeat(FULL | change, expect)
+
+
+def test_another_openclaw_release_is_a_problem():
+    expect = Expectations(version="2026.9.4")
+    assert check_heartbeat(FULL | {"version": "2026.9.4"}, expect) == []
+    assert check_heartbeat(FULL | {"version": "2027.1.0"}, expect) == ["version"]
+    assert check_heartbeat(FULL, expect) == ["version"]
 
 
 async def test_the_start_gate_runs_the_live_probe(make):
@@ -269,3 +300,96 @@ def test_describe_names_a_service_text(make):
     assert supervisor.describe() == "host_starting"
     supervisor.state = GatewayState.HOLD
     assert supervisor.describe() == "host_hold"
+
+
+async def test_core_starts_its_own_gateway_and_a_failed_start_stops_it(make):
+    control = FakeControl(managed=True)
+    supervisor, alerts, _ = make(control=control, timing=managed())
+    async with running(supervisor):
+        await wait_until(lambda: control.starts == 1)
+        await gate(supervisor)
+    assert supervisor.gated_process == "process-1"
+    broken = FakeControl(managed=True, start="config: not installed")
+    supervisor, alerts, _ = make(control=broken, timing=managed())
+    async with running(supervisor):
+        await wait_until(lambda: supervisor.state is GatewayState.STOPPED)
+    assert alerts.raised == [("host_failed", {"reason": "start: config: not installed"})]
+
+
+async def test_a_gateway_that_exits_is_started_again_and_gated_again(make):
+    control = FakeControl(managed=True)
+    supervisor, alerts, _ = make(control=control, timing=managed())
+    async with running(supervisor):
+        await gate(supervisor)
+        control.running = None  # a clean exit: launchd leaves it down
+        await wait_until(lambda: control.starts == 2)
+        assert supervisor.state is GatewayState.STARTING
+        assert not supervisor.may_serve(1, "text")
+        await gate(supervisor, boot="boot-bbbbbbbb")
+    assert ("host_exited", {}) in alerts.raised
+    assert supervisor.gated_process == "process-2"
+
+
+async def test_a_new_gateway_process_is_gated_before_its_first_heartbeat(make):
+    control = FakeControl(managed=True)
+    supervisor, alerts, _ = make(control=control, timing=managed())
+    async with running(supervisor):
+        await gate(supervisor)
+        control.running = "process-crashed-and-restarted"  # launchd brought it back within a second
+        await wait_until(lambda: supervisor.state is GatewayState.STARTING)
+        assert supervisor.reason == "new_process"
+        assert not supervisor.may_serve(1, "text")
+    assert alerts.raised == []
+
+
+async def test_a_gateway_core_stopped_stays_down_until_resume(make):
+    control = FakeControl(managed=True)
+    supervisor, alerts, _ = make(control=control, timing=managed(first_heartbeat=0.2))
+    async with running(supervisor):
+        await wait_until(lambda: supervisor.state is GatewayState.STOPPED)
+        await asyncio.sleep(0.1)
+        assert (control.starts, control.stops) == (1, 1)  # stopped for good: no restart, no host_exited
+        supervisor.resume()
+        await wait_until(lambda: control.starts == 2)
+        await gate(supervisor)
+    assert [name for name, _ in alerts.raised] == ["host_failed"]
+
+
+async def test_a_gateway_that_exits_while_paused_comes_back_paused(make):
+    control = FakeControl(managed=True)
+    supervisor, _, _ = make(control=control, timing=managed())
+    async with running(supervisor):
+        await gate(supervisor)
+        supervisor.pause()
+        control.running = None
+        await wait_until(lambda: control.starts == 2)
+        await asyncio.sleep(0.05)
+        assert supervisor.state is GatewayState.HOLD
+    supervisor.resume()
+    assert supervisor.state is GatewayState.STARTING
+
+
+async def test_an_unreadable_launchd_answer_never_restarts_the_gateway(make):
+    control = FakeControl(managed=True)
+    supervisor, alerts, _ = make(control=control, timing=managed())
+    async with running(supervisor):
+        await gate(supervisor)
+        control.running = "unknown"
+        await asyncio.sleep(0.1)
+        assert supervisor.state is GatewayState.RUNNING
+    assert (control.starts, alerts.raised) == (1, [])
+
+
+async def test_a_gateway_that_keeps_exiting_is_stopped(make):
+    """Each time it passes the gate and then exits by itself; the third time in ten minutes Core stops it."""
+    control = FakeControl(managed=True)
+    supervisor, alerts, _ = make(control=control, timing=managed())
+    async with running(supervisor):
+        for boot in ("boot-aaaaaaaa", "boot-bbbbbbbb", "boot-cccccccc"):
+            await gate(supervisor, boot=boot)
+            control.running = None  # a clean exit: launchd leaves it down
+            await wait_until(lambda: control.running is not None or supervisor.state is GatewayState.STOPPED)
+    assert supervisor.state is GatewayState.STOPPED
+    assert supervisor.reason == "exited_repeatedly"
+    assert [name for name, _ in alerts.raised] == ["host_exited", "host_exited", "host_failed"]
+    assert (control.starts, control.stops) == (3, 1)

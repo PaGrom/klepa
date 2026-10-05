@@ -105,3 +105,16 @@ def test_a_folder_that_does_not_answer_points_at_a_waiting_macos_prompt(setup):
     assert text.startswith("⚠️ The documents folder does not answer (DocumentsTimeout)")
     assert "prompt" in text
     assert "python" in text.lower()
+
+
+def test_every_alert_class_has_a_text_in_every_language():
+    from klepa_core.alerts import DEFAULT_LIMITS
+    from klepa_core.locale import SERVICE_FIELDS, available_locales, load_locale
+
+    assert {f"alert_{name}" for name in DEFAULT_LIMITS} <= set(SERVICE_FIELDS)
+    assert load_locale("en").service_text("alert_host_exited").startswith("⚠️ The host's gateway stopped by itself")
+    for language in available_locales():
+        locale = load_locale(language)
+        for name in DEFAULT_LIMITS:
+            fields = dict.fromkeys(SERVICE_FIELDS[f"alert_{name}"], "x")
+            assert locale.service_text(f"alert_{name}", **fields)

@@ -54,6 +54,7 @@ SERVICE_FIELDS: dict[str, tuple[str, ...]] = {
     "alert_album_private_after_copy": ("count",),
     "alert_host_failed": ("reason",),
     "alert_host_silent": (),
+    "alert_host_exited": (),
     "alert_host_conflict": (),
     "alert_host_not_polling": (),
     "alert_host_send_failed": ("error",),

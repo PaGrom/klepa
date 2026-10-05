@@ -20,6 +20,7 @@ import asyncio
 import re
 import sqlite3
 import time
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -36,6 +37,8 @@ REQUIRED_HOOKS = frozenset({"before_dispatch", "before_prompt_build", "before_ag
 # host's "Your message could not be sent: …" (spike report, point 15) proves the turn was blocked.
 PROBE_BLOCK = "Klepa start probe: this turn is blocked on purpose."
 FORBIDDEN_MODEL_PREFIXES = ("claude-cli/", "openai/", "codex")  # spec 7.1: the model stays under the proxy
+RESTARTS_AFTER_EXIT = 3  # a gateway that exits this often within the window is stopped, not started again
+RESTART_WINDOW_SECONDS = 600.0
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GATE_STEP_SECONDS = 0.05
 
@@ -57,35 +60,58 @@ class Expectations:
     policy: Mapping[str, Any] = field(default_factory=dict)
     model: str | None = None
     runtime: str | None = None
+    version: str | None = None  # the OpenClaw release the adapter was proven with (spec 14.1)
 
 
 @dataclass(frozen=True)
 class HostTiming:
     first_heartbeat: float = 30.0  # a full heartbeat within 30 s of the start (spec 4.6)
-    probe: float = 30.0  # the live probe
+    probe: float = 60.0  # the live probe: a gateway back from a long outage may wait 30 s before it polls again
     release_within: float = 15.0  # the host's sends leave only while the heartbeat is this fresh
     hold_after: float = 180.0  # HOLD after three minutes without a heartbeat
     drop_after: float = 600.0  # a held send is dropped with Core's apology after ten minutes
     not_polling: float = 300.0  # RUNNING, but the host has not polled for this long: an alert
+    process_check: float = 2.0  # how often Core asks launchd about its own gateway's process
     tick: float = 1.0
 
 
+class GatewayUnknown(Exception):
+    """The gateway's state could not be read this time; never a reason to restart it."""
+
+
 class GatewayControl(Protocol):
-    """How Core starts and stops the gateway (plan 1c-2: launchd, /startupz, /readyz and the log check)."""
+    """How Core starts, stops and watches the gateway. Core's own gateway runs under launchd (host/gateway.py)."""
+
+    managed: bool  # Core starts the gateway and watches its process
+
+    async def start(self) -> str | None:
+        """Run the gateway from Core's current files; None once it was started or already runs them, else why not."""
+
+    async def stop(self) -> None: ...
+
+    async def process(self) -> object | None:
+        """The running gateway process, as something that compares equal only to itself; None when none runs.
+        Raises GatewayUnknown when the answer cannot be read."""
 
     async def ready(self) -> str | None:
         """None once the gateway reports ready, else the reason it is not."""
 
-    async def stop(self) -> None: ...
-
 
 class NoGatewayControl:
-    """The gateway is started and stopped outside Core; the heartbeat and the live probe still gate it."""
+    """A gateway somebody else runs: Core neither starts nor stops it; the heartbeat and the live probe gate it."""
 
-    async def ready(self) -> str | None:
+    managed = False
+
+    async def start(self) -> str | None:
         return None
 
     async def stop(self) -> None:
+        return None
+
+    async def process(self) -> object | None:
+        return None
+
+    async def ready(self) -> str | None:
         return None
 
 
@@ -126,6 +152,8 @@ def check_heartbeat(payload: Mapping[str, Any], expect: Expectations) -> list[st
         problems.append("model")
     if not _named(runtime, expect.runtime):
         problems.append("runtime")
+    if expect.version is not None and payload.get("version") != expect.version:
+        problems.append("version")
     return problems
 
 
@@ -164,6 +192,11 @@ class Supervisor:
         self.last_poll: float | None = None
         self.running_since: float | None = None
         self.probe_id: int | None = None
+        self.gated_process: object | None = None  # the gateway process that passed the gate
+        self._stopped = False  # Core stopped its gateway after a failed check; it stays down until Resume
+        self._start_wanted = False
+        self._process_checked = float("-inf")
+        self._exits: deque[float] = deque()
         self._probe_turn: int | None = None  # the probe whose turn the adapter reported
         self._probe_blocked: int | None = None  # the probe whose block the host then wrote to its chat
         self._problems: dict[str, list[str]] = {}
@@ -223,6 +256,8 @@ class Supervisor:
         self.paused = False
         self.failed_boot = None
         self.gated_boot = None
+        if self._stopped:
+            self._start_wanted = True  # a gateway Core stopped is started again
         self._set(GatewayState.STARTING, "resumed")
 
     # ---- decisions -----------------------------------------------------------------------------------------------
@@ -252,18 +287,66 @@ class Supervisor:
 
     # ---- the loop ------------------------------------------------------------------------------------------------
     async def run(self, stop: asyncio.Event) -> None:
+        # Core's own gateway: load it, or reload it when Core's files for it changed; a current one keeps running.
+        self._start_wanted = self.control.managed
         while not stop.is_set():
             if self._stop_reason is not None:
                 reason, self._stop_reason = self._stop_reason, None
                 await self._fail(reason)
+            elif self._start_wanted:
+                self._start_wanted = False
+                await until_stopped(stop, self._start_gateway())
+                continue
             elif self.state is GatewayState.STARTING:
                 await until_stopped(stop, self._gate())
                 continue
             else:
-                self._watch()
+                await self._watch()
             await sleep_or_stop(stop, self.timing.tick)
 
-    def _watch(self) -> None:
+    async def _start_gateway(self) -> None:
+        problem = await self.control.start()
+        if problem is not None:
+            await self._fail(f"start: {problem}")
+            return
+        self._stopped = False
+
+    async def _watch_process(self) -> bool:
+        """Core's own gateway: one that exited is started again, and a new process passes the gate again (spec
+        4.6). True when the state changed."""
+        if not self.control.managed or self._stopped:
+            return False
+        now = self.mono()
+        if now - self._process_checked < self.timing.process_check:
+            return False
+        self._process_checked = now
+        try:
+            process = await self.control.process()
+        except GatewayUnknown:
+            return False
+        if process is None:
+            self._exits.append(now)
+            while now - self._exits[0] > RESTART_WINDOW_SECONDS:
+                self._exits.popleft()
+            if len(self._exits) >= RESTARTS_AFTER_EXIT:
+                self._stop_reason = "exited_repeatedly"  # STOPPED until Resume: starting it again does not help
+                return True
+            if self.alerts is not None:
+                self.alerts.raise_("host_exited")
+            self._start_wanted = True
+            if not self.paused:
+                self.gated_boot = None
+                self._set(GatewayState.STARTING, "exited")
+            return True
+        if self.state is GatewayState.RUNNING and process != self.gated_process:
+            self.gated_boot = None
+            self._set(GatewayState.STARTING, "new_process")
+            return True
+        return False
+
+    async def _watch(self) -> None:
+        if await self._watch_process():
+            return
         now = self.mono()
         if self.state is GatewayState.RUNNING:
             if self.last_heartbeat is None or now - self.last_heartbeat > self.timing.hold_after:
@@ -315,6 +398,7 @@ class Supervisor:
         finally:
             self.queue.retire(self.probe_id)
             self.probe_id = None
+        self.gated_process = await self.control.process()
         self.gated_boot = boot
         self._set(GatewayState.RUNNING, None)
 
@@ -324,6 +408,7 @@ class Supervisor:
         self._set(GatewayState.STOPPED, reason)
         if self.alerts is not None:
             self.alerts.raise_("host_failed", reason=reason)
+        self._stopped = self.control.managed
         await self.control.stop()
 
     def _set(self, state: GatewayState, reason: str | None) -> None:

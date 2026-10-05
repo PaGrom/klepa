@@ -51,6 +51,7 @@ alert_restarted = "⚠️ Jezgro se ponovo pokrenulo posle neočekivanog zaustav
 alert_album_private_after_copy = "⚠️ Album je postao privatan tek posle kopiranja u zajedničku fasciklu. Kopirano fajlova: {count}. Premesti ih ručno."
 alert_host_failed = "⚠️ Host nije prošao proveru ({reason}). Ne dobija poruke; ljudi dobijaju ustaljeni odgovor, a njihove poruke čekaju."
 alert_host_silent = "⚠️ Adapter hosta ćuti već tri minuta. Host je na čekanju: ljudi dobijaju ustaljeni odgovor, a njihove poruke čekaju."
+alert_host_exited = "⚠️ Gateway hosta se sam zaustavio. Jezgro ga ponovo pokreće; dok ne prođe proveru, ljudi dobijaju ustaljeni odgovor, a njihove poruke čekaju."
 alert_host_conflict = "⚠️ Dva klijenta istovremeno traže poruke od čuvara. Sme da radi samo jedan gateway hosta: potraži drugi."
 alert_host_not_polling = "⚠️ Host već pet minuta ne traži poruke od čuvara, iako je adapter živ."
 alert_host_send_failed = "⚠️ Telegram nije prihvatio odgovor hosta ({error}). Osoba je zamoljena da ponovo pošalje poruku."

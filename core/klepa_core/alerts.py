@@ -31,6 +31,7 @@ DEFAULT_LIMITS: dict[str, float] = {
     "album_private_after_copy": 0,
     "host_failed": 3600,
     "host_silent": 3600,
+    "host_exited": 3600,
     "host_conflict": 3600,
     "host_not_polling": 3600,
     "host_send_failed": 3600,
