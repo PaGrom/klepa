@@ -30,7 +30,7 @@ from typing import Any
 import aiohttp
 
 from .. import macos
-from ..keys import ensure_private_dir
+from ..keys import KeyFileError, ensure_private_dir
 from . import runtime as rt
 from .reference import PLUGIN_ID, HostLayout, render
 from .supervisor import GatewayUnknown
@@ -211,7 +211,12 @@ class LaunchdGateway:
         return digest.hexdigest()
 
     async def _launchctl(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return await asyncio.to_thread(self.run, ["launchctl", *args])
+        """launchctl's answer. One that hangs or cannot run is an answer that cannot be read, like any other failure."""
+        argv = ["launchctl", *args]
+        try:
+            return await asyncio.to_thread(self.run, argv)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return subprocess.CompletedProcess(argv, -1, "", f"launchctl did not answer: {type(exc).__name__}")
 
     async def state(self) -> AgentState:
         return parse_print(await self._launchctl("print", f"{self.target}/{LABEL}"))
@@ -237,7 +242,7 @@ class LaunchdGateway:
             applied = self.applied_path.read_text().strip() if self.applied_path.exists() else ""
             if current != applied:
                 await asyncio.to_thread(self.validate)
-        except (OSError, rt.HostRuntimeError) as exc:
+        except (OSError, KeyFileError, rt.HostRuntimeError) as exc:
             return f"config: {exc}"[:200]
         try:
             state: AgentState | None = await self.state()
@@ -251,7 +256,10 @@ class LaunchdGateway:
         for _ in range(BOOTSTRAP_ATTEMPTS):
             result = await self._launchctl("bootstrap", self.target, str(self.plist_path))
             if result.returncode == 0:
-                await asyncio.to_thread(rt.write_private, self.applied_path, current.encode())
+                try:
+                    await asyncio.to_thread(rt.write_private, self.applied_path, current.encode())
+                except OSError as exc:  # the gateway runs the current files; the next start loads them once more
+                    log.warning("the gateway's digest was not written: %s", type(exc).__name__)
                 return None
             error = result.stderr.strip()
             await asyncio.sleep(self.retry_seconds)

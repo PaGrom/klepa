@@ -305,7 +305,10 @@ class Supervisor:
             await sleep_or_stop(stop, self.timing.tick)
 
     async def _start_gateway(self) -> None:
-        problem = await self.control.start()
+        try:
+            problem = await self.control.start()
+        except Exception as exc:  # a start that went wrong in any way failed: the owner hears of it, as of any other
+            problem = type(exc).__name__
         if problem is not None:
             await self._fail(f"start: {problem}")
             return
@@ -379,7 +382,10 @@ class Supervisor:
                 return
             await asyncio.sleep(_GATE_STEP_SECONDS)
         boot = self.boot_id
-        problem = await self.control.ready()
+        try:
+            problem = await self.control.ready()
+        except Exception as exc:  # a check that could not run has not passed
+            problem = f"ready: {type(exc).__name__}"
         if self.state is not GatewayState.STARTING or self.boot_id != boot:
             return
         if problem is not None:
@@ -398,7 +404,10 @@ class Supervisor:
         finally:
             self.queue.retire(self.probe_id)
             self.probe_id = None
-        self.gated_process = await self.control.process()
+        try:
+            self.gated_process = await self.control.process()
+        except GatewayUnknown:  # the next readable answer is a process the gate has not seen: it runs once more
+            self.gated_process = None
         self.gated_boot = boot
         self._set(GatewayState.RUNNING, None)
 

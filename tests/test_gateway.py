@@ -202,6 +202,46 @@ async def test_bootstrap_is_tried_again_and_then_reported(setup):
     assert (await control(setup, launchd).start()).startswith("launchctl bootstrap: Bootstrap failed: 5")
 
 
+async def test_a_digest_that_cannot_be_written_leaves_the_loaded_gateway_running(setup, monkeypatch):
+    """A full disk right after the load: the gateway runs Core's current files, so the start succeeded. Without the
+    digest the next start of Core loads them once more."""
+    launchd = FakeLaunchd()
+    gateway = control(setup, launchd)
+    write = rt.write_private
+
+    def full_disk(path, data):
+        if path == gateway.applied_path:
+            raise OSError(28, "No space left on device")
+        write(path, data)
+
+    monkeypatch.setattr(rt, "write_private", full_disk)
+    assert await gateway.start() is None
+    assert launchd.verbs() == ["bootstrap"]
+    assert not gateway.applied_path.exists()
+
+
+async def test_a_gateway_folder_others_may_read_is_a_failed_start(setup):
+    _, layout, _ = setup
+    layout.host_dir.mkdir(mode=0o700)
+    layout.state_dir.mkdir()
+    layout.state_dir.chmod(0o755)
+    launchd = FakeLaunchd()
+    problem = await control(setup, launchd).start()
+    assert problem is not None
+    assert problem.startswith("config: ")
+    assert "must be mode 0700 (is 755)" in problem
+    assert launchd.verbs() == []
+
+
+@pytest.mark.parametrize("failure", [subprocess.TimeoutExpired(["launchctl"], 60), OSError(35, "Resource unavailable")])
+async def test_a_launchctl_that_hangs_or_cannot_run_is_an_unknown_answer(setup, failure):
+    def broken(argv, **kwargs):
+        raise failure
+
+    with pytest.raises(GatewayUnknown):
+        await control(setup, broken).process()
+
+
 async def test_stop_unloads_the_agent(setup):
     launchd = FakeLaunchd()
     gateway = control(setup, launchd)

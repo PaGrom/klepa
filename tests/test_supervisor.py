@@ -41,11 +41,15 @@ class FakeControl:
 
     async def start(self):
         self.starts += 1
+        if isinstance(self.start_answer, Exception):
+            raise self.start_answer
         if self.start_answer is None and self.running is None:
             self.running = f"process-{self.starts}"
         return self.start_answer
 
     async def ready(self):
+        if isinstance(self.answer, Exception):
+            raise self.answer
         return self.answer
 
     async def stop(self):
@@ -316,6 +320,26 @@ async def test_core_starts_its_own_gateway_and_a_failed_start_stops_it(make):
     assert alerts.raised == [("host_failed", {"reason": "start: config: not installed"})]
 
 
+async def test_a_start_that_raises_is_a_failed_start_the_owner_hears_of(make):
+    """A full disk or a folder with the wrong mode inside the start: STOPPED with an alert, never a loop that dies
+    and leaves the host STARTING in silence."""
+    control = FakeControl(managed=True, start=OSError(28, "No space left on device"))
+    supervisor, alerts, _ = make(control=control, timing=managed())
+    async with running(supervisor):
+        await wait_until(lambda: supervisor.state is GatewayState.STOPPED)
+    assert alerts.raised == [("host_failed", {"reason": "start: OSError"})]
+    assert control.stops == 1
+
+
+async def test_a_readiness_check_that_raises_fails_the_gate(make):
+    control = FakeControl(PermissionError(13, "Permission denied"), managed=True)
+    supervisor, alerts, _ = make(control=control, timing=managed())
+    async with running(supervisor):
+        supervisor.on_heartbeat("boot-aaaaaaaa", FULL)
+        await wait_until(lambda: supervisor.state is GatewayState.STOPPED)
+    assert alerts.raised == [("host_failed", {"reason": "ready: PermissionError"})]
+
+
 async def test_a_gateway_that_exits_is_started_again_and_gated_again(make):
     control = FakeControl(managed=True)
     supervisor, alerts, _ = make(control=control, timing=managed())
@@ -378,6 +402,27 @@ async def test_an_unreadable_launchd_answer_never_restarts_the_gateway(make):
         await asyncio.sleep(0.1)
         assert supervisor.state is GatewayState.RUNNING
     assert (control.starts, alerts.raised) == (1, [])
+
+
+async def test_an_unreadable_process_after_the_probe_passes_the_gate_and_gates_the_next_answer(make):
+    """The probe proved the hooks; only the process could not be read. The gate passes, and the next readable answer
+    is a process the gate has not seen, so it runs once more."""
+    control = FakeControl(managed=True)
+    supervisor, alerts, _ = make(control=control, timing=managed())
+    async with running(supervisor):
+        await wait_until(lambda: control.starts == 1)
+        supervisor.on_heartbeat("boot-aaaaaaaa", FULL)
+        await wait_until(lambda: supervisor.probe_id is not None)
+        control.running = "unknown"
+        supervisor.on_probe_turn(supervisor.probe_id)
+        supervisor.on_probe_blocked()
+        await wait_until(lambda: supervisor.state is GatewayState.RUNNING)
+        assert supervisor.gated_process is None
+        control.running = "process-1"
+        await wait_until(lambda: supervisor.reason == "new_process")
+        await gate(supervisor)
+    assert supervisor.gated_process == "process-1"
+    assert (control.starts, control.stops, alerts.raised) == (1, 0, [])
 
 
 async def test_a_gateway_that_keeps_exiting_is_stopped(make):
