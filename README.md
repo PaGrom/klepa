@@ -141,7 +141,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and the rules.
 |---|---|---|
 | 1a | Core receives files from Telegram and stores them durably | done |
 | 1b | Service bot, signed daily snapshots, Core as a launchd service | done |
-| 1c | OpenClaw behind the gatekeeper: its own install, reference config, adapter plugin, egress proxy, supervision | in progress |
+| 1c | OpenClaw behind the gatekeeper: its own install, reference config, adapter plugin, egress proxy, supervision | done |
 | 2 | Processing: transcription and OCR in a sandbox, photo drafts to PDF, page viewer | planned |
 | 3 | Knowledge: facts with verified quotes, `make_private`, disclosure journal | planned |
 | 4 | Reminders and self-checks, fenced outbound delivery | planned |
