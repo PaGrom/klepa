@@ -206,7 +206,7 @@ class AdapterServer:
             name, arguments = parse_call(await request.read())
             result = self.tools.call(name, arguments)
         except ToolRefused as exc:
-            self.events.log("tool_refused", {"reason": str(exc)[:80]})
+            self.events.log("tool_refused", {"reason": exc.reason[:80]})
             return web.json_response({"isError": True, "content": [{"type": "text", "text": str(exc)}]})
         except Exception as exc:  # a tool's own failure: the model hears that it failed, never how
             log.warning("a tool failed: %s", type(exc).__name__)  # its text may carry a person's data

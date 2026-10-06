@@ -333,3 +333,30 @@ def test_probe_peer_is_a_stable_telegram_shaped_id():
     assert peer == probe_peer(KEY)
     assert 2**51 <= peer < 2**52
     assert peer != probe_peer(b"z" * 32)
+
+
+async def test_a_refusal_is_logged_without_what_the_model_wrote(server, short_dir):
+    """Events keep reasons, never parameters: a parameter name the model made up may carry a person's data, and
+    core.db goes into the snapshots. The model still learns what it got wrong."""
+    import aiohttp
+
+    adapter_server, adapter, conn, journal = server
+    issue(adapter_server, journal, 1, MEMBER, 10)
+    await adapter.prompt_built("run-1", MEMBER)
+    await adapter.turn_start("run-1", MEMBER)
+    params = {"query": "x", "passport 4509 123456": "1"}
+    sig = signature(KEY, "run-1", "call-1", "search", params)
+    call = {
+        "name": "search",
+        "arguments": params | {"_klepa": {"run_id": "run-1", "tool_call_id": "call-1", "sig": sig}},
+    }
+    connector = aiohttp.UnixConnector(path=str(short_dir / "run" / "adapter.sock"))
+    async with (
+        aiohttp.ClientSession(connector=connector) as session,
+        session.post("http://core/v1/tool", json=call) as response,
+    ):
+        answer = await response.json()
+    assert answer["isError"] is True
+    assert "passport 4509 123456" in answer["content"][0]["text"]
+    logged = [row[0] for row in conn.execute("SELECT data FROM event_log WHERE kind='tool_refused'")]
+    assert logged == ['{"reason": "unknown parameters"}']

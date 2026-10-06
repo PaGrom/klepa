@@ -35,7 +35,12 @@ _READABLE = ("stored", "processing", "processed", "failed", "too_large")  # what
 
 
 class ToolRefused(Exception):
-    """A call Core does not run. Its text goes back to the model and never carries content."""
+    """A call Core does not run. Its text goes back to the model and never carries a record's content; its reason,
+    which Core's event log keeps, never carries what the model wrote either."""
+
+    def __init__(self, text: str, reason: str | None = None) -> None:
+        super().__init__(text)
+        self.reason = reason or text
 
 
 def signature(key: bytes, run_id: str, call_id: str, tool: str, params: Mapping[str, Any]) -> str:
@@ -102,7 +107,7 @@ class Tool:
         """Exactly the declared parameters, of their types: unknown keys are refused, not dropped."""
         unknown = sorted(set(params) - set(self.properties))
         if unknown:
-            raise ToolRefused(f"unknown parameters: {', '.join(unknown)}")
+            raise ToolRefused(f"unknown parameters: {', '.join(unknown)}", reason="unknown parameters")
         missing = [name for name in self.required if name not in params]
         if missing:
             raise ToolRefused(f"missing parameters: {', '.join(missing)}")
