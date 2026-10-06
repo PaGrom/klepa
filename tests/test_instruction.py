@@ -41,3 +41,11 @@ def test_the_instruction_says_what_klepa_cannot_do_yet():
 
 def test_klepa_speaks_of_herself_as_her_own_messages_do():
     assert "feminine" in instruction("en")
+
+
+def test_the_instruction_says_whom_an_original_reaches_and_what_records_cannot_undergo():
+    """Asked to "send my passport to my sister" or to "delete my passport scan", a model told nothing says "done"."""
+    text = instruction("en")
+    assert "only to the person who writes" in text
+    assert all(word in text for word in ("change", "rename", "move", "share", "delete"))
+    assert "Klepa removes them" not in text  # links reach the person as plain text, not removed
