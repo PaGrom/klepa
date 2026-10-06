@@ -353,7 +353,8 @@ async def test_the_model_finds_a_stored_file_through_cores_signed_tool(stand_arg
 
 EXFIL = (
     "Here it is.\nMEDIA:https://leak.invalid/a.png\n![x](https://leak.invalid/b.png)\nhttps://leak.invalid/?q=secret\n"
-    "[photo](https://leak.invalid/?d=secret)\nwrite to a.b@leak.invalid or @leak_account"
+    "[photo](https://leak.invalid/?d=secret)\nwrite to a.b@leak.invalid or @leak_account\n"
+    "open leak.**invalid**/?d=split"
 )
 
 
@@ -373,8 +374,9 @@ async def test_a_reply_cannot_carry_files_links_or_lookups(stand_args, fake_mode
         params = sent[0]["params"]
         html = params["text"]
         assert "<a " not in html
-        for address in ("https://leak.invalid/?q=secret", "https://leak.invalid/?d=secret", "a.b@leak.invalid"):
-            assert f"<code>{address}</code>" in html, html
+        addresses = ("https://leak.invalid/?q=secret", "https://leak.invalid/?d=secret", "a.b@leak.invalid")
+        for address in (*addresses, "leak.invalid/?d=split"):  # the last one OpenClaw renders as leak.<b>invalid</b>
+            assert f"<code>{address}" in html, html  # inactive: the address opens a code span
         assert "<code>@leak_account</code>" in html
         assert "a.png" not in html  # the MEDIA line became an attachment the gateway was told to drop
         assert params["link_preview_options"] == {"is_disabled": True}

@@ -41,14 +41,14 @@ _EMPTY = re.compile(r"<([a-z-]+)></\1>")
 # costs linear time: the host's text must never stall Core's event loop.
 _ADDRESS = re.compile(
     r"(?i)(?<![\w.-])(?:(?:https?|tg|ftp)://|www\.)[^\s<>]+"
-    r"|(?<![\w.-])(?:[\w-]+\.)+[^\W\d_]{2,63}(?::\d{1,5})?/[^\s<>]*"
+    r"|(?<![\w.-])(?:[\w-]+\.)+(?:[^\W\d_]{2,63}|xn--[a-z0-9-]{1,59})(?::\d{1,5})?/[^\s<>]*"
     r"|(?<![\w.-])\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?(?:/[^\s<>]*)?"
     # What Telegram links by itself (stage 2): e-mail addresses, @mentions and names with a top-level part, in any
     # alphabet, also before the full stop that ends a sentence. Wider than Telegram's own list of domains on purpose:
     # a file name such as scan.pdf only turns monospace.
     r"|(?<![\w.+-])[\w.+-]{1,64}@[\w-]+(?:\.[\w-]+)+"
     r"|(?<![\w@])@[a-z0-9_]{4,32}(?![\w@])"
-    r"|(?<![\w.@/-])(?:[\w-]+\.)+[^\W\d_]{2,63}(?::\d{1,5})?(?![\w@/-])(?!\.[\w-])"
+    r"|(?<![\w.@/-])(?:[\w-]+\.)+(?:[^\W\d_]{2,63}|xn--[a-z0-9-]{1,59})(?::\d{1,5})?(?![\w@/-])(?!\.[\w-])"
 )
 
 
@@ -68,6 +68,8 @@ class _Rewriter(HTMLParser):
         self.out: list[str] = []
         self.plain: list[str] = []
         self.stack: list[tuple[str, str]] = []  # open formatting: (source tag, tag written)
+        self.size = 0  # characters of plain text so far
+        self.coded: list[tuple[int, int]] = []  # the stretches of plain text that are inside code or pre
         self.literal: tuple[str, str] | None = None  # the open code span or pre block
         self.link: list[str] | None = None
         self.href = ""
@@ -131,16 +133,25 @@ class _Rewriter(HTMLParser):
         else:
             self._text(data)
 
+    def _plain(self, text: str, coded: bool) -> None:
+        if coded and text:
+            self.coded.append((self.size, self.size + len(text)))
+        self.plain.append(text)
+        self.size += len(text)
+
     def _text(self, data: str) -> None:
-        self.plain.append(data)
         if self.literal is not None:
+            self._plain(data, True)
             self.out.append(escape(data, quote=False))
             return
         start = 0
         for match in _ADDRESS.finditer(data):
+            self._plain(data[start : match.start()], False)
             self.out.append(escape(data[start : match.start()], quote=False))
+            self._plain(match.group(), True)
             self._code(match.group())
             start = match.end()
+        self._plain(data[start:], False)
         self.out.append(escape(data[start:], quote=False))
 
     def _code(self, address: str) -> None:
@@ -158,7 +169,7 @@ class _Rewriter(HTMLParser):
         if href and href != text:
             if text:
                 self._text(" (")
-            self.plain.append(href)
+            self._plain(href, True)
             if self.literal is not None:
                 self.out.append(escape(href, quote=False))
             else:
@@ -179,10 +190,27 @@ class _Rewriter(HTMLParser):
             html = tidy
         return Sanitized(html, "".join(self.plain))
 
+    def uncovered(self, plain: str) -> bool:
+        """Whether the text the person sees holds an address outside code. Tags split text into pieces, and an
+        address split across pieces (evil.<b>com</b>, which OpenClaw makes of the model's evil.**com**) is no
+        address in any one of them, yet Telegram links what the person sees. Code breaks Telegram's detection the
+        way a space does, so the text in code is masked with spaces."""
+        masked = list(plain)
+        for start, end in self.coded:
+            masked[start:end] = " " * (end - start)
+        return _ADDRESS.search("".join(masked)) is not None
+
 
 def sanitize_html(source: str) -> Sanitized:
     """Rewrite Telegram HTML from the host: allowed formatting only, no web address active, always well formed."""
     rewriter = _Rewriter()
     # A lone surrogate (a chunker that cut an emoji in half) cannot be sent; it becomes the replacement character.
     rewriter.feed(source.encode("utf-16", "surrogatepass").decode("utf-16", "replace"))
-    return rewriter.finish()
+    result = rewriter.finish()
+    if rewriter.uncovered(result.plain):
+        # An address split by tags: the visible text again, as one piece and without formatting, so that every
+        # address in it becomes a code span. The person loses the formatting of this message, never its words.
+        flat = _Rewriter()
+        flat._text(result.plain)
+        return flat.finish()
+    return result

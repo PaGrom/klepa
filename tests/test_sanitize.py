@@ -201,3 +201,32 @@ def test_long_runs_of_the_new_patterns_take_linear_time(unit):
     started = time.monotonic()
     sanitize_html(unit * 20_000 + "!")
     assert time.monotonic() - started < 1.0
+
+
+@pytest.mark.parametrize(
+    ("source", "html"),
+    [
+        # OpenClaw renders the model's evil.**com** as evil.<b>com</b>: the pieces of text between tags are no address
+        # on their own, but the person sees one, and Telegram links what the person sees.
+        ("see evil.<b>com</b>/steal?d=1", "see <code>evil.com/steal?d=1</code>"),
+        ("evil<b>.</b>com/x", "<code>evil.com/x</code>"),
+        ("Write to @<b>evil_bot</b>", "Write to <code>@evil_bot</code>"),
+        ("bob@evil.<u>com</u>", "<code>bob@evil.com</code>"),
+        ("see evil.<i>com</i>/x and <tg-spoiler>more</tg-spoiler>", "see <code>evil.com/x</code> and more"),
+        # A tag Core drops leaves its text joined to the text around it.
+        (
+            'open evil<tg-emoji emoji-id="5368324170671202286">.</tg-emoji>com/steal?d=x',
+            "open <code>evil.com/steal?d=x</code>",
+        ),
+        # Top-level names in punycode.
+        ("see evil.xn--p1ai/login", "see <code>evil.xn--p1ai/login</code>"),
+        ("shop.xn--80asehdb now", "<code>shop.xn--80asehdb</code> now"),
+    ],
+)
+def test_an_address_split_by_tags_is_still_inactive(source, html):
+    assert sanitize_html(source).html == html
+
+
+def test_formatting_without_addresses_is_kept():
+    source = "a <i>normal</i> sentence with <b>bold</b> words and <tg-spoiler>a secret</tg-spoiler>."
+    assert sanitize_html(source).html == source
