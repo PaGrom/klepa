@@ -22,7 +22,15 @@ import { connect } from "node:net";
 import { fileURLToPath } from "node:url";
 
 export const PLUGIN_ID = "klepa-adapter";
-export const HOOKS = ["before_dispatch", "before_prompt_build", "before_agent_run"] as const;
+export const HOOKS = [
+  "before_dispatch",
+  "before_prompt_build",
+  "before_agent_run",
+  "before_tool_call",
+  "reply_payload_sending",
+] as const;
+export const TOOL_PREFIX = "klepa__"; // OpenClaw names an MCP tool <server>__<tool>
+export const TOOL_DOMAIN = "klepa-tool-call-v1";
 export const HEARTBEAT_MS = 5_000;
 export const REQUEST_TIMEOUT_MS = 5_000;
 export const MAX_ANSWER_BYTES = 64 * 1024;
@@ -75,6 +83,11 @@ export interface HookFacts {
   messageId?: unknown;
   sessionKey?: unknown;
   runId?: unknown;
+  toolCallId?: unknown;
+  toolName?: unknown;
+  params?: unknown;
+  systemPrompt?: unknown;
+  payload?: unknown;
 }
 
 export function sign(key: Buffer, body: Buffer): string {
@@ -177,6 +190,33 @@ export function postUnix(
   });
 }
 
+/**
+ * JSON as Core writes it canonically: object keys sorted, no spaces. For what Core's tools take, ASCII keys,
+ * strings, integers, booleans and lists, this is RFC 8785, and Core's Python writes the same bytes.
+ */
+export function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (isRecord(value)) {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+  }
+  const json = JSON.stringify(value);
+  if (json === undefined) throw new Error("a value JSON cannot hold");
+  return json;
+}
+
+/** The signature of one call of one of Core's tools (spec 4.5): only these parameters, for this call of this turn. */
+export function toolSignature(
+  key: Buffer,
+  runId: string,
+  toolCallId: string,
+  tool: string,
+  params: Record<string, unknown>,
+): string {
+  const signed = [TOOL_DOMAIN, runId, toolCallId, tool, canonical(params)].join("\n");
+  return createHmac("sha256", key).update(signed, "utf8").digest("hex");
+}
+
 /** One boot of the gateway: its id, and the number of the last message sent. */
 export interface Boot {
   id: string;
@@ -225,6 +265,11 @@ export class CoreLink {
     return this.key;
   }
 
+  /** The signature Core checks on a call of one of its tools. */
+  signTool(runId: string, toolCallId: string, tool: string, params: Record<string, unknown>): string {
+    return toolSignature(this.signingKey(), runId, toolCallId, tool, params);
+  }
+
   /** Send one message and return Core's answer, or throw: unsigned, for another message, or refused. */
   async send(type: string, fields: Record<string, Json | undefined>): Promise<Answer> {
     const key = this.signingKey();
@@ -267,6 +312,60 @@ function turnFacts(event: HookFacts | undefined, ctx: HookFacts | undefined): Re
   };
 }
 
+const FAILURE = Symbol.for("klepa-adapter.failure");
+
+/** Core's text for a turn that failed, as Core last sent it: the hooks of both registrations see one. */
+function failureStore(): Record<symbol, string | undefined> {
+  return globalThis as unknown as Record<symbol, string | undefined>;
+}
+
+const PASSED = Symbol.for("klepa-adapter.passed");
+const INSTRUCTED = Symbol.for("klepa-adapter.instructed");
+const KEEP_RUNS = 1000;
+
+function runSet(name: symbol): Set<string> {
+  const store = globalThis as unknown as Record<symbol, Set<string> | undefined>;
+  store[name] ??= new Set();
+  return store[name];
+}
+
+/** The runs this process let through to the model: only their errors are the model's. */
+function passedRuns(): Set<string> {
+  return runSet(PASSED);
+}
+
+/** The runs whose prompt carries Core's instruction: only they may reach the model (spec 10). */
+function instructedRuns(): Set<string> {
+  return runSet(INSTRUCTED);
+}
+
+/** Remember a run, forgetting the oldest beyond `keep`: a busy gateway never forgets the runs it is still on. */
+export function remember(runs: Set<string>, runId: string, keep = KEEP_RUNS): void {
+  runs.delete(runId);
+  runs.add(runId);
+  for (const oldest of runs) {
+    if (runs.size <= keep) break;
+    runs.delete(oldest);
+  }
+}
+
+// OpenClaw wraps a blocked turn's text: "Your message could not be sent: <text> (blocked by <plugin>)" (spike
+// report, point 15). The person reads Core's text alone.
+const BLOCK_WRAPPER = /^Your message could not be sent: ([\s\S]*?)(?: \(blocked by [\w.-]+\))?$/;
+
+/** What kind of failure ended a turn, without its text: OpenClaw's error names the provider and the cause. */
+export function failureKind(error: unknown): string {
+  const text = typeof error === "string" ? error : "";
+  if (/HTTP 401|HTTP 403|authentication/i.test(text)) return "auth";
+  if (/HTTP 429|rate limit/i.test(text)) return "rate_limit";
+  if (/timed? ?out/i.test(text)) return "timeout";
+  if (/HTTP 5\d\d/.test(text)) return "provider";
+  return "other";
+}
+
+const TOOLS_ONLY = "Only Klepa's own tools may run.";
+const UNSIGNED = "Klepa could not sign this call.";
+
 export function hookHandlers(link: CoreLink, warn: (reason: string) => void) {
   return {
     async before_dispatch(event: HookFacts | undefined, ctx: HookFacts | undefined) {
@@ -285,16 +384,32 @@ export function hookHandlers(link: CoreLink, warn: (reason: string) => void) {
     },
     async before_prompt_build(event: HookFacts | undefined, ctx: HookFacts | undefined) {
       try {
-        await link.send("prompt_built", turnFacts(event, ctx));
+        const facts = turnFacts(event, ctx);
+        const answer = await link.send("prompt_built", facts);
+        if (typeof answer.instruction !== "string") return undefined;
+        if (typeof answer.failure === "string") failureStore()[FAILURE] = answer.failure;
+        const tools = Array.isArray(answer.tools_allow) ? answer.tools_allow.filter((t) => typeof t === "string") : [];
+        if (typeof facts.run_id === "string") remember(instructedRuns(), facts.run_id);
+        return { appendSystemContext: answer.instruction, toolsAllow: tools };
       } catch (error) {
         warn(`prompt_built: ${why(error)}`);
+        return undefined; // without Core's instruction before_agent_run blocks the turn
       }
-      return undefined; // stage 1 adds no instruction
     },
     async before_agent_run(event: HookFacts | undefined, ctx: HookFacts | undefined) {
       try {
-        const answer = await link.send("turn_start", turnFacts(event, ctx));
-        if (answer.outcome === "pass") return { outcome: "pass" };
+        const facts = turnFacts(event, ctx);
+        // Core may have answered prompt_built after this plugin gave up waiting: then the prompt lacks Core's
+        // instruction, and the run never reaches the model, whatever Core says of it.
+        if (typeof facts.run_id !== "string" || !instructedRuns().has(facts.run_id)) {
+          warn("turn_start: no instruction from Core");
+          return { outcome: "block", reason: "klepa-unreachable", message: UNREACHABLE };
+        }
+        const answer = await link.send("turn_start", facts);
+        if (answer.outcome === "pass") {
+          remember(passedRuns(), facts.run_id);
+          return { outcome: "pass" };
+        }
         const message = typeof answer.message === "string" ? answer.message : UNREACHABLE;
         return { outcome: "block", reason: "klepa", message };
       } catch (error) {
@@ -302,6 +417,52 @@ export function hookHandlers(link: CoreLink, warn: (reason: string) => void) {
         return { outcome: "block", reason: "klepa-unreachable", message: UNREACHABLE };
       }
     },
+    // Each call of Core's tools carries its own signature (spec 4.5); a _klepa field the model wrote is replaced.
+    before_tool_call(event: HookFacts | undefined, ctx: HookFacts | undefined) {
+      const name = text(event?.toolName ?? ctx?.toolName) ?? "";
+      if (!name.startsWith(TOOL_PREFIX)) return { block: true, blockReason: TOOLS_ONLY };
+      const runId = text(ctx?.runId ?? event?.runId);
+      const toolCallId = text(ctx?.toolCallId ?? event?.toolCallId);
+      if (runId === undefined || toolCallId === undefined || toolCallId.startsWith("http-")) {
+        return { block: true, blockReason: UNSIGNED }; // a direct call through /tools/invoke has no turn
+      }
+      const params: Record<string, unknown> = isRecord(event?.params) ? { ...event.params } : {};
+      delete params._klepa;
+      try {
+        const sig = link.signTool(runId, toolCallId, name.slice(TOOL_PREFIX.length), params);
+        return { params: { ...params, _klepa: { run_id: runId, tool_call_id: toolCallId, sig } } };
+      } catch (error) {
+        warn(`tool call: ${why(error)}`);
+        return { block: true, blockReason: UNSIGNED };
+      }
+    },
+    // A second layer behind the gatekeeper, which takes no files: a MEDIA line would make OpenClaw drop the whole
+    // reply when the download fails (spike report, points 11 and 18), so the reply goes as text.
+    reply_payload_sending(event: HookFacts | undefined, ctx: HookFacts | undefined) {
+      const payload = event?.payload;
+      if (!isRecord(payload)) return undefined;
+      const runId = text(event?.runId ?? ctx?.runId);
+      const failure = failureStore()[FAILURE];
+      // OpenClaw sends its English error whatever errorPolicy says; for a turn that reached the model the person
+      // reads Core's words instead. A turn this plugin blocked keeps Core's own text, without OpenClaw's wrapper.
+      const passed = runId !== undefined && passedRuns().has(runId);
+      if (passed) {
+        // How the model answered, for Core: the gate's model probe passes on an answer, a person's failed turn alerts
+        // the owner. OpenClaw's agent_end says success for a turn whose error it surfaced as the reply.
+        const error = payload.isError === true;
+        link.send("turn_reply", { run_id: runId, error, error_kind: error ? failureKind(payload.text) : undefined }).catch(
+          (problem: unknown) => warn(`turn_reply: ${why(problem)}`),
+        );
+      }
+      const failed = payload.isError === true && failure !== undefined && passed;
+      const blocked = typeof payload.text === "string" ? BLOCK_WRAPPER.exec(payload.text) : null;
+      const media = "mediaUrl" in payload || "mediaUrls" in payload;
+      if (!failed && blocked === null && !media) return undefined;
+      const { mediaUrl: _url, mediaUrls: _urls, ...rest } = payload;
+      if (failed) return { payload: { ...rest, text: failure } };
+      return { payload: blocked === null ? rest : { ...rest, text: blocked[1] } };
+    },
+
   };
 }
 

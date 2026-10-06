@@ -38,3 +38,37 @@ def test_a_launchd_host_gets_cores_own_gateway_held_to_the_reference(make_config
 def test_a_gateway_somebody_else_runs_is_gated_by_its_heartbeat_alone(make_config, short_dir):
     section = f'\n[host]\nsocket = "{short_dir / "run" / "adapter.sock"}"\ngateway = "external"\n'
     assert app._gateway(make_config(text=BASE_CONFIG + section), 2**51 + 3) == (None, None)
+
+
+def test_a_person_hears_in_the_installs_language_when_an_original_did_not_go(make_config, short_dir, tmp_path):
+    """send_original answers "sent" when Core queues the file; a send that then fails is told to the person."""
+    import json
+
+    from helpers import MEMBER
+    from klepa_core import db
+    from klepa_core.alerts import Alerts
+    from klepa_core.events import EventLog
+    from klepa_core.gatekeeper.outbox import Outbox
+    from klepa_core.journal import InboundJournal
+
+    section = f'\n[host]\nsocket = "{short_dir / "run" / "adapter.sock"}"\nruntime_dir = "{tmp_path / "runtime"}"\n'
+    cfg = make_config(text=BASE_CONFIG + section)
+    app.init_layout(cfg)
+    conn = db.connect(cfg.core_db_path)
+    db.migrate(conn)
+    events = EventLog(conn)
+    outbox = Outbox(conn, None, events)
+    journal = InboundJournal(tmp_path / "journal.db")
+    try:
+        app._host(cfg, conn, journal, None, outbox, Alerts(conn, None, events, cfg.locale), events, "123:abc", None)
+        assert outbox.on_failed is not None
+        outbox.on_failed("original:run-1:ev-1", MEMBER, {"name": "scan.pdf"})
+        row = conn.execute("SELECT chat_id, payload FROM outbound WHERE idempotency_key='failed:original:run-1:ev-1'")
+        notice = row.fetchone()
+        assert (notice["chat_id"], json.loads(notice["payload"])["text"]) == (
+            MEMBER,
+            cfg.locale.text("original_failed").format(name="scan.pdf"),
+        )
+    finally:
+        journal.close()
+        conn.close()

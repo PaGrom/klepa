@@ -11,7 +11,14 @@ from klepa_core.host.supervisor import Expectations, GatewayState, HostTiming, S
 
 PEER = 2**51 + 7
 FULL = {
-    "registrations": ["before_dispatch", "before_prompt_build", "before_agent_run", "service"],
+    "registrations": [
+        "before_dispatch",
+        "before_prompt_build",
+        "before_agent_run",
+        "before_tool_call",
+        "reply_payload_sending",
+        "service",
+    ],
     "plugin_sha256": "a" * 64,
     "policy": {"tools.profile": "minimal", "gateway.reload.mode": "off"},
     "model": "anthropic/claude-test",
@@ -75,7 +82,8 @@ def make(core_db):
             EventLog(conn),
             alerts=alerts,
             control=control or FakeControl(),
-            timing=timing or HostTiming(first_heartbeat=1.0, probe=1.0, tick=0.01),
+            timing=timing
+            or HostTiming(first_heartbeat=1.0, probe=1.0, model_probe=1.0, tick=0.01, model_retries=(0.05, 0.05)),
             on_hold=on_hold,
             **({"mono": mono} if mono is not None else {}),
         )
@@ -86,7 +94,9 @@ def make(core_db):
 
 def managed(**changes):
     """Timings for Core's own gateway: its process is checked at every step."""
-    return HostTiming(**({"first_heartbeat": 1.0, "probe": 1.0, "process_check": 0.01, "tick": 0.01} | changes))
+    timing = {"first_heartbeat": 1.0, "probe": 1.0, "model_probe": 1.0, "process_check": 0.01, "tick": 0.01}
+    timing["model_retries"] = (0.05,)
+    return HostTiming(**(timing | changes))
 
 
 @contextlib.asynccontextmanager
@@ -100,14 +110,30 @@ async def running(supervisor):
         await asyncio.wait_for(task, 5)
 
 
+async def model_answers(supervisor, ok=True, kind=None):
+    """The gate's second probe: the model's turn replies, with an answer or with the kind of the model's error. Returns
+    the probe it answered."""
+    await wait_until(lambda: supervisor.model_probe_id is not None)
+    probe = supervisor.model_probe_id
+    supervisor.on_model_probe_reply(probe, ok, kind)
+    return probe
+
+
 async def gate(supervisor, boot="boot-aaaaaaaa"):
-    """Pass the start gate the way the host and the adapter would: a full heartbeat, the probe's turn reported by
-    the adapter, then the host writing the block to the probe's chat."""
+    """Pass the start gate the way the host and the adapter would: a full heartbeat, then whatever probe is current
+    answered: the hook probe's turn and the block the host writes to its chat, the model probe's answer. A gate that
+    began on an earlier boot's heartbeat starts again for this one, and its probes get answered too."""
     supervisor.on_heartbeat(boot, FULL)
-    await wait_until(lambda: supervisor.probe_id is not None)
-    supervisor.on_probe_turn(supervisor.probe_id)
-    supervisor.on_probe_blocked()
-    await wait_until(lambda: supervisor.state is GatewayState.RUNNING)
+
+    def answered():
+        if supervisor.probe_id is not None:
+            supervisor.on_probe_turn(supervisor.probe_id)
+            supervisor.on_probe_blocked()
+        if supervisor.model_probe_id is not None:
+            supervisor.on_model_probe_reply(supervisor.model_probe_id, True, None)
+        return supervisor.state is GatewayState.RUNNING and supervisor.gated_boot == boot
+
+    await wait_until(answered)
 
 
 def test_a_full_heartbeat_has_no_problems():
@@ -158,6 +184,7 @@ async def test_the_start_gate_runs_the_live_probe(make):
         assert not supervisor.may_serve(1, "text")
         supervisor.on_probe_turn(probe)
         supervisor.on_probe_blocked()
+        await model_answers(supervisor)
         await wait_until(lambda: supervisor.state is GatewayState.RUNNING)
     assert supervisor.gated_boot == "boot-aaaaaaaa"
     assert alerts.raised == []
@@ -244,6 +271,7 @@ async def test_a_new_boot_passes_the_gate_again_without_alerts(make):
         await wait_until(lambda: supervisor.probe_id is not None)
         supervisor.on_probe_turn(supervisor.probe_id)
         supervisor.on_probe_blocked()
+        await model_answers(supervisor)
         await wait_until(lambda: supervisor.state is GatewayState.RUNNING)
     assert supervisor.gated_boot == "boot-bbbbbbbb"
     assert supervisor.may_release()
@@ -416,6 +444,7 @@ async def test_an_unreadable_process_after_the_probe_passes_the_gate_and_gates_t
         control.running = "unknown"
         supervisor.on_probe_turn(supervisor.probe_id)
         supervisor.on_probe_blocked()
+        await model_answers(supervisor)
         await wait_until(lambda: supervisor.state is GatewayState.RUNNING)
         assert supervisor.gated_process is None
         control.running = "process-1"
@@ -438,3 +467,114 @@ async def test_a_gateway_that_keeps_exiting_is_stopped(make):
     assert supervisor.reason == "exited_repeatedly"
     assert [name for name, _ in alerts.raised] == ["host_exited", "host_exited", "host_failed"]
     assert (control.starts, control.stops) == (3, 1)
+
+
+async def hook_probe_passes(supervisor, boot="boot-aaaaaaaa"):
+    supervisor.on_heartbeat(boot, FULL)
+    await wait_until(lambda: supervisor.probe_id is not None)
+    supervisor.on_probe_turn(supervisor.probe_id)
+    supervisor.on_probe_blocked()
+    await wait_until(lambda: supervisor.model_probe_id is not None)
+
+
+async def test_the_gate_asks_the_model_once_and_runs_only_on_its_answer(make):
+    supervisor, alerts, queue = make()
+    async with running(supervisor):
+        await hook_probe_passes(supervisor)
+        assert supervisor.state is GatewayState.STARTING
+        assert supervisor.may_serve(supervisor.model_probe_id, "model_probe")
+        assert not supervisor.may_serve(1, "text")
+        supervisor.on_model_probe_reply(supervisor.model_probe_id, True, None)
+        await wait_until(lambda: supervisor.state is GatewayState.RUNNING)
+    assert alerts.raised == []
+    assert queue.serve(None, 100, lambda host_message_id, kind: True) == []  # both probes are retired
+
+
+async def test_a_token_the_model_refuses_stops_the_gateway_at_once(make):
+    """A token that stopped working is found at the gate, before a person's question meets it; asking again does not
+    help, a new token does."""
+    supervisor, alerts, _ = make()
+    async with running(supervisor):
+        await hook_probe_passes(supervisor)
+        first = await model_answers(supervisor, ok=False, kind="auth")
+        await wait_until(lambda: supervisor.state is GatewayState.STOPPED)
+    assert supervisor.reason == "model_auth"
+    assert alerts.raised == [("host_model_auth", {"reason": "model_auth"})]
+    assert first is not None
+    assert supervisor.model_probe_id is None  # asked once: no second probe for a refused token
+
+
+async def test_a_busy_model_is_asked_again_and_a_later_answer_passes_quietly(make):
+    """The provider's 429 or 529 after a night's restart: the gate asks again after a pause."""
+    supervisor, alerts, _ = make()
+    async with running(supervisor):
+        await hook_probe_passes(supervisor)
+        first = await model_answers(supervisor, ok=False, kind="rate_limit")
+        await wait_until(lambda: supervisor.model_probe_id not in (None, first))
+        await model_answers(supervisor)
+        await wait_until(lambda: supervisor.state is GatewayState.RUNNING)
+    assert alerts.raised == []
+
+
+async def test_a_model_that_keeps_erring_lets_the_host_run_with_an_alert(make):
+    """People then get Core's apology for each message until the provider answers again, never a host that waits
+    for the owner's Resume."""
+    supervisor, alerts, _ = make()
+    async with running(supervisor):
+        await hook_probe_passes(supervisor)
+        asked = set()
+        while supervisor.state is GatewayState.STARTING:
+            if supervisor.model_probe_id is not None and supervisor.model_probe_id not in asked:
+                asked.add(supervisor.model_probe_id)
+                supervisor.on_model_probe_reply(supervisor.model_probe_id, False, "provider")
+            await asyncio.sleep(0.01)
+    assert supervisor.state is GatewayState.RUNNING
+    assert len(asked) == 3
+    assert alerts.raised == [("host_model_unavailable", {"reason": "provider"})]
+
+
+async def test_a_model_that_never_answers_stops_the_gateway(make):
+    """No reply to any of its probes: a person would meet silence, so the host stops and people get the hold text."""
+    timing = HostTiming(first_heartbeat=1.0, probe=1.0, model_probe=0.2, tick=0.01, model_retries=(0.05, 0.05))
+    supervisor, alerts, _ = make(timing=timing)
+    async with running(supervisor):
+        await hook_probe_passes(supervisor)
+        await wait_until(lambda: supervisor.state is GatewayState.STOPPED, timeout=5)
+    assert supervisor.reason == "model_silent"
+    assert alerts.raised == [("host_failed", {"reason": "model_silent"})]
+
+
+async def test_a_reply_to_another_model_probe_changes_nothing(make):
+    """A reply of an earlier probe, delivered late, never decides the current one."""
+    supervisor, alerts, _ = make()
+    supervisor.on_model_probe_reply(1, False, "auth")  # no model probe is waiting: an earlier boot's
+    async with running(supervisor):
+        await hook_probe_passes(supervisor)
+        current = supervisor.model_probe_id
+        supervisor.on_model_probe_reply(current - 1, False, "auth")
+        supervisor.on_model_probe_reply(current + 1, True, None)
+        await asyncio.sleep(0.1)
+        assert supervisor.state is GatewayState.STARTING
+        supervisor.on_model_probe_reply(current, True, None)
+        await wait_until(lambda: supervisor.state is GatewayState.RUNNING)
+    assert alerts.raised == []
+
+
+async def test_the_model_has_a_longer_budget_than_the_hooks(make):
+    """OpenClaw itself retries a busy provider for about 80 s within one turn, so the model probe waits longer than
+    the hooks' probe: a slow answer passes the gate instead of counting as silence."""
+    timing = HostTiming(first_heartbeat=1.0, probe=0.2, model_probe=2.0, tick=0.01, model_retries=())
+    supervisor, alerts, _ = make(timing=timing)
+    async with running(supervisor):
+        await hook_probe_passes(supervisor)
+        probe = supervisor.model_probe_id
+        await asyncio.sleep(0.5)  # longer than the hooks' probe may take
+        supervisor.on_model_probe_reply(probe, True, None)
+        await wait_until(lambda: supervisor.state is GatewayState.RUNNING)
+    assert alerts.raised == []
+
+
+def test_the_default_budget_outlasts_openclaws_own_retries():
+    timing = HostTiming()
+    assert timing.model_probe >= 120.0  # OpenClaw gave up on a busy provider after 82 s (finding 17)
+    assert timing.model_retries == (30.0,)

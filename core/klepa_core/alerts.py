@@ -36,6 +36,9 @@ DEFAULT_LIMITS: dict[str, float] = {
     "host_not_polling": 3600,
     "host_send_failed": 3600,
     "host_send_refused": 3600,
+    "host_turn_failed": 3600,
+    "host_model_auth": 3600,
+    "host_model_unavailable": 3600,
     "egress_failed": 3600,
 }
 DOCUMENTS_GRACE_SECONDS = 300.0

@@ -40,7 +40,7 @@ NODE_MAX_BYTES = 100 * 1024 * 1024
 OPENCLAW_VERSION = "2026.9.4"
 PROFILE = "klepa"
 OWNERSHIP_MANAGER = "klepa-core"
-ADAPTER_FILES = ("index.ts", "openclaw.plugin.json", "package.json")
+ADAPTER_FILES = ("index.ts", "mcp.ts", "openclaw.plugin.json", "package.json")
 RUNTIME_FILES = ("package.json", "package-lock.json")
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 

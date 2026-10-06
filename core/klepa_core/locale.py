@@ -15,7 +15,19 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any
 
-TEXT_KEYS = ("stage1", "start", "no_commands", "unsupported", "too_large", "failed", "hold", "held_dropped")
+TEXT_KEYS = (
+    "stage1",
+    "start",
+    "no_commands",
+    "unsupported",
+    "too_large",
+    "failed",
+    "hold",
+    "held_dropped",
+    "turn_failed",
+    "original_failed",
+)
+TEXT_FIELDS: dict[str, tuple[str, ...]] = {"original_failed": ("name",)}
 SERVICE_FIELDS: dict[str, tuple[str, ...]] = {
     "status_button": (),
     "pause_button": (),
@@ -53,6 +65,9 @@ SERVICE_FIELDS: dict[str, tuple[str, ...]] = {
     "alert_restarted": (),
     "alert_album_private_after_copy": ("count",),
     "alert_host_failed": ("reason",),
+    "alert_host_turn_failed": ("reason",),
+    "alert_host_model_auth": (),
+    "alert_host_model_unavailable": ("reason",),
     "alert_host_silent": (),
     "alert_host_exited": (),
     "alert_host_conflict": (),
@@ -158,6 +173,14 @@ def _checked(code: str, raw: dict[str, Any]) -> Locale:
     missing = [key for key in TEXT_KEYS if not is_text(texts.get(key))]
     if missing:
         raise fail(f"missing texts {missing}")
+    for key, fields in TEXT_FIELDS.items():
+        for field in fields:
+            if "{" + field + "}" not in texts[key]:
+                raise fail(f"texts.{key} needs {{{field}}}")
+        try:
+            texts[key].format(**dict.fromkeys(fields, "x"))
+        except (KeyError, IndexError, ValueError):
+            raise fail(f"texts.{key} has an unknown placeholder") from None
     receipts = raw.get("receipts") or {}
     for key in ("one_file", "one_voice"):
         if not is_text(receipts.get(key)):

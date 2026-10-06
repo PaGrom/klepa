@@ -43,4 +43,19 @@ say("probe_dispatch", await hook("before_dispatch")({ senderId: probe, messageId
 const ctx = { runId: "run-probe", chatId: probe, senderId: probe, sessionKey: session(probe) };
 say("probe_prompt_built", await hook("before_prompt_build")({}, ctx));
 say("probe_turn", await hook("before_agent_run")({}, ctx));
+const blocked = { text: "Your message could not be sent: the block (blocked by klepa-adapter)", isError: true };
+say("probe_reply", await hook("reply_payload_sending")({ payload: blocked, runId: "run-probe" }, {}));
+const mine = { runId: "run-member", chatId: member, senderId: member, sessionKey: session(member) };
+say("member_prompt_built", await hook("before_prompt_build")({}, mine));
+say("member_turn", await hook("before_agent_run")({}, mine));
+const params = { query: 'Διαβατήριο ✓ "x" \\ / \u2028 end', limit: 3, _klepa: { run_id: "forged", sig: "0" } };
+const call = { toolName: "klepa__search", params, runId: "run-member", toolCallId: "call-1" };
+say("member_tool", await hook("before_tool_call")(call, { runId: "run-member", toolCallId: "call-1" }));
+say("foreign_tool", await hook("before_tool_call")({ toolName: "exec", params: {} }, { runId: "run-member", toolCallId: "c2" }));
+say("direct_tool", await hook("before_tool_call")({ toolName: "klepa__get", params: {} }, { runId: "x", toolCallId: "http-1" }));
+const failed = { text: "⚠️ anthropic/x request failed (authentication failed, HTTP 401).", isError: true };
+say("member_failed", await hook("reply_payload_sending")({ payload: failed, runId: "run-member" }, {}));
+const media = { text: "here", mediaUrl: "https://leak.invalid/a.png", mediaUrls: ["https://leak.invalid/b.png"] };
+say("member_media", await hook("reply_payload_sending")({ payload: media, runId: "run-member" }, {}));
+await new Promise((resolve) => setTimeout(resolve, 300)); // the turn_reply reports go out in the background
 services[0]?.stop();

@@ -14,6 +14,8 @@ too_large = "e"
 failed = "f"
 hold = "g"
 held_dropped = "h"
+turn_failed = "t"
+original_failed = "not sent: {name}"
 
 [receipts]
 one_file = "got it"
@@ -59,6 +61,9 @@ alert_host_conflict = "conflict"
 alert_host_not_polling = "not polling"
 alert_host_send_failed = "refused {error}"
 alert_host_send_refused = "not taken {reason}"
+alert_host_turn_failed = "turn {reason}"
+alert_host_model_auth = "token"
+alert_host_model_unavailable = "model {reason}"
 alert_egress_failed = "egress {error}"
 """
 
@@ -130,6 +135,11 @@ def test_complete_locale_from_a_directory_loads(tmp_path):
         (lambda t: t.replace('voices = "got {n} voice messages"', 'voices = "got voice messages"'), "voices"),
         (lambda t: t.replace('private_keywords = ["just for me"]', "private_keywords = []"), "private_keywords"),
         (lambda t: t.replace('plural = "one-other"', 'plural = "dual"'), "plural"),
+        (lambda t: t.replace('original_failed = "not sent: {name}"', 'original_failed = "not sent"'), "needs {name}"),
+        (
+            lambda t: t.replace('original_failed = "not sent: {name}"', 'original_failed = "{name} {file}"'),
+            "placeholder",
+        ),
     ],
 )
 def test_incomplete_locale_is_refused(tmp_path, mutation, message):
@@ -166,6 +176,12 @@ def test_english_service_texts():
         (lambda t: t.replace('host_paused = "paused"\n', ""), "service.host_paused"),
         (lambda t: t.replace("{headline} {host} ", "{headline} "), "needs {host}"),
         (lambda t: t.replace('alert_host_failed = "host {reason}"', 'alert_host_failed = "host"'), "needs {reason}"),
+        (
+            lambda t: t.replace(
+                'alert_host_model_unavailable = "model {reason}"', 'alert_host_model_unavailable = "m"'
+            ),
+            "needs {reason}",
+        ),
         (lambda t: t.replace('unavailable = "unavailable {error}"', 'unavailable = "gone"'), "needs {error}"),
         (lambda t: t.replace('ok = "ok"', 'ok = "ok {surprise}"'), "unknown placeholder"),
     ],

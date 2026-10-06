@@ -9,6 +9,10 @@ import { test } from "node:test";
 import {
   CoreLink,
   HOOKS,
+  TOOL_DOMAIN,
+  canonical,
+  failureKind,
+  toolSignature,
   type Boot,
   type Post,
   type Reply,
@@ -24,6 +28,7 @@ import {
   quietLogger,
   readConfig,
   register,
+  remember,
   runtimeOf,
   sign,
   signedBy,
@@ -205,7 +210,7 @@ test("without Core, before_dispatch claims nothing and before_agent_run blocks",
 
 test("the turn hooks report the run and pass on Core's decision", async () => {
   const answers: Record<string, unknown>[] = [
-    { ok: true },
+    { ok: true, instruction: "I", tools_allow: [] },
     { outcome: "block", message: "not now" },
     { outcome: "pass" },
     { outcome: "something else" },
@@ -215,7 +220,7 @@ test("the turn hooks report the run and pass on Core's decision", async () => {
   try {
     const hooks = hookHandlers(one, () => {});
     const ctx = { runId: "run-1", chatId: "222222", senderId: "222222", sessionKey: "agent:main:telegram:direct:222222" };
-    assert.equal(await hooks.before_prompt_build({}, ctx), undefined);
+    assert.deepEqual(await hooks.before_prompt_build({}, ctx), { appendSystemContext: "I", toolsAllow: [] });
     assert.deepEqual(await hooks.before_agent_run({}, ctx), { outcome: "block", reason: "klepa", message: "not now" });
     assert.deepEqual(await hooks.before_agent_run({}, ctx), { outcome: "pass" });
     assert.deepEqual(await hooks.before_agent_run({}, ctx), { outcome: "block", reason: "klepa", message: UNREACHABLE });
@@ -229,11 +234,45 @@ test("the turn hooks report the run and pass on Core's decision", async () => {
   }
 });
 
-test("ids from the hook context win over the event's, and numbers become strings", async () => {
-  const core = fakeCore(() => ({ outcome: "pass" }));
+test("a run whose prompt lacks Core's instruction never reaches the model, whatever Core says next", async () => {
+  // Core answered prompt_built after the plugin gave up waiting, or without an instruction: Core may have marked the
+  // run, but its prompt has no instruction, so the plugin blocks it without asking.
+  const warnings: string[] = [];
+  const core = fakeCore((message) => (message.type === "turn_start" ? { outcome: "pass" } : { ok: true }));
   const { link: one, cleanup } = link(core.post);
   try {
-    await hookHandlers(one, () => {}).before_agent_run({ senderId: 1, runId: "event" }, { senderId: 222222 });
+    const hooks = hookHandlers(one, (reason) => warnings.push(reason));
+    const ctx = { runId: "run-x", chatId: "1", senderId: "1", sessionKey: "agent:main:telegram:direct:1" };
+    assert.equal(await hooks.before_prompt_build({}, ctx), undefined);
+    assert.deepEqual(await hooks.before_agent_run({}, ctx), {
+      outcome: "block",
+      reason: "klepa-unreachable",
+      message: UNREACHABLE,
+    });
+    assert.deepEqual(
+      core.seen.map((message) => message.type),
+      ["prompt_built"],
+    );
+    assert.deepEqual(warnings, ["turn_start: no instruction from Core"]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("the runs the plugin remembers are bounded, and the oldest goes first", () => {
+  const runs = new Set<string>();
+  for (const id of ["a", "b", "c"]) remember(runs, id, 2);
+  assert.deepEqual([...runs], ["b", "c"]);
+  remember(runs, "b", 2); // remembered again: now the newest
+  remember(runs, "d", 2);
+  assert.deepEqual([...runs], ["b", "d"]);
+});
+
+test("ids from the hook context win over the event's, and numbers become strings", async () => {
+  const core = fakeCore(() => ({ ok: true }));
+  const { link: one, cleanup } = link(core.post);
+  try {
+    await hookHandlers(one, () => {}).before_prompt_build({ senderId: 1, runId: "event" }, { senderId: 222222 });
     assert.deepEqual([core.seen[0]?.sender_id, core.seen[0]?.run_id], ["222222", "event"]);
   } finally {
     cleanup();
@@ -293,7 +332,7 @@ test("warnings repeat at most once a minute for each reason", () => {
   assert.deepEqual(lines, ["klepa-adapter: a", "klepa-adapter: b", "klepa-adapter: a"]);
 });
 
-test("register arms the three hooks and a heartbeat service that beats at once", async () => {
+test("register arms the hooks and a heartbeat service that beats at once", async () => {
   const { dir, path } = keyFile();
   const hooks: string[] = [];
   const services: { id: string; start(): void; stop(): void }[] = [];
@@ -349,7 +388,12 @@ test("a hook OpenClaw refuses to register is left out of the heartbeat", async (
     services[0]?.start();
     await new Promise((resolve) => setImmediate(resolve));
     services[0]?.stop();
-    assert.deepEqual(core.seen[0]?.registrations, ["before_dispatch", "before_prompt_build"]);
+    assert.deepEqual(core.seen[0]?.registrations, [
+      "before_dispatch",
+      "before_prompt_build",
+      "before_tool_call",
+      "reply_payload_sending",
+    ]);
   } finally {
     rmSync(dir, { recursive: true });
   }
@@ -403,4 +447,106 @@ test("postUnix gives up on a Core that does not answer, or answers too much", as
     loud.close();
     rmSync(dir, { recursive: true });
   }
+});
+
+
+test("canonical JSON sorts keys at every level and writes no spaces", () => {
+  assert.equal(
+    canonical({ b: 1, a: [true, null, "x"], c: { z: "é", y: 'q"\\' } }),
+    '{"a":[true,null,"x"],"b":1,"c":{"y":"q\\"\\\\","z":"é"}}',
+  );
+  assert.throws(() => canonical({ a: undefined }));
+});
+
+test("a tool call is signed for exactly its run, call, tool and parameters", () => {
+  const base = toolSignature(KEY, "run-1", "call-1", "search", { query: "x" });
+  const expected = createHmac("sha256", KEY).update(`${TOOL_DOMAIN}\nrun-1\ncall-1\nsearch\n{"query":"x"}`);
+  assert.equal(base, expected.digest("hex"));
+  for (const other of [
+    toolSignature(KEY, "run-2", "call-1", "search", { query: "x" }),
+    toolSignature(KEY, "run-1", "call-2", "search", { query: "x" }),
+    toolSignature(KEY, "run-1", "call-1", "get", { query: "x" }),
+    toolSignature(KEY, "run-1", "call-1", "search", { query: "y" }),
+  ]) {
+    assert.notEqual(other, base);
+  }
+});
+
+test("before_tool_call signs Core's tools, replaces the model's _klepa and blocks everything else", () => {
+  const core = fakeCore(() => ({}));
+  const { link: one, cleanup } = link(core.post);
+  try {
+    const hooks = hookHandlers(one, () => {});
+    const ctx = { runId: "run-1", toolCallId: "call-1" };
+    const forged = { toolName: "klepa__search", params: { query: "x", _klepa: { sig: "forged" } } };
+    const sig = toolSignature(KEY, "run-1", "call-1", "search", { query: "x" });
+    assert.deepEqual(hooks.before_tool_call(forged, ctx), {
+      params: { query: "x", _klepa: { run_id: "run-1", tool_call_id: "call-1", sig } },
+    });
+    assert.equal(hooks.before_tool_call({ toolName: "exec", params: {} }, ctx).block, true);
+    assert.equal(hooks.before_tool_call({ toolName: "klepa__get", params: {} }, { toolCallId: "c2" }).block, true);
+    const direct = { runId: "r", toolCallId: "http-1" }; // /tools/invoke: no turn behind it
+    assert.equal(hooks.before_tool_call({ toolName: "klepa__get", params: {} }, direct).block, true);
+    assert.equal(core.seen.length, 0); // signing asks Core nothing
+  } finally {
+    cleanup();
+  }
+});
+
+test("before_prompt_build hands over Core's instruction and only its tool names", async () => {
+  const core = fakeCore(() => ({ ok: true, instruction: "INSTRUCTION", tools_allow: ["klepa__search", 5] }));
+  const { link: one, cleanup } = link(core.post);
+  try {
+    const hooks = hookHandlers(one, () => {});
+    const ctx = { runId: "run-1", chatId: "1", senderId: "1", sessionKey: "agent:main:telegram:direct:1" };
+    assert.deepEqual(await hooks.before_prompt_build({}, ctx), {
+      appendSystemContext: "INSTRUCTION",
+      toolsAllow: ["klepa__search"],
+    });
+  } finally {
+    cleanup();
+  }
+});
+
+test("a reply leaves as text: no media, Core's words for a failed turn, Core's text alone for a blocked one", async () => {
+  const answers: Record<string, unknown>[] = [{ ok: true, instruction: "I", tools_allow: [], failure: "Sorry." }];
+  const core = fakeCore((message) => (message.type === "turn_start" ? { outcome: "pass" } : (answers.shift() ?? { ok: true })));
+  const { link: one, cleanup } = link(core.post);
+  try {
+    const hooks = hookHandlers(one, () => {});
+    const ctx = { runId: "run-9", chatId: "1", senderId: "1", sessionKey: "agent:main:telegram:direct:1" };
+    await hooks.before_prompt_build({}, ctx);
+    assert.deepEqual(await hooks.before_agent_run({}, ctx), { outcome: "pass" });
+    const media = { text: "hi", mediaUrl: "https://a.invalid/x.png", mediaUrls: ["https://a.invalid/y.png"] };
+    assert.deepEqual(hooks.reply_payload_sending({ payload: media, runId: "run-9" }, {}), { payload: { text: "hi" } });
+    const failed = { text: "⚠️ a/b request failed (authentication failed, HTTP 401).", isError: true };
+    assert.deepEqual(hooks.reply_payload_sending({ payload: failed, runId: "run-9" }, {}), {
+      payload: { text: "Sorry.", isError: true },
+    });
+    const blocked = { text: "Your message could not be sent: on hold (blocked by klepa-adapter)", isError: true };
+    assert.deepEqual(hooks.reply_payload_sending({ payload: blocked, runId: "other" }, {}), {
+      payload: { text: "on hold", isError: true },
+    });
+    assert.equal(hooks.reply_payload_sending({ payload: { text: "fine" }, runId: "run-9" }, {}), undefined);
+    await new Promise((resolve) => setImmediate(resolve));
+    const reports = core.seen.filter((message) => message.type === "turn_reply");
+    assert.deepEqual(
+      reports.map((message) => [message.run_id, message.error, message.error_kind]),
+      [
+        ["run-9", false, undefined],
+        ["run-9", true, "auth"],
+        ["run-9", false, undefined],
+      ],
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("a failure is named by its kind, never by its text", () => {
+  assert.equal(failureKind("⚠️ a/b request failed (authentication failed, HTTP 401). Re-authenticate"), "auth");
+  assert.equal(failureKind("HTTP 429: rate limit reached"), "rate_limit");
+  assert.equal(failureKind("the request timed out"), "timeout");
+  assert.equal(failureKind("HTTP 503 from the provider"), "provider");
+  assert.equal(failureKind(undefined), "other");
 });

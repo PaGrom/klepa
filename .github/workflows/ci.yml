@@ -76,4 +76,4 @@ jobs:
       - name: Types
         run: npx tsc -p tsconfig.json
       - name: Tests
-        run: node --test adapter.test.ts
+        run: node --test adapter.test.ts mcp.test.ts

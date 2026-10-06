@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test adapter.test.ts",
+    "test": "node --test adapter.test.ts mcp.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {

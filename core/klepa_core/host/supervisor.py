@@ -32,7 +32,9 @@ from ..events import EventLog
 from ..signing import canonical_json
 from .queue import HostQueue
 
-REQUIRED_HOOKS = frozenset({"before_dispatch", "before_prompt_build", "before_agent_run"})
+REQUIRED_HOOKS = frozenset(
+    {"before_dispatch", "before_prompt_build", "before_agent_run", "before_tool_call", "reply_payload_sending"}
+)
 # What the adapter returns for the probe's turn, and what the host must then write to the probe's chat: the
 # host's "Your message could not be sent: …" (spike report, point 15) proves the turn was blocked.
 PROBE_BLOCK = "Klepa start probe: this turn is blocked on purpose."
@@ -67,6 +69,10 @@ class Expectations:
 class HostTiming:
     first_heartbeat: float = 30.0  # a full heartbeat within 30 s of the start (spec 4.6)
     probe: float = 60.0  # the live probe: a gateway back from a long outage may wait 30 s before it polls again
+    # The model probe: OpenClaw itself retries a busy provider for about 80 s within one turn before it reports the
+    # error, so the probe waits longer, and asks once more after a pause when the model erred or was silent.
+    model_probe: float = 150.0
+    model_retries: tuple[float, ...] = (30.0,)
     release_within: float = 15.0  # the host's sends leave only while the heartbeat is this fresh
     hold_after: float = 180.0  # HOLD after three minutes without a heartbeat
     drop_after: float = 600.0  # a held send is dropped with Core's apology after ten minutes
@@ -192,6 +198,8 @@ class Supervisor:
         self.last_poll: float | None = None
         self.running_since: float | None = None
         self.probe_id: int | None = None
+        self.model_probe_id: int | None = None  # the second probe: one real model call (stage 2)
+        self._model_reply: tuple[bool, str] | None = None  # how the model probe's turn ended: answered, error's kind
         self.gated_process: object | None = None  # the gateway process that passed the gate
         self._stopped = False  # Core stopped its gateway after a failed check; it stays down until Resume
         self._start_wanted = False
@@ -241,6 +249,12 @@ class Supervisor:
         if self.probe_id is not None and self._probe_turn == self.probe_id:
             self._probe_blocked = self.probe_id
 
+    def on_model_probe_reply(self, host_message_id: int, ok: bool, kind: str | None) -> None:
+        """The model probe's turn replied: the model's answer, or OpenClaw's report of the model's error and its kind.
+        A reply to another probe, an earlier one delivered late, changes nothing."""
+        if host_message_id == self.model_probe_id and self._model_reply is None:
+            self._model_reply = (ok, kind or "other")
+
     def on_poll(self) -> None:
         self.last_poll = self.mono()
 
@@ -272,8 +286,9 @@ class Supervisor:
     def may_serve(self, host_message_id: int, kind: str) -> bool:
         """Text only while RUNNING with a fresh heartbeat: a gateway that restarted is a new boot that has not
         passed the gate, and until its first heartbeat Core cannot tell. The probe only while STARTING."""
-        if kind == "probe":
-            return self.state is GatewayState.STARTING and host_message_id == self.probe_id
+        if kind in ("probe", "model_probe"):
+            current = (self.probe_id, self.model_probe_id)
+            return self.state is GatewayState.STARTING and host_message_id is not None and host_message_id in current
         return self.state is GatewayState.RUNNING and self.heartbeat_fresh()
 
     def turns_blocked(self) -> bool:
@@ -404,6 +419,28 @@ class Supervisor:
         finally:
             self.queue.retire(self.probe_id)
             self.probe_id = None
+        # One real call of the model through the egress proxy: a token that stopped working fails here, at the gate,
+        # and the owner hears of it before a person's question meets it. A model that erred otherwise or was silent is
+        # asked again after a pause: a provider busy after a night's restart is no reason to stop.
+        outcome: str | None = None
+        for pause in (0.0, *self.timing.model_retries):
+            if not await self._pause(pause, boot):
+                return
+            outcome = await self._ask_model(boot)
+            if outcome is None:
+                return  # the state or the boot changed
+            if outcome in ("ok", "auth"):
+                break
+        if outcome == "auth":
+            await self._fail("model_auth", alert="host_model_auth")
+            return
+        if outcome == "silent":
+            await self._fail("model_silent")  # a person would meet silence: the hold text is better
+            return
+        if outcome != "ok" and self.alerts is not None:
+            # The model path works and the provider refuses: the host runs, and people get Core's apology for each
+            # message until the provider answers again, without waiting for the owner's Resume.
+            self.alerts.raise_("host_model_unavailable", reason=outcome)
         try:
             self.gated_process = await self.control.process()
         except GatewayUnknown:  # the next readable answer is a process the gate has not seen: it runs once more
@@ -411,12 +448,40 @@ class Supervisor:
         self.gated_boot = boot
         self._set(GatewayState.RUNNING, None)
 
-    async def _fail(self, reason: str) -> None:
+    async def _pause(self, seconds: float, boot: str | None) -> bool:
+        """Wait, unless the state or the boot changes first."""
+        deadline = self.mono() + seconds
+        while self.mono() < deadline:
+            if self.state is not GatewayState.STARTING or self.boot_id != boot:
+                return False
+            await asyncio.sleep(_GATE_STEP_SECONDS)
+        return self.state is GatewayState.STARTING and self.boot_id == boot
+
+    async def _ask_model(self, boot: str | None) -> str | None:
+        """One model probe: "ok", the kind of the model's error, "silent" after the probe's budget, or None when the
+        state or the boot changed meanwhile."""
+        self._model_reply = None
+        self.model_probe_id = self.queue.add_probe("model_probe")
+        deadline = self.mono() + self.timing.model_probe
+        try:
+            while self._model_reply is None:
+                if self.state is not GatewayState.STARTING or self.boot_id != boot:
+                    return None
+                if self.mono() >= deadline:
+                    return "silent"
+                await asyncio.sleep(_GATE_STEP_SECONDS)
+            ok, kind = self._model_reply
+            return "ok" if ok else kind
+        finally:
+            self.queue.retire(self.model_probe_id)
+            self.model_probe_id = None
+
+    async def _fail(self, reason: str, alert: str = "host_failed") -> None:
         self.failed_boot = self.boot_id
         self.gated_boot = None
         self._set(GatewayState.STOPPED, reason)
         if self.alerts is not None:
-            self.alerts.raise_("host_failed", reason=reason)
+            self.alerts.raise_(alert, reason=reason)
         self._stopped = self.control.managed
         await self.control.stop()
 

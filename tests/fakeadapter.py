@@ -16,7 +16,7 @@ import aiohttp
 
 from klepa_core.host.adapter import SIGNATURE_HEADER, sign_body
 
-HOOKS = ["before_dispatch", "before_prompt_build", "before_agent_run"]
+HOOKS = ["before_dispatch", "before_prompt_build", "before_agent_run", "before_tool_call", "reply_payload_sending"]
 
 
 def session_key(peer: int) -> str:
@@ -78,6 +78,12 @@ class FakeAdapter:
         return await self.send(
             "turn_start", run_id=run_id, sender_id=str(peer), chat_id=str(peer), session_key=session_key(peer)
         )
+
+    async def turn_reply(
+        self, run_id: str, *, error: bool = False, error_kind: str | None = None
+    ) -> tuple[int, dict[str, Any]]:
+        """How a turn that reached the model replied, as reply_payload_sending reports it."""
+        return await self.send("turn_reply", run_id=run_id, error=error, error_kind=error_kind)
 
     async def beat(self, stop: asyncio.Event, every: float = 0.1) -> None:
         """The plugin's heartbeat service, every 5 s in production."""

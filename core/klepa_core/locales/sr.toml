@@ -10,6 +10,8 @@ too_large = "Ovaj fajl je veći od 20 MB, a takve fajlove Telegram ne daje botov
 failed = "Nisam uspela da preuzmem ovaj fajl iz Telegrama. Pošalji ga, molim te, ponovo."
 hold = "Trenutno sam na održavanju. Sačuvala sam tvoju poruku i odgovoriću kasnije."
 held_dropped = "Nisam stigla da odgovorim na vreme. Pošalji, molim te, poruku ponovo."
+turn_failed = "Nisam uspela da odgovorim: nešto se pokvarilo kod mene, i vlasnik to već zna. Pitaj ponovo malo kasnije, molim te."
+original_failed = "Nisam uspela da pošaljem fajl {name}. Zamoli me ponovo malo kasnije, molim te."
 
 [receipts]
 one_file = "📄 primila sam"
@@ -56,4 +58,7 @@ alert_host_conflict = "⚠️ Dva klijenta istovremeno traže poruke od čuvara.
 alert_host_not_polling = "⚠️ Host već pet minuta ne traži poruke od čuvara, iako je adapter živ."
 alert_host_send_failed = "⚠️ Telegram nije prihvatio odgovor hosta ({error}). Osoba je zamoljena da ponovo pošalje poruku."
 alert_host_send_refused = "⚠️ Čuvar nije primio odgovor hosta ({reason}). Osoba je možda ostala bez odgovora."
+alert_host_turn_failed = "⚠️ Poruka je ostala bez odgovora: model nije uspeo ({reason}). Ako je razlog auth, token modela više ne radi: pokreni klepa-core host login."
+alert_host_model_auth = "⚠️ Model nije prihvatio token. Host ne dobija poruke; ljudima ide fiksni odgovor, a njihove poruke čekaju. Pokreni klepa-core host login sa novim setup-token, pa pritisni Resume."
+alert_host_model_unavailable = "⚠️ Model nije odgovorio na početnu proveru ({reason}). Host ipak radi: na svaku poruku ljudi dobijaju izvinjenje dok model ponovo ne odgovori."
 alert_egress_failed = "⚠️ Proksi za odlazni saobraćaj ne može da se pokrene ({error}). Host ne može da dođe do modela."

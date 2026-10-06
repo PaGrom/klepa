@@ -56,7 +56,8 @@ def test_the_adapter_reports_every_value_but_the_unreported():
         ("plugins.entries.klepa-adapter.hooks.allowConversationAccess", True),
         ("plugins.slots.memory", "none"),
         ("tools.profile", "minimal"),
-        ("tools.alsoAllow", []),
+        ("tools.alsoAllow", ["klepa__get", "klepa__search", "klepa__send_original"]),
+        ("gateway.tools.deny", ["klepa__get", "klepa__search", "klepa__send_original"]),
         ("tools.sessions.visibility", "self"),
         ("commands.allowFrom", {"*": []}),
         ("commands.restart", False),
@@ -71,6 +72,12 @@ def test_the_adapter_reports_every_value_but_the_unreported():
         ("update.checkOnStart", False),
         ("update.auto.enabled", False),
         ("cron.enabled", False),
+        # OpenClaw's own persona and first-run ritual stay out of the prompt (review of plan 2a), and so do the
+        # features plan 1c-2 left to stage 2: internal hooks, among them session-memory, and ACP.
+        ("agents.defaults.skipBootstrap", True),
+        ("agents.defaults.contextInjection", "never"),
+        ("hooks.internal.enabled", False),
+        ("acp.enabled", False),
     ],
 )
 def test_the_spec_values_are_in_the_table(key, value):
@@ -126,3 +133,21 @@ def test_settings_follow_the_config(make_config, short_dir):
     assert (settings.gateway_port, settings.model) == (19400, "anthropic/claude-opus-5-5")
     assert ref.layout_of(cfg).host_dir == cfg.data_dir / "host"
     assert ref.layout_of(cfg).home == cfg.data_dir / "host" / "home"
+
+
+def test_cores_tools_come_through_the_adapters_mcp_server():
+    from klepa_core.host.instruction import TOOLS
+
+    settings = ref.HostSettings(
+        19300, 19201, 19202, Path("/run/adapter.sock"), Path("/k"), Path("/t"), (1,), "anthropic/claude-sonnet-5"
+    )
+    layout = ref.HostLayout(runtime_dir=Path("/rt"), host_dir=Path("/h"))
+    table = ref.table(settings, layout)
+    assert table["mcp.servers.klepa"] == {
+        "command": "/rt/node-v24.21.0/bin/node",
+        "args": ["/rt/adapter/mcp.ts"],
+        "env": {"KLEPA_SOCKET": "/run/adapter.sock"},
+    }
+    assert sorted(table["tools.alsoAllow"]) == sorted(TOOLS)  # exact names only (spec 4.3)
+    assert table["gateway.tools.deny"] == table["tools.alsoAllow"]  # never through /tools/invoke
+    assert "mcp.servers.klepa" in ref.policy(table)  # every heartbeat proves the gateway runs this server

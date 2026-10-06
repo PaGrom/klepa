@@ -10,11 +10,31 @@ from fakeadapter import FakeAdapter
 from helpers import MEMBER, OWNER, wait_until
 from klepa_core.events import EventLog
 from klepa_core.host.adapter import AdapterServer, BootSequence, probe_peer, sign_body
+from klepa_core.host.instruction import TOOLS, instruction
 from klepa_core.host.queue import HostQueue
 from klepa_core.host.supervisor import PROBE_BLOCK, HostTiming, Supervisor
+from klepa_core.host.tools import ToolBox, signature
 from klepa_core.host.turns import TurnRegistry
 
 KEY = b"k" * 32
+
+
+class FakeAlerts:
+    def __init__(self):
+        self.raised = []
+
+    def raise_(self, name, **fields):
+        self.raised.append((name, fields))
+        return True
+
+
+def server_for(path, cfg, conn, queue, turns, events, supervisor, alerts=None):
+    persons = {member.telegram_id: member.person_id for member in cfg.members}
+    names = {member.person_id: member.name for member in cfg.members}
+    tools = ToolBox(conn, KEY, persons, names)
+    return AdapterServer(
+        path, KEY, supervisor, turns, queue, events, cfg.locale, instruction("en"), tools, alerts=alerts
+    )
 
 
 def everything(host_message_id, kind):
@@ -29,7 +49,7 @@ async def server(core_db, short_dir):
     events = EventLog(conn)
     supervisor = Supervisor(conn, queue, events, timing=HostTiming(first_heartbeat=60, probe=60, tick=0.01))
     path = short_dir / "run" / "adapter.sock"
-    adapter_server = AdapterServer(path, KEY, supervisor, turns, queue, events, cfg.locale)
+    adapter_server = server_for(path, cfg, conn, queue, turns, events, supervisor, FakeAlerts())
     stop = asyncio.Event()
     task = asyncio.create_task(adapter_server.serve_forever(stop))
     await wait_until(path.exists)
@@ -100,24 +120,123 @@ async def test_malformed_messages_are_refused(server, message):
     assert (await adapter.post(body, sign_body(KEY, body)))[0] == 400
 
 
-async def test_before_dispatch_answers_people_and_lets_only_the_probe_through(server):
+async def test_before_dispatch_lets_every_issued_message_go_on_to_a_turn(server):
     adapter_server, adapter, _, _ = server
-    _, answer = await adapter.dispatch(OWNER, 10)
-    assert answer["handled"] is True
-    assert answer["text"].startswith("For now I only accept files")
-    _, probe = await adapter.dispatch(adapter_server.queue.probe_peer, 1)
-    assert probe["handled"] is False
+    assert (await adapter.dispatch(OWNER, 10))[1]["handled"] is False
+    assert (await adapter.dispatch(adapter_server.queue.probe_peer, 1))[1]["handled"] is False
 
 
-async def test_a_turn_registers_and_is_blocked_in_stage_1(server):
+async def test_a_built_prompt_gets_cores_instruction_its_tools_and_the_failure_text(server):
+    adapter_server, adapter, _, _ = server
+    _, answer = await adapter.prompt_built("run-1", MEMBER)
+    assert answer["instruction"] == instruction("en")
+    assert answer["tools_allow"] == list(TOOLS)
+    assert answer["failure"].startswith("I couldn't answer just now")
+    _, probe = await adapter.prompt_built("run-p", adapter_server.queue.probe_peer)
+    assert probe["tools_allow"] == []  # the probes need no tool
+
+
+async def test_a_registered_turn_reaches_the_model(server):
     adapter_server, adapter, conn, journal = server
     issue(adapter_server, journal, 1, MEMBER, 10)
     await adapter.prompt_built("run-1", MEMBER)
     status, turn = await adapter.turn_start("run-1", MEMBER)
-    assert (status, turn["outcome"]) == (200, "block")
-    assert turn["message"].startswith("For now I only accept files")
+    assert (status, turn["outcome"]) == (200, "pass")
     assert conn.execute("SELECT host_message_id FROM host_run WHERE run_id='run-1'").fetchone()[0] is not None
     assert "turn_registered" in EventLog(conn).kinds()
+
+
+async def test_a_turn_on_hold_is_blocked_with_the_hold_text(server):
+    adapter_server, adapter, _, journal = server
+    issue(adapter_server, journal, 1, MEMBER, 10)
+    adapter_server.supervisor.pause()
+    await adapter.prompt_built("run-1", MEMBER)
+    _, turn = await adapter.turn_start("run-1", MEMBER)
+    assert (turn["outcome"], turn["message"]) == ("block", adapter_server.locale.text("hold"))
+
+
+async def test_a_failed_turn_of_a_person_alerts_the_owner_and_a_blocked_one_does_not(server):
+    adapter_server, adapter, conn, journal = server
+    issue(adapter_server, journal, 1, MEMBER, 10)
+    await adapter.prompt_built("run-1", MEMBER)
+    await adapter.turn_start("run-1", MEMBER)
+    await adapter.turn_reply("run-1", error=True, error_kind="auth")
+    await adapter.turn_reply("run-unknown", error=True, error_kind="auth")  # a run Core never registered
+    assert adapter_server.alerts.raised == [("host_turn_failed", {"reason": "auth"})]
+    assert conn.execute("SELECT succeeded FROM host_run WHERE run_id='run-1'").fetchone()[0] == 0
+
+
+async def test_the_model_probe_hears_how_its_own_turn_replied(server):
+    adapter_server, adapter, _, _ = server
+    supervisor = adapter_server.supervisor
+    peer = adapter_server.queue.probe_peer
+    cases = (
+        (False, None, (True, "other")),
+        (True, "rate_limit", (False, "rate_limit")),
+        (True, "Odd!", (False, "other")),
+    )
+    for n, (error, kind, expected) in enumerate(cases):
+        supervisor.model_probe_id = adapter_server.queue.add_probe("model_probe")
+        supervisor._model_reply = None
+        adapter_server.queue.serve(None, 100, everything)
+        await adapter.prompt_built(f"run-{n}", peer)
+        assert (await adapter.turn_start(f"run-{n}", peer))[1]["outcome"] == "pass"
+        await adapter.turn_reply(f"run-{n}", error=error, error_kind=kind)
+        assert supervisor._model_reply == expected
+        adapter_server.queue.retire(supervisor.model_probe_id)
+    # the reply of an earlier probe's turn, delivered late, is not the current probe's
+    supervisor.model_probe_id = adapter_server.queue.add_probe("model_probe")
+    supervisor._model_reply = None
+    await adapter.turn_reply("run-0", error=True, error_kind="auth")
+    assert supervisor._model_reply is None
+    assert adapter_server.alerts.raised == []  # the probe's failure is the gate's to report
+
+
+async def test_a_tool_that_breaks_tells_the_model_and_core_goes_on(server, short_dir, monkeypatch):
+    import aiohttp
+
+    adapter_server, _, conn, _ = server
+
+    def broken(name, arguments):
+        raise KeyError("a bug")
+
+    monkeypatch.setattr(adapter_server.tools, "call", broken)
+    connector = aiohttp.UnixConnector(path=str(short_dir / "run" / "adapter.sock"))
+    call = {"name": "search", "arguments": {}}
+    async with (
+        aiohttp.ClientSession(connector=connector) as session,
+        session.post("http://core/v1/tool", json=call) as response,
+    ):
+        answer = (response.status, await response.json())
+    assert answer == (200, {"isError": True, "content": [{"type": "text", "text": "Klepa's tool failed."}]})
+    assert EventLog(conn).kinds().count("tool_failed") == 1
+
+
+async def test_cores_tools_are_listed_and_a_signed_call_runs(server, short_dir):
+    import aiohttp
+
+    adapter_server, adapter, conn, journal = server
+    issue(adapter_server, journal, 1, MEMBER, 10)
+    await adapter.prompt_built("run-1", MEMBER)
+    await adapter.turn_start("run-1", MEMBER)
+    connector = aiohttp.UnixConnector(path=str(short_dir / "run" / "adapter.sock"))
+    async with aiohttp.ClientSession(connector=connector) as session:
+        async with session.get("http://core/v1/tools") as response:
+            listed = await response.json()
+        params = {"query": "insurance"}
+        sig = signature(KEY, "run-1", "call-1", "search", params)
+        call = {
+            "name": "search",
+            "arguments": params | {"_klepa": {"run_id": "run-1", "tool_call_id": "call-1", "sig": sig}},
+        }
+        async with session.post("http://core/v1/tool", json=call) as response:
+            ran = await response.json()
+        async with session.post("http://core/v1/tool", json={"name": "search", "arguments": params}) as response:
+            refused = await response.json()
+    assert sorted(tool["name"] for tool in listed["tools"]) == ["get", "search", "send_original"]
+    assert ran == {"isError": False, "content": [{"type": "text", "text": '{"results": []}'}]}
+    assert refused["isError"] is True
+    assert EventLog(conn).kinds().count("tool_refused") == 1
 
 
 async def test_a_turn_without_an_issued_message_is_refused_and_logged(server):
@@ -154,7 +273,7 @@ async def test_a_file_in_the_sockets_place_is_never_removed(core_db, short_dir):
     (short_dir / "run").mkdir(mode=0o700)
     path = short_dir / "run" / "adapter.sock"
     path.write_text("not a socket")
-    adapter_server = AdapterServer(path, KEY, supervisor, TurnRegistry(conn, queue), queue, events, cfg.locale)
+    adapter_server = server_for(path, cfg, conn, queue, TurnRegistry(conn, queue), events, supervisor)
     with pytest.raises(OSError):  # noqa: PT011 - the bind fails, whatever errno the platform picks
         await adapter_server.serve_forever(asyncio.Event())
     assert path.read_text() == "not a socket"
@@ -169,8 +288,8 @@ async def test_a_socket_left_by_a_stopped_core_is_replaced(core_db, short_dir):
     cfg, conn, journal = core_db
     queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), probe_peer(KEY))
     events = EventLog(conn)
-    adapter_server = AdapterServer(
-        path, KEY, Supervisor(conn, queue, events), TurnRegistry(conn, queue), queue, events, cfg.locale
+    adapter_server = server_for(
+        path, cfg, conn, queue, TurnRegistry(conn, queue), events, Supervisor(conn, queue, events)
     )
     stop = asyncio.Event()
     task = asyncio.create_task(adapter_server.serve_forever(stop))

@@ -10,6 +10,8 @@ too_large = "This file is larger than 20 MB, and Telegram does not give such fil
 failed = "I couldn't get this file from Telegram. Please send it again."
 hold = "I'm under maintenance right now. I saved your message and will answer later."
 held_dropped = "I couldn't answer in time. Please send your message again."
+turn_failed = "I couldn't answer just now: something broke on my side, and the owner knows. Please ask again a bit later."
+original_failed = "I couldn't send the file {name}. Please ask me again a bit later."
 
 [receipts]
 one_file = "📄 got it"
@@ -55,4 +57,7 @@ alert_host_conflict = "⚠️ Two clients poll the gatekeeper at once. Only one 
 alert_host_not_polling = "⚠️ The host has not asked the gatekeeper for messages for five minutes, although its adapter is alive."
 alert_host_send_failed = "⚠️ Telegram refused an answer from the host ({error}). The person was asked to send their message again."
 alert_host_send_refused = "⚠️ The gatekeeper did not take an answer of the host ({reason}). The person may have got no answer."
+alert_host_turn_failed = "⚠️ A person's message got no answer: the model failed ({reason}). If the reason is auth, the model's token stopped working: run klepa-core host login."
+alert_host_model_auth = "⚠️ The model refused its token. The host gets no messages; people get a fixed reply, and their messages wait. Run klepa-core host login with a new setup-token, then press Resume."
+alert_host_model_unavailable = "⚠️ The model did not answer the start check ({reason}). The host runs anyway: people get an apology for each message until the model answers again."
 alert_egress_failed = "⚠️ The egress proxy does not start ({error}). The host cannot reach the model."

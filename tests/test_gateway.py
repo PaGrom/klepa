@@ -134,6 +134,19 @@ def test_preparing_writes_private_files_and_says_when_they_changed(setup):
     assert (runtime.adapter_dir / "index.ts").read_bytes() == rt.packaged("adapter", "index.ts").read_bytes()
 
 
+def test_a_pending_first_run_of_openclaw_is_removed_and_nothing_else(setup):
+    """An OpenClaw that ran before stage 2 seeded its first-run ritual: while BOOTSTRAP.md is in the workspace, the
+    system prompt of every turn tells the model to follow it before it answers. Its other files are injected nowhere
+    (contextInjection "never") and stay."""
+    runtime, layout, reference = setup
+    gw.prepare_host(runtime, layout, reference)
+    (layout.workspace / "BOOTSTRAP.md").write_text("# Hello. Who am I?\n")
+    (layout.workspace / "SOUL.md").write_text("# Soul\n")
+    gw.prepare_host(runtime, layout, reference)
+    assert not (layout.workspace / "BOOTSTRAP.md").exists()
+    assert (layout.workspace / "SOUL.md").exists()
+
+
 async def test_start_loads_the_agent_with_the_spec_settings(setup):
     launchd = FakeLaunchd()
     gateway = control(setup, launchd)

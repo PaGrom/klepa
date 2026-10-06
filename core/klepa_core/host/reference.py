@@ -44,9 +44,10 @@ FIXED: dict[str, Any] = {
     "plugins.entries.memory-core.config.dreaming.enabled": False,
     f"plugins.entries.{PLUGIN_ID}.enabled": True,
     f"plugins.entries.{PLUGIN_ID}.hooks.allowConversationAccess": True,
-    # Tools: none in stage 1; the engine's own arrive by exact name in stage 2.
+    # Tools: Core's own only, by exact name (spike report, point 25), through the adapter's MCP server.
     "tools.profile": "minimal",
-    "tools.alsoAllow": [],
+    "tools.alsoAllow": ["klepa__get", "klepa__search", "klepa__send_original"],
+    "gateway.tools.deny": ["klepa__get", "klepa__search", "klepa__send_original"],  # never through /tools/invoke
     "tools.deny": ["session_status"],
     "tools.sessions.visibility": "self",
     "tools.fs.workspaceOnly": True,
@@ -95,6 +96,13 @@ FIXED: dict[str, Any] = {
     "agents.defaults.sandbox.mode": "off",
     "agents.defaults.heartbeat.every": "0m",
     "agents.defaults.skills": [],
+    # OpenClaw's persona files and first-run ritual: never written, never in the prompt. Core's instruction is the
+    # model's only one (spec 10).
+    "agents.defaults.skipBootstrap": True,
+    "agents.defaults.contextInjection": "never",
+    # Internal hooks (session-memory among them) and ACP: off, whatever OpenClaw's defaults become.
+    "hooks.internal.enabled": False,
+    "acp.enabled": False,
     "skills.workshop.autonomous.mode": "off",
     "cron.enabled": False,
     "telemetry.enabled": False,
@@ -212,6 +220,11 @@ def table(settings: HostSettings, layout: HostLayout) -> dict[str, Any]:
         "agents.defaults.modelPolicy.allow": [model],  # one model, and nothing a session could switch to
         f"agents.defaults.models.{model}.agentRuntime.id": RUNTIME_ID,
         "plugins.load.paths": [str(layout.adapter_dir)],
+        "mcp.servers.klepa": {
+            "command": str(_node(layout)),
+            "args": [str(layout.adapter_dir / "mcp.ts")],
+            "env": {"KLEPA_SOCKET": str(settings.socket_path)},
+        },
         "logging.file": str(layout.gateway_log),
     }
     values[f"plugins.entries.{PLUGIN_ID}.config"] = {
@@ -222,6 +235,12 @@ def table(settings: HostSettings, layout: HostLayout) -> dict[str, Any]:
     result = FIXED | values
     check_table(result)
     return result
+
+
+def _node(layout: HostLayout) -> Path:
+    from .runtime import Runtime  # runtime imports this module
+
+    return Runtime(layout.runtime_dir).node
 
 
 def policy(reference: Mapping[str, Any]) -> dict[str, Any]:

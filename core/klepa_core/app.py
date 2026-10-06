@@ -22,7 +22,7 @@ from .config import Config, ConfigError, bot_id, read_service_token, read_token
 from .documents import DocumentsFolder
 from .events import EventLog
 from .evidence import EvidenceStore
-from .gatekeeper.outbox import Outbox
+from .gatekeeper.outbox import Outbox, tell_failed_original
 from .gatekeeper.receipts import ReceiptBatcher
 from .gatekeeper.service import Gatekeeper
 from .health import Health, check_documents
@@ -31,10 +31,12 @@ from .host.adapter import AdapterServer, probe_peer
 from .host.api import HostApi
 from .host.egress import EgressProxy
 from .host.gateway import LaunchdGateway
+from .host.instruction import instruction
 from .host.outbox import HostOutbox
 from .host.queue import HostQueue
 from .host.runtime import OPENCLAW_VERSION, Runtime, adapter_sha256
 from .host.supervisor import Expectations, GatewayControl, HostTiming, Supervisor
+from .host.tools import ToolBox
 from .host.turns import TurnRegistry
 from .journal import InboundJournal
 from .keys import KeyFileError, ensure_host_token, ensure_private_dir, load_or_create_key
@@ -220,7 +222,23 @@ def _host(
     host_api = HostApi(
         host_token, cfg.host.api_port, members, queue, supervisor, host_outbox, api, events, alerts=alerts
     )
-    adapter = AdapterServer(cfg.host.socket_path, key, supervisor, turns, queue, events, cfg.locale)
+    persons = {member.telegram_id: member.person_id for member in cfg.members}
+    names = {member.person_id: member.name for member in cfg.members}
+    tools = ToolBox(conn, key, persons, names, outbox, cfg.incoming_dir)
+    # send_original answers once Core has queued the file: a send that then fails is told to the person.
+    outbox.on_failed = functools.partial(tell_failed_original, outbox, cfg.locale.text("original_failed"))
+    adapter = AdapterServer(
+        cfg.host.socket_path,
+        key,
+        supervisor,
+        turns,
+        queue,
+        events,
+        cfg.locale,
+        instruction(cfg.locale.code),
+        tools,
+        alerts=alerts,
+    )
     gatekeeper = [("127.0.0.1", cfg.host.api_port)]
     egress = EgressProxy(cfg.host.proxy_port, cfg.host.egress_allow, gatekeeper, events, alerts=alerts)
     loops: list[tuple[str, Loop]] = [

@@ -130,9 +130,11 @@ async def test_text_reaches_the_host_only_after_the_live_probe_and_the_answer_co
     async with stand(host_cfg) as s:
         await running(host_cfg)
         fake_tg.add_text(OWNER, "hello")
-        await wait_until(lambda: STAGE1 in sent_texts(fake_tg), timeout=10)
-    probe, served = (update["message"] for update in s.host.updates)
+        await wait_until(lambda: "STUB: hello" in sent_texts(fake_tg), timeout=10)
+    probe, model_probe, served = (update["message"] for update in s.host.updates)
     assert probe["chat"]["id"] >= 2**51  # the probe peer: no member, no real chat
+    assert model_probe["chat"]["id"] == probe["chat"]["id"]
+    assert model_probe["text"].startswith("Klepa start check")  # the second probe goes to the model
     assert set(served) == {"message_id", "from", "chat", "date", "text"}
     assert (served["from"]["id"], served["text"]) == (OWNER, "hello")
     assert [item["params"]["chat_id"] for item in fake_tg.sent] == [OWNER]  # the probe's block message never left
@@ -291,7 +293,7 @@ async def test_a_gateway_restart_is_quiet_and_the_waiting_turn_registers(host_cf
         await wait_until(lambda: [state["state"] for state in host_states(host_cfg)][-2:] == ["STARTING", "RUNNING"])
         await s.adapter.prompt_built("recovered-run", OWNER)
         _, turn = await s.adapter.turn_start("recovered-run", OWNER)
-    assert turn["outcome"] == "block"  # stage 1 blocks every turn
+    assert turn["outcome"] == "pass"  # the repeated turn reaches the model
     [row] = query(host_cfg, "SELECT host_message_id FROM host_run WHERE run_id='recovered-run'")
     assert row["host_message_id"] is not None
     assert alerts(service_tg) == []
@@ -343,7 +345,7 @@ async def test_the_hosts_http_goes_through_the_egress_proxy(host_cfg, fake_tg):
     async with stand(host_cfg, via_proxy=True) as s:
         await running(host_cfg)
         fake_tg.add_text(OWNER, "hello")
-        await wait_until(lambda: STAGE1 in sent_texts(fake_tg), timeout=10)
+        await wait_until(lambda: "STUB: hello" in sent_texts(fake_tg), timeout=10)
         async with (
             aiohttp.ClientSession() as session,
             session.get("http://telemetry.example/v1", proxy=s.proxy_url) as resp,

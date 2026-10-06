@@ -14,6 +14,7 @@ reloaded.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -124,6 +125,10 @@ def prepare_host(
     if not layout.gateway_token.exists():
         rt.write_private(layout.gateway_token, secrets.token_hex(32).encode())
     adapter_changed = rt.install_adapter(runtime)
+    # An OpenClaw that ran before skipBootstrap seeded its first-run ritual: while this file is there, every turn's
+    # system prompt tells the model to follow it before it answers. OpenClaw's own way out is to delete it.
+    with contextlib.suppress(FileNotFoundError):
+        (layout.workspace / "BOOTSTRAP.md").unlink()
     config = (json.dumps(render(reference), indent=2, ensure_ascii=False) + "\n").encode()
     config_changed = not layout.config_path.exists() or layout.config_path.read_bytes() != config
     if config_changed:

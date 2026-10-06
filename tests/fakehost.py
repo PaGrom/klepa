@@ -1,9 +1,10 @@
-"""A stand-in for OpenClaw in stage 1 (docs/architecture.md: Testing). Never used in production.
+"""A stand-in for OpenClaw and its adapter plugin (docs/architecture.md: Testing). Never used in production.
 
 It polls the gatekeeper with the fake token and drives the fake adapter the way the host drives the plugin's
 hooks: before_dispatch first; a message that it does not handle goes on to before_prompt_build and
-before_agent_run, and a blocked turn makes the host write "Your message could not be sent: ..." to the chat
-(spike report, point 15). Every call carries the headers of undici, the fetch of Node that OpenClaw uses.
+before_agent_run. A blocked turn makes the host write Core's text to the chat, as the plugin leaves it; a turn that
+passes gets the answer of `model` and the plugin's report of it (turn_reply). Every call carries the headers of
+undici, the fetch of Node that OpenClaw uses.
 `conversation_hooks=False` is a plugin without allowConversationAccess: those two hooks never run (spike report,
 point 20).
 """
@@ -41,6 +42,7 @@ class FakeHost:
         self.conversation_hooks = conversation_hooks
         self.poll_timeout = poll_timeout
         self.answering = True  # False: the host takes messages but never gets to answer them
+        self.model = lambda text: f"STUB: {text}"  # the scripted model; the gate's model probe gets "OK"
         self.updates: list[dict[str, Any]] = []
         self.offset: int | None = None
 
@@ -92,7 +94,12 @@ class FakeHost:
         await self.adapter.prompt_built(run_id, peer)
         _, turn = await self.adapter.turn_start(run_id, peer)
         if turn.get("outcome") == "block":
-            await self.send(peer, f"Your message could not be sent: {turn['message']}")
+            await self.send(peer, turn["message"])
+            return
+        text = message.get("text", "")
+        answer = "OK" if text.startswith("Klepa start check") else self.model(text)
+        await self.send(peer, answer)
+        await self.adapter.turn_reply(run_id)
 
     def texts(self) -> list[str]:
         return [update["message"]["text"] for update in self.updates]

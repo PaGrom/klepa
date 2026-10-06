@@ -13,5 +13,5 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["*.ts", "../../core/klepa_core/host/openclaw/adapter/index.ts"]
+  "include": ["*.ts", "../../core/klepa_core/host/openclaw/adapter/index.ts", "../../core/klepa_core/host/openclaw/adapter/mcp.ts"]
 }

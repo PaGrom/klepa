@@ -29,11 +29,14 @@ from typing import Any
 
 from aiohttp import web
 
+from ..alerts import Alerts
 from ..events import EventLog
 from ..keys import ensure_private_dir
 from ..locale import Locale
+from .instruction import TOOLS
 from .queue import HostQueue
 from .supervisor import PROBE_BLOCK, Supervisor
+from .tools import ToolBox, ToolRefused, parse_call
 from .turns import Turn, TurnRegistry
 
 SIGNATURE_HEADER = "X-Klepa-Signature"
@@ -104,9 +107,15 @@ class AdapterServer:
         queue: HostQueue,
         events: EventLog,
         locale: Locale,
+        instruction: str,
+        tools: ToolBox,
         *,
+        alerts: Alerts | None = None,
         mono: Callable[[], float] = time.monotonic,
     ) -> None:
+        self.alerts = alerts
+        self.instruction = instruction
+        self.tools = tools
         self.path = path
         self.key = key
         self.supervisor = supervisor
@@ -125,6 +134,8 @@ class AdapterServer:
                 self.path.unlink()  # left by a Core that stopped; never anything but a socket
         app = web.Application(client_max_size=MAX_MESSAGE_BYTES)
         app.router.add_post("/v1/message", self._handle)
+        app.router.add_get("/v1/tools", self._tool_list)  # the MCP shim, which has no key
+        app.router.add_post("/v1/tool", self._tool_call)
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=1.0)
         await runner.setup()
         try:
@@ -169,6 +180,7 @@ class AdapterServer:
             "dispatch": self._dispatch,
             "prompt_built": self._prompt_built,
             "turn_start": self._turn_start,
+            "turn_reply": self._turn_reply,
         }.get(kind if isinstance(kind, str) else "")
         if (
             handler is None
@@ -185,21 +197,60 @@ class AdapterServer:
             return self._reply(409, {"ok": False, "error": "sequence", "boot_id": boot_id, "seq": seq})
         return self._reply(200, {**handler(boot_id, message), "boot_id": boot_id, "seq": seq})
 
+    async def _tool_list(self, request: web.Request) -> web.Response:
+        return web.json_response({"tools": self.tools.specs()})
+
+    async def _tool_call(self, request: web.Request) -> web.Response:
+        """One call of one of Core's tools. Its authority is the signature inside it, not this socket."""
+        try:
+            name, arguments = parse_call(await request.read())
+            result = self.tools.call(name, arguments)
+        except ToolRefused as exc:
+            self.events.log("tool_refused", {"reason": str(exc)[:80]})
+            return web.json_response({"isError": True, "content": [{"type": "text", "text": str(exc)}]})
+        except Exception as exc:  # a tool's own failure: the model hears that it failed, never how
+            log.warning("a tool failed: %s", type(exc).__name__)  # its text may carry a person's data
+            self.events.log("tool_failed", {"error": type(exc).__name__})
+            return web.json_response({"isError": True, "content": [{"type": "text", "text": "Klepa's tool failed."}]})
+        self.events.log("tool_called", {"tool": name})
+        text = json.dumps(result, ensure_ascii=False)
+        return web.json_response({"isError": False, "content": [{"type": "text", "text": text}]})
+
     def _heartbeat(self, boot_id: str, message: dict[str, Any]) -> dict[str, Any]:
         problems = self.supervisor.on_heartbeat(boot_id, message)
         return {"ok": not problems, "problems": problems}
 
     def _dispatch(self, boot_id: str, message: dict[str, Any]) -> dict[str, Any]:
-        """Stage 1: Core's fixed answer for people; the live probe goes on to a turn (spec 6.1)."""
-        if as_id(message.get("sender_id")) == self.queue.probe_peer:
-            return {"handled": False}
-        return {"handled": True, "text": self.locale.text("stage1")}
+        """Every issued message goes on to a turn; before_agent_run decides whether it reaches the model."""
+        return {"handled": False}
 
     def _prompt_built(self, boot_id: str, message: dict[str, Any]) -> dict[str, Any]:
         run_id = message.get("run_id")
         if not isinstance(run_id, str) or not _RUN_ID.match(run_id):
             return {"ok": False}
-        self.turns.prompt_built(run_id, boot_id, as_id(message.get("chat_id")), as_id(message.get("sender_id")))
+        sender_id = as_id(message.get("sender_id"))
+        self.turns.prompt_built(run_id, boot_id, as_id(message.get("chat_id")), sender_id)
+        return {
+            "ok": True,
+            "instruction": self.instruction,
+            "tools_allow": [] if sender_id == self.queue.probe_peer else list(TOOLS),  # the probes need no tool
+            "failure": self.locale.text("turn_failed"),  # what a person reads instead of OpenClaw's error
+        }
+
+    def _turn_reply(self, boot_id: str, message: dict[str, Any]) -> dict[str, Any]:
+        run_id, ok = message.get("run_id"), message.get("error") is False
+        if not isinstance(run_id, str) or not _RUN_ID.match(run_id):
+            return {"ok": False}
+        replied = self.turns.replied(run_id, ok)
+        error = message.get("error_kind")
+        reason = error if isinstance(error, str) and re.fullmatch(r"[a-z_]{1,32}", error) else "other"
+        kind = None if replied is None else replied[0]
+        if replied is not None and kind == "model_probe":
+            self.supervisor.on_model_probe_reply(replied[1], ok, None if ok else reason)
+        elif kind is not None and not ok:
+            self.events.log("turn_failed", {"reason": reason})
+            if self.alerts is not None:
+                self.alerts.raise_("host_turn_failed", reason=reason)
         return {"ok": True}
 
     def _turn_start(self, boot_id: str, message: dict[str, Any]) -> dict[str, Any]:
@@ -211,13 +262,15 @@ class AdapterServer:
             turn = self.turns.start(run_id, boot_id, chat_id, sender_id, message.get("session_key"))
         self.events.log(
             "turn_registered" if turn.registered else "turn_refused",
-            {"reason": turn.reason, "chat_id": chat_id, "probe": turn.probe},
+            {"reason": turn.reason, "chat_id": chat_id, "probe": turn.probe, "model_probe": turn.model_probe},
         )
         if turn.registered and turn.probe:
             self.supervisor.on_probe_turn(turn.host_message_id)
             text = PROBE_BLOCK
         elif self.supervisor.turns_blocked():
             text = self.locale.text("hold")
+        elif turn.registered:  # its prompt was built with Core's instruction: Core answered prompt_built with it
+            return {"outcome": "pass"}
         else:
-            text = self.locale.text("stage1")
-        return {"outcome": "block", "message": text}  # stage 1: no turn reaches the model
+            text = self.locale.text("hold")
+        return {"outcome": "block", "message": text}
