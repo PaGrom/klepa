@@ -217,7 +217,7 @@ A message is built from the inbound journal when the host polls, so no message t
 - it registers `before_dispatch`, `before_prompt_build`, `before_agent_run`, `before_tool_call` and `reply_payload_sending`, and a background service that sends the heartbeat;
 - without Core it claims nothing in `before_dispatch`, and `before_agent_run`, a gate that OpenClaw fails closed, blocks the turn;
 - `before_prompt_build` adds Core's instruction to the system prompt (`appendSystemContext`) and narrows the turn's tools to Core's;
-- `before_tool_call` signs every call of Core's tools, overwriting a `_klepa` field the model wrote, and blocks every other tool and every call without a turn behind it;
+- `before_tool_call` signs every call of Core's tools, overwriting a `_klepa` field the model wrote, and blocks every other tool and every call without a run id (Core then checks that the run's turn is registered and live);
 - `reply_payload_sending` sends a reply as text: media are dropped, so a `MEDIA:` line cannot make OpenClaw lose the whole reply; OpenClaw's English report of a model error, which it sends whatever `errorPolicy` says, becomes Core's text in the installation's language; and a blocked turn's text loses OpenClaw's "Your message could not be sent" wrapper. For a turn that reached the model it reports to Core how the turn replied;
 - `mcp.ts` is the package's MCP server, which OpenClaw runs with the engine's own Node: it lists Core's tools and passes each call to Core over the socket, holding no key;
 - it reaches Core over a raw Unix socket. OpenClaw routes every `node:http` and `fetch` request of its process through the egress proxy, even one that names a socket path; raw sockets are outside that routing;
@@ -306,7 +306,7 @@ Receipts use the matching form ("1 file", "2 files"). Loading a locale checks th
 - **The host.** It holds a fake token, and reaches Telegram only through the gatekeeper and the internet only through the egress proxy, which checks the exact host name before any DNS lookup and fails closed. The adapter's messages are signed with a key the model never sees. Its configuration is Core's and read-only, and it runs its own Node and OpenClaw, pinned by a checksum and a lockfile.
 - **Per-call signatures.** Every call of a Core tool is signed by the adapter for exactly its parameters, its run and its call, and the model never sees the key (see [Core's tools](#cores-tools)).
 - **The model's replies.** They leave as text only, with every address inactive; the gatekeeper takes no file from the host, and the adapter drops media before OpenClaw would fetch them.
-- **What the model provider sees.** OpenClaw adds a runtime line to every turn: the Mac's computer name and the workspace path among it. Name the Mac neutrally if that matters.
+- **What the model provider sees.** Besides the conversation, OpenClaw adds a runtime line to every turn's system prompt: the session key, which holds the person's Telegram id; the Mac's computer name (`host=`); the workspace path (`repo=`), which holds the macOS account name; the system, Node and model. No setting removes it. Name the Mac neutrally if that matters.
 
 ## Testing
 
