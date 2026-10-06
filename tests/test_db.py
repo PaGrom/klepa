@@ -13,8 +13,8 @@ def test_connect_sets_durability_pragmas(tmp_path):
 
 def test_migrate_is_idempotent(tmp_path):
     conn = db.connect(tmp_path / "core.db")
-    assert db.migrate(conn) == 3
-    assert db.migrate(conn) == 3
+    assert db.migrate(conn) == 4
+    assert db.migrate(conn) == 4
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     expected = {"member", "space", "evidence", "outbound", "event_log", "schema_version", "service_binding"}
     assert expected | {"button_action", "alert_state", "snapshot", "job_run"} <= tables
@@ -56,7 +56,7 @@ def test_v1_database_is_upgraded_in_place(tmp_path):
         "INSERT INTO outbound(idempotency_key, origin, method, chat_id, payload, state, created_at, updated_at) "
         "VALUES ('k', 'core', 'sendMessage', 1, '{}', 'PENDING', 't', 't')"
     )
-    assert db.migrate(conn) == 3
+    assert db.migrate(conn) == 4
     assert conn.execute("SELECT bot FROM outbound").fetchone()[0] == "family"
 
 

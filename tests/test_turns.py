@@ -130,3 +130,37 @@ def test_a_probe_left_by_a_stopped_core_never_takes_the_next_probes_turn(setup):
     probe = queue.add_probe()
     queue.serve(None, 100, everything)
     assert start(turns, "run-p", PEER).host_message_id == probe
+
+
+def test_a_turn_of_a_gateway_process_that_died_does_not_hold_its_message(setup):
+    """Scenario 32: the gateway crashed mid-turn; its own queue runs the turn again in the new process, under a new
+    boot, and that run takes the message the dead run still names."""
+    turns, queue, journal, _ = setup
+    issue(queue, journal, 1, OWNER, 10)
+    assert start(turns, "run-old").registered
+    turns.prompt_built("run-new", "boot-bbbbbbbb", OWNER, OWNER)
+    recovered = turns.start("run-new", "boot-bbbbbbbb", OWNER, OWNER, key(OWNER))
+    assert (recovered.registered, recovered.reason) == (True, "registered")
+    # within one boot the message stays taken: two live turns never answer one message
+    turns.prompt_built("run-same", "boot-bbbbbbbb", OWNER, OWNER)
+    assert turns.start("run-same", "boot-bbbbbbbb", OWNER, OWNER, key(OWNER)).reason == "no_issued_message"
+
+
+def test_a_reply_records_how_the_turn_ended_and_names_what_it_answers(setup):
+    turns, queue, journal, _ = setup
+    issue(queue, journal, 1, OWNER, 10)
+    turn = start(turns, "run-1")
+    assert turns.replied("run-1", False) == ("text", turn.host_message_id)
+    row = turns.conn.execute("SELECT ended_at, succeeded FROM host_run WHERE run_id='run-1'").fetchone()
+    assert row["ended_at"] is not None
+    assert row["succeeded"] == 0
+    assert turns.replied("run-unknown", True) is None
+
+
+def test_the_model_probe_turn_is_marked(setup):
+    turns, queue, _, _ = setup
+    queue.add_probe("model_probe")
+    queue.serve(None, 100, everything)
+    turns.prompt_built("run-m", BOOT, PEER, PEER)
+    turn = turns.start("run-m", BOOT, PEER, PEER, key(PEER))
+    assert (turn.registered, turn.probe, turn.model_probe) == (True, False, True)

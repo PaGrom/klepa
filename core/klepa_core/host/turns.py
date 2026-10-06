@@ -24,7 +24,8 @@ class Turn:
     registered: bool
     reason: str  # "registered" or "repeated", else why the turn was refused
     host_message_id: int | None = None
-    probe: bool = False
+    probe: bool = False  # the hook probe: blocked on purpose
+    model_probe: bool = False  # the model probe: goes to the model
 
 
 def session_of(session_key: object, sender_id: int) -> bool:
@@ -76,12 +77,16 @@ class TurnRegistry:
                     "UPDATE host_run SET boot_id=?, expires_at=? WHERE run_id=?",
                     (boot_id, now + TURN_TTL_SECONDS, run_id),
                 )
-                return Turn(True, "repeated", int(run["host_message_id"]), message["kind"] == "probe")
+                kind = message["kind"]
+                return Turn(True, "repeated", int(run["host_message_id"]), kind == "probe", kind == "model_probe")
+            # A message is busy only with a live turn of this boot: a boot is a gateway process, and a turn of a process
+            # that died is gone, so the new process's run of it (spec 4.5, scenario 32) takes the message.
             busy = {
                 int(row[0])
                 for row in self.conn.execute(
-                    "SELECT host_message_id FROM host_run WHERE host_message_id IS NOT NULL AND expires_at > ?",
-                    (now,),
+                    "SELECT host_message_id FROM host_run WHERE host_message_id IS NOT NULL AND expires_at > ? "
+                    "AND boot_id = ?",
+                    (now, boot_id),
                 )
             }
             message = self.queue.oldest_unanswered(chat_id, sender_id, exclude=busy)
@@ -91,7 +96,18 @@ class TurnRegistry:
                 "UPDATE host_run SET boot_id=?, host_message_id=?, registered_at=?, expires_at=? WHERE run_id=?",
                 (boot_id, message["id"], now, now + TURN_TTL_SECONDS, run_id),
             )
-            return Turn(True, "registered", int(message["id"]), message["kind"] == "probe")
+            kind = message["kind"]
+            return Turn(True, "registered", int(message["id"]), kind == "probe", kind == "model_probe")
+
+    def replied(self, run_id: str, ok: bool) -> tuple[str, int] | None:
+        """A turn that reached the model replied, with the model's answer or with its error: the kind and the id of the
+        message it answers, or None for a run Core never saw."""
+        self.conn.execute("UPDATE host_run SET ended_at=?, succeeded=? WHERE run_id=?", (self.clock(), int(ok), run_id))
+        row = self.conn.execute(
+            "SELECT m.kind, m.id FROM host_run r JOIN host_message m ON m.id = r.host_message_id WHERE r.run_id=?",
+            (run_id,),
+        ).fetchone()
+        return None if row is None else (str(row["kind"]), int(row["id"]))
 
     def active_message(self, chat_id: int) -> int | None:
         """The issued message of the newest live turn in a chat: the host's writing there answers it."""

@@ -23,6 +23,8 @@ ANSWER_WINDOW_SECONDS = 600.0  # the host may go on writing to a chat this long 
 NOTICE_EVERY_SECONDS = 600.0  # a fixed notice goes to a chat at most once per ten minutes (spec 4.6)
 PROBE_NAME = "Klepa probe"
 PROBE_TEXT = "Klepa start probe"
+MODEL_PROBE_TEXT = "Klepa start check: answer with one word."
+PROBE_KINDS = ("probe", "model_probe")
 FORWARDED_MARK = "[forwarded message]"
 
 MayServe = Callable[[int, str], bool]
@@ -61,7 +63,7 @@ class HostQueue:
         self.wake()
         return cursor.rowcount == 1
 
-    def add_probe(self) -> int:
+    def add_probe(self, kind: str = "probe") -> int:
         """The synthetic message of the live probe (spec 4.6), in the probe peer's own chat. Every earlier probe is
         retired first.
 
@@ -72,15 +74,16 @@ class HostQueue:
         with transaction(self.conn):
             # A probe that a stopped Core never retired must not take this probe's turn.
             self.conn.execute(
-                "UPDATE host_message SET answered_at=? WHERE kind='probe' AND answered_at IS NULL", (now,)
+                "UPDATE host_message SET answered_at=? WHERE kind IN ('probe', 'model_probe') AND answered_at IS NULL",
+                (now,),
             )
             last = self.conn.execute(
                 "SELECT COALESCE(MAX(message_id), 0) FROM host_message WHERE chat_id=?", (self.probe_peer,)
             ).fetchone()[0]
             cursor = self.conn.execute(
                 "INSERT INTO host_message(source_update_id, kind, chat_id, message_id, sender_id, date, created_at) "
-                "VALUES (NULL, 'probe', ?, ?, ?, ?, ?)",
-                (self.probe_peer, max(int(last) + 1, int(now)), self.probe_peer, int(now), now),
+                "VALUES (NULL, ?, ?, ?, ?, ?, ?)",
+                (kind, self.probe_peer, max(int(last) + 1, int(now)), self.probe_peer, int(now), now),
             )
         self.wake()
         assert cursor.lastrowid is not None
@@ -89,7 +92,8 @@ class HostQueue:
     def retire(self, host_message_id: int) -> None:
         """A probe that is over is never served later."""
         self.conn.execute(
-            "UPDATE host_message SET answered_at=COALESCE(answered_at, ?) WHERE id=? AND kind='probe'",
+            "UPDATE host_message SET answered_at=COALESCE(answered_at, ?) "
+            "WHERE id=? AND kind IN ('probe', 'model_probe')",
             (self.clock(), host_message_id),
         )
 
@@ -145,8 +149,8 @@ class HostQueue:
     def _message(self, row: sqlite3.Row) -> dict[str, Any] | None:
         """The served message: message_id, from, chat, date and text, nothing else (spec 4.5)."""
         sender_id = int(row["sender_id"])
-        if row["kind"] == "probe":
-            name, text = PROBE_NAME, PROBE_TEXT
+        if row["kind"] in PROBE_KINDS:
+            name, text = PROBE_NAME, PROBE_TEXT if row["kind"] == "probe" else MODEL_PROBE_TEXT
         else:
             update = self.journal.get(int(row["source_update_id"])) or {}
             original = (update.get("message") or {}).get("text")

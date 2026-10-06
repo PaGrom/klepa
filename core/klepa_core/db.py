@@ -145,6 +145,18 @@ SCHEMA_V3 = (
     "CREATE INDEX outbound_origin_state ON outbound(origin, state)",
 )
 
+# Stage 2a: the model's calls of Core's tools. A call id is used once (spec 4.5); no parameters are kept here.
+SCHEMA_V4 = (
+    """CREATE TABLE host_tool_call (
+        run_id TEXT NOT NULL,
+        tool_call_id TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        used_at REAL NOT NULL,
+        PRIMARY KEY (run_id, tool_call_id))""",
+    "ALTER TABLE host_run ADD COLUMN ended_at REAL",
+    "ALTER TABLE host_run ADD COLUMN succeeded INTEGER",
+)
+
 
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -190,6 +202,12 @@ def migrate(conn: sqlite3.Connection) -> int:
                 conn.execute(statement)
             conn.execute("INSERT INTO schema_version(version) VALUES (3)")
         current = 3
+    if current < 4:
+        with transaction(conn):
+            for statement in SCHEMA_V4:
+                conn.execute(statement)
+            conn.execute("INSERT INTO schema_version(version) VALUES (4)")
+        current = 4
     return current
 
 

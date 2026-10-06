@@ -356,7 +356,10 @@ class HostApi:
         if chat_id == self.queue.probe_peer:
             # The host's "Your message could not be sent: …" for the probe: nobody reads it, and it proves the
             # turn ended at the block (spec 4.6).
-            self.queue.mark_answered(chat_id)
+            # Only the probe of the turn that wrote: a late reply of an earlier boot's probe must not take a new one.
+            active = self.outbox.turns.active_message(chat_id)
+            if active is not None:
+                self.queue.mark_answered(chat_id, prefer=active)
             if PROBE_BLOCK in clean.plain:
                 self.supervisor.on_probe_blocked()
             message_id = _PROBE_MESSAGE_ID

@@ -3,7 +3,7 @@ import pytest
 from helpers import MEMBER, OWNER, Clock
 from klepa_core.events import EventLog
 from klepa_core.gatekeeper.outbox import Outbox
-from klepa_core.host.queue import FORWARDED_MARK, PROBE_TEXT, HostQueue
+from klepa_core.host.queue import FORWARDED_MARK, MODEL_PROBE_TEXT, PROBE_TEXT, HostQueue
 
 PEER = 2**51 + 7
 
@@ -204,3 +204,16 @@ def test_a_message_without_its_journal_entry_is_skipped_and_never_waits_again(se
     queue.enqueue(99, OWNER, 10, OWNER, 1)  # the journal knows no update 99
     assert queue.serve(None, 100, everything) == []
     assert queue.waiting_chats() == []
+
+
+def test_the_model_probe_asks_the_model_and_a_new_probe_retires_both_kinds(setup):
+    queue, _, conn, _ = setup
+    hook = queue.add_probe()
+    model = queue.add_probe("model_probe")  # the gate's second probe; retires the first
+    [update] = queue.serve(None, 100, everything)
+    message = update["message"]
+    assert (message["chat"]["id"], message["text"]) == (PEER, MODEL_PROBE_TEXT)
+    queue.add_probe()  # a new gate retires the model probe too
+    kinds = dict(conn.execute("SELECT id, answered_at IS NOT NULL FROM host_message WHERE id IN (?, ?)", (hook, model)))
+    assert kinds == {hook: 1, model: 1}
+    queue.retire(model)  # retiring twice changes nothing

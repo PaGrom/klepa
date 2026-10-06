@@ -420,3 +420,13 @@ async def test_an_answer_refused_before_it_is_taken_raises_an_alert(gatekeeper, 
     assert status == 400
     assert reason in body["description"]
     assert alerts.raised == ["host_send_refused"]  # the person may be left without an answer
+
+
+async def test_a_late_reply_in_the_probe_chat_never_answers_a_new_probe(gatekeeper):
+    """An earlier boot's model probe answer, which the host delivers again after Core came back, finds no turn of
+    this probe: the new probe stays waiting for its own."""
+    host_api, queue, _, _, _, _, conn = gatekeeper
+    probe = queue.add_probe()
+    await call(host_api, "getUpdates", {"timeout": 0})
+    assert (await call(host_api, "sendMessage", {"chat_id": PEER, "text": "OK"}))[0] == 200
+    assert conn.execute("SELECT answered_at FROM host_message WHERE id=?", (probe,)).fetchone()[0] is None
