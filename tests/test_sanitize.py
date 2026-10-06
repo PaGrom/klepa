@@ -157,3 +157,47 @@ def test_random_html_always_keeps_telegrams_rules():
         checker.close()
         assert checker.stack == [], source
         assert not re.search(r"<([a-z-]+)></\1>", html), source
+
+
+@pytest.mark.parametrize(
+    ("source", "html"),
+    [
+        ("write to a.b+c@mail.example.com now", "write to <code>a.b+c@mail.example.com</code> now"),
+        ("ask @evil_bot here", "ask <code>@evil_bot</code> here"),
+        ("see example.com today", "see <code>example.com</code> today"),
+        ("see sub.example.co.uk:8080 now", "see <code>sub.example.co.uk:8080</code> now"),
+        ("the file scan.pdf is ready", "the file <code>scan.pdf</code> is ready"),
+        ("<b>mail me at x@y.org</b>", "<b>mail me at </b><code>x@y.org</code>"),
+        # A sentence ends after a name: Telegram leaves the full stop out of the link it makes.
+        ("You can read more at evil.com.", "You can read more at <code>evil.com</code>."),
+        ("Open secret-data-123.evil.com. Then", "Open <code>secret-data-123.evil.com</code>. Then"),
+        # Names and addresses in other alphabets are linked too.
+        (
+            "see \u03c0\u03b1\u03c1\u03ac\u03b4\u03b5\u03b9\u03b3\u03bc\u03b1.\u03b5\u03bb now",
+            "see <code>\u03c0\u03b1\u03c1\u03ac\u03b4\u03b5\u03b9\u03b3\u03bc\u03b1.\u03b5\u03bb</code> now",
+        ),
+        (
+            "see \u03c0\u03b1\u03c1\u03ac\u03b4\u03b5\u03b9\u03b3\u03bc\u03b1.\u03b5\u03bb/a?b=c now",
+            "see <code>\u03c0\u03b1\u03c1\u03ac\u03b4\u03b5\u03b9\u03b3\u03bc\u03b1.\u03b5\u03bb/a?b=c</code> now",
+        ),
+        (
+            "mail x@\u03c0\u03b1\u03c1\u03ac\u03b4\u03b5\u03b9\u03b3\u03bc\u03b1.\u03b5\u03bb now",
+            "mail <code>x@\u03c0\u03b1\u03c1\u03ac\u03b4\u03b5\u03b9\u03b3\u03bc\u03b1.\u03b5\u03bb</code> now",
+        ),
+    ],
+)
+def test_what_telegram_would_link_by_itself_is_inactive(source, html):
+    """Stage 2 (spec 4.3, scenario 29): e-mail addresses, @mentions and names with a top-level part."""
+    assert sanitize_html(source).html == html
+
+
+@pytest.mark.parametrize("source", ["v1.2 and 3.14", "e.g. this", "a @b c", "x@y", "@abc"])
+def test_text_that_telegram_does_not_link_stays_as_it_is(source):
+    assert sanitize_html(source).html == source
+
+
+@pytest.mark.parametrize("unit", ["a.", "a-", "a@", "@a", "a.a@", "aa.", "\u03b1.", "\u03b1\u03b1.", "a.a."])
+def test_long_runs_of_the_new_patterns_take_linear_time(unit):
+    started = time.monotonic()
+    sanitize_html(unit * 20_000 + "!")
+    assert time.monotonic() - started < 1.0

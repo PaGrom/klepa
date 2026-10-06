@@ -41,8 +41,14 @@ _EMPTY = re.compile(r"<([a-z-]+)></\1>")
 # costs linear time: the host's text must never stall Core's event loop.
 _ADDRESS = re.compile(
     r"(?i)(?<![\w.-])(?:(?:https?|tg|ftp)://|www\.)[^\s<>]+"
-    r"|(?<![\w.-])(?:[a-z0-9-]+\.)+[a-z]{2,63}(?::\d{1,5})?/[^\s<>]*"
+    r"|(?<![\w.-])(?:[\w-]+\.)+[^\W\d_]{2,63}(?::\d{1,5})?/[^\s<>]*"
     r"|(?<![\w.-])\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?(?:/[^\s<>]*)?"
+    # What Telegram links by itself (stage 2): e-mail addresses, @mentions and names with a top-level part, in any
+    # alphabet, also before the full stop that ends a sentence. Wider than Telegram's own list of domains on purpose:
+    # a file name such as scan.pdf only turns monospace.
+    r"|(?<![\w.+-])[\w.+-]{1,64}@[\w-]+(?:\.[\w-]+)+"
+    r"|(?<![\w@])@[a-z0-9_]{4,32}(?![\w@])"
+    r"|(?<![\w.@/-])(?:[\w-]+\.)+[^\W\d_]{2,63}(?::\d{1,5})?(?![\w@/-])(?!\.[\w-])"
 )
 
 
