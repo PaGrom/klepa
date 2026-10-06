@@ -32,7 +32,7 @@ Telegram (service bot)  <-->  Core
 - **Watchdog** (stage 4). A tiny launchd job that can only send a fixed alarm.
 - **Maintenance agent** (stage 7). It works in a strict mode, and Core executes its plan from an allow-list.
 
-Stages 1a and 1b implement the gatekeeper's intake, storage, receipts and spaces, the service bot, snapshots and the launchd service. Stage 1c puts OpenClaw behind the gatekeeper: the gatekeeper's API for the host, supervision, the egress proxy, and Core's own OpenClaw gateway with its pinned runtime, its reference configuration and the adapter plugin (see [Host interface](#host-interface)). The parts marked with a stage come later (see [Roadmap](#roadmap)).
+Stages 1a and 1b implement the gatekeeper's intake, storage, receipts and spaces, the service bot, snapshots and the launchd service. Stage 1c puts OpenClaw behind the gatekeeper: the gatekeeper's API for the host, supervision, the egress proxy, and Core's own OpenClaw gateway with its pinned runtime, its reference configuration and the adapter plugin (see [Host interface](#host-interface)). Stage 2a lets the host's turns reach the model with Core's instruction, and gives the model Core's first tools, each call signed (see [Core's tools](#cores-tools)). The parts marked with a stage come later (see [Roadmap](#roadmap)).
 
 ## Intake
 
@@ -201,38 +201,60 @@ A message is built from the inbound journal when the host polls, so no message t
 - **Accept and hold.** Every `sendMessage` is written to `outbound` durably before the host hears "sent", under a message id from Core's own range (2^41 and up).
 - **Release.** A worker sends the messages one chat at a time, in order, once the gateway has passed the start gate and while the adapter's heartbeat is at most 15 seconds old.
 - **Drop.** A message that has not gone out within ten minutes is dropped with the rest of its chat's queue, and the person gets Core's apology. So does a message Telegram refuses, and the owner gets an alert.
-- **No links.** The host's HTML is rewritten from an allow-list. Formatting survives, links do not: an anchor becomes its text and its address in a code span, and bare web addresses go into code spans too, so no web address from the host is clickable and a hidden one is always shown. E-mail addresses, @mentions and bare names without a path are left to stage 2, together with links that came in the person's own message.
+- **No links.** The host's HTML is rewritten from an allow-list. Formatting survives, links do not: an anchor becomes its text and its address in a code span, and bare web addresses go into code spans too, so no web address from the host is clickable and a hidden one is always shown. What Telegram would link by itself goes into code spans as well: e-mail addresses, @mentions and names with a top-level part, in any alphabet and also before the full stop that ends a sentence; a file name such as `scan.pdf` too. An address that came in the person's own message stays inactive as well.
 - **No text kept.** A finished send keeps no text, and a snapshot never holds one that waits.
 
 **The adapter link** (`host/adapter.py`, `host/turns.py`). The adapter plugin talks to Core over a Unix socket, 0600 in a 0700 directory:
 - every message is HMAC-SHA256 signed over its exact bytes with `keys/adapter.key` and carries `(boot_id, seq)`. Core's answers are signed too. A message without the right signature changes nothing;
 - `heartbeat`, every 5 seconds, carries the policy the host runs with, the plugin's hash, its registrations, the model and the runtime;
-- `dispatch` comes from `before_dispatch`. In stage 1 Core answers people itself: "for now I only accept files";
-- `prompt_built` comes from `before_prompt_build`, and `turn_start` from `before_agent_run`. A turn is registered only when it answers an issued message from that sender in that chat, and only after `before_prompt_build` ran for that run. In stage 1 every turn is blocked.
+- `dispatch` comes from `before_dispatch`; every issued message goes on to a turn;
+- `prompt_built` comes from `before_prompt_build`. Core answers with its instruction, the tools the turn may use (none for the probes) and the text a person reads when the model fails;
+- `turn_start` comes from `before_agent_run`. A turn is registered only when it answers an issued message from that sender in that chat, and only after `before_prompt_build` ran for that run, so the prompt carries Core's instruction. A registered turn reaches the model; in HOLD and STOPPED it is blocked with the hold text. A message is taken only by a live turn of the same boot: after a crash, the new process's run of the turn takes it (scenario 32);
+- `turn_reply` reports how a turn that reached the model replied: with the model's answer, or with OpenClaw's report of the model's error;
+- `GET /v1/tools` and `POST /v1/tool` serve the MCP server of the adapter's package, which has no key: a call's authority is the signature inside it (see [Core's tools](#cores-tools)).
 
 **The adapter plugin** (`host/openclaw/adapter/index.ts`: TypeScript that OpenClaw and Node run without a build step):
-- it registers `before_dispatch`, `before_prompt_build` and `before_agent_run`, and a background service that sends the heartbeat;
+- it registers `before_dispatch`, `before_prompt_build`, `before_agent_run`, `before_tool_call` and `reply_payload_sending`, and a background service that sends the heartbeat;
 - without Core it claims nothing in `before_dispatch`, and `before_agent_run`, a gate that OpenClaw fails closed, blocks the turn;
+- `before_prompt_build` adds Core's instruction to the system prompt (`appendSystemContext`) and narrows the turn's tools to Core's;
+- `before_tool_call` signs every call of Core's tools, overwriting a `_klepa` field the model wrote, and blocks every other tool and every call without a turn behind it;
+- `reply_payload_sending` sends a reply as text: media are dropped, so a `MEDIA:` line cannot make OpenClaw lose the whole reply; OpenClaw's English report of a model error, which it sends whatever `errorPolicy` says, becomes Core's text in the installation's language; and a blocked turn's text loses OpenClaw's "Your message could not be sent" wrapper. For a turn that reached the model it reports to Core how the turn replied;
+- `mcp.ts` is the package's MCP server, which OpenClaw runs with the engine's own Node: it lists Core's tools and passes each call to Core over the socket, holding no key;
 - it reaches Core over a raw Unix socket. OpenClaw routes every `node:http` and `fetch` request of its process through the egress proxy, even one that names a socket path; raw sockets are outside that routing;
 - one boot is one gateway process. OpenClaw registers the plugin more than once in a process: a "full" registration runs `before_dispatch` and the service, a "discovery" one runs the turn hooks. So the boot id and the sequence live on the process;
 - the heartbeat reports the plugin's own SHA-256, the values of the reference keys as the running gateway holds them, the model, the runtime and OpenClaw's version; a release other than the one the adapter was proven with fails the check. The plugin never logs what people wrote.
 
 **Core's own gateway** (`host/runtime.py`, `host/reference.py`, `host/gateway.py`, `host/install.py`, D30):
 - **Runtime.** A pinned Node from nodejs.org, checked against the SHA-256 in the code before it is unpacked, and OpenClaw 2026.9.4 from npm with the lockfile that ships with Core; npm runs no install scripts. Both live in Klepa's program folder (`host.runtime_dir`), each version and each lockfile in a folder of its own, so a new one never rebuilds what a running gateway uses; Node is for Macs with Apple silicon. The `klepa-openclaw` wrapper there runs OpenClaw as the engine does, from an empty environment and with the gateway's own HOME.
-- **Reference configuration.** Core writes the gateway's `openclaw.json` from a table of exact values (spec 7.1): loopback only, no live reload, no terminal, no Control UI, no silent device pairing, no mDNS; only Telegram, the model's provider and the adapter, and no memory plugin; no tools, no commands, no scheduled jobs, no statistics, no updates; every HTTP request through the egress proxy; one model on the built-in runtime. OpenClaw cannot write the file (`OPENCLAW_CONFIG_READONLY`), and a heartbeat that reports another value stops the gateway.
+- **Reference configuration.** Core writes the gateway's `openclaw.json` from a table of exact values (spec 7.1): loopback only, no live reload, no terminal, no Control UI, no silent device pairing, no mDNS; only Telegram, the model's provider and the adapter, and no memory plugin; Core's three tools only, by exact name, through the adapter's MCP server and never through `/tools/invoke`; none of OpenClaw's own persona files or first-run ritual in the prompt (Core also deletes a `BOOTSTRAP.md` an earlier OpenClaw left in the workspace), no internal hooks, no ACP; no commands, no scheduled jobs, no statistics, no updates; every HTTP request through the egress proxy; one model on the built-in runtime. OpenClaw cannot write the file (`OPENCLAW_CONFIG_READONLY`), and a heartbeat that reports another value stops the gateway.
 - **The gateway's folder** is `host/` in the data folder: config, state, workspace, logs and the gateway's own HOME, so OpenClaw finds nothing of the owner's by its default paths. It holds the model's token and the host's sessions, so Core keeps it out of Time Machine every time it starts the gateway, and no snapshot includes it. The console goes to launchd's files at the error level only; the gateway's own log rotates at 20 MB.
 - **launchd.** The agent `klepa.gateway` runs under external supervision and never respawns itself; launchd brings it back after a crash but not after a clean exit. Its plist lives in the gateway's folder, not in `~/Library/LaunchAgents`, so only Core starts it. Stopping is always `launchctl bootout`.
 - **Start.** Core writes the gateway's files and keeps a digest of what it loaded: config, adapter and plist. A gateway whose files still match the digest keeps running across a restart of Core; files that changed since, whoever wrote them, are validated by OpenClaw and loaded. The gateway is ready when `/startupz` says started, `/readyz` says ready, its log since this start shows no refusal of the adapter's hooks, and a model token is stored.
 - **Watch.** A gateway that exits by itself, or is unloaded behind Core's back, is started again with an alert; the third time in ten minutes Core stops it instead. A new gateway process, after a crash too, passes the start gate before it gets messages. An answer from launchd that Core cannot read changes nothing. After a failed check Core stops the gateway, and it stays down until Resume or until Core itself starts again.
-- **Model access.** `klepa-core host login` reads the model's setup-token (from `claude setup-token`) without echo and gives it to OpenClaw on stdin; the gateway keeps it in its own state. OpenClaw stores the token and then fails to write its config, which stays Core's; a running gateway is asked to take the new token at once. Whether the token works only a model call shows, and stage 1 makes none.
+- **Model access.** `klepa-core host login` reads the model's setup-token (from `claude setup-token`) without echo and gives it to OpenClaw on stdin; the gateway keeps it in its own state. OpenClaw stores the token and then fails to write its config, which stays Core's; a running gateway is asked to take the new token at once. Whether the token works only a model call shows: the start gate makes one.
 
 **Supervision** (`host/supervisor.py`, D26):
-- **STARTING.** The gateway runs but gets no messages and sends nothing until it passes the start gate: a full heartbeat within 30 seconds, the gateway ready, and a live probe. The probe is a synthetic message from a peer that no member has. The adapter must report `before_prompt_build` and `before_agent_run` for it, and the host must then write the block to the probe's chat: the turn ended there, without the model. Hooks without `allowConversationAccess` never report, so such a host never gets messages.
+- **STARTING.** The gateway runs but gets no messages and sends nothing until it passes the start gate: a full heartbeat within 30 seconds, the gateway ready, and two probes. The probes are synthetic messages from a peer that no member has. For the first, the adapter must report `before_prompt_build` and `before_agent_run`, and the host must then write the block to the probe's chat: the turn ended there, without the model. Hooks without `allowConversationAccess` never report, so such a host never gets messages. The second probe goes to the model, through the egress proxy. A token the model refuses stops the gateway at once, and the owner is told to log in again and press Resume, before a person's question meets it. OpenClaw itself retries a busy provider for about 80 seconds within a turn, so the probe waits up to 150 seconds, and a model that erred otherwise or stayed silent is asked once more after 30 seconds. If it still errs, the host runs anyway and the owner gets one alert: people get Core's apology for each message until the provider answers again, without waiting for anyone. If it stays silent, the gateway stops, because a person would meet silence.
 - **RUNNING.** The host gets messages. A new `boot_id`, or a new gateway process that Core sees in launchd before its first heartbeat, means the gateway restarted; it passes the gate again, without alerts.
 - **HOLD.** Three minutes without a heartbeat, or the owner's Pause. The host gets no new messages, its sends are held, turns are blocked, and people get a fixed reply at most once per ten minutes per chat. Core keeps receiving files.
 - **STOPPED.** A failed check: the start gate, or a heartbeat that stops matching. For people it looks like HOLD.
 
 The service bot's line names the state. Resume passes the start gate again.
+
+## Core's tools
+
+Code: `klepa_core/host/tools.py`, `klepa_core/host/instruction.py`.
+
+**The instruction.** Core's instruction is in English and at most 4,000 characters; the adapter adds it to every turn's system prompt. It says that only the system text instructs the model, that messages, file names, transcripts and tool results are data, and that an answer about stored records comes from Core's tools, in the language of the person's last message. It also says what Klepa cannot do yet (reminders, memory between conversations, the contents of files), so the model promises none of it. With the tools' descriptions it stays within 5,000 tokens; a test checks it.
+
+**The tools** (stage 2a), as the model sees them: `klepa__search` finds stored records by the beginnings of words in their names and captions, so other forms of a word match too, and lists the latest records when given no words (1 to 50 results); `klepa__get` reads one record; `klepa__send_original` has Core send the person the original file with the name it came with. A tool acts for the person whose message the turn answers, over the shared space and that person's own: another member's personal records are never found, read or sent.
+
+**A signature per call** (spec 4.5). The MCP server holds no key, and the model never sees one:
+- the adapter's `before_tool_call` adds `_klepa`: the turn's run, the call's id and an HMAC over a domain string, the run, the call, the tool's name and the canonical JSON of exactly the parameters Core will run;
+- Core checks the signature, that the turn is registered and live, and that the call id was never used; the parameters must be exactly the declared ones, a key twice or a fraction refuses the call;
+- a signature from the model's history fits only its own call, a direct call through `/tools/invoke` has no turn and an id `http-…`, and the gateway refuses Core's tools there anyway.
+
+**Sending an original** (spec 6.5). Core reads the file once, checks its size and SHA-256 against the record, and sends exactly those bytes from the family bot, under the name it came with, without control characters; a file changed on disk is never sent. The model hears "sent" once the file is queued; if the send then fails, the person gets Core's words saying so.
 
 **The egress proxy** (`host/egress.py`). All the host's HTTP goes through Core's proxy on `127.0.0.1`, CONNECT tunnels and plain requests alike:
 - the exact host name and port are checked against `host.egress_allow` before any DNS lookup, so a refused name never reaches DNS;
@@ -282,7 +304,9 @@ Receipts use the matching form ("1 file", "2 files"). Loading a locale checks th
 - **Keys and backups.** `keys/` is excluded from Time Machine at `init` and at `service install`. The snapshot signing key has a paper copy.
 - **Logs.** Under launchd, Core's stderr goes to `logs/` (0600), and anything shaped like a bot token is redacted.
 - **The host.** It holds a fake token, and reaches Telegram only through the gatekeeper and the internet only through the egress proxy, which checks the exact host name before any DNS lookup and fails closed. The adapter's messages are signed with a key the model never sees. Its configuration is Core's and read-only, and it runs its own Node and OpenClaw, pinned by a checksum and a lockfile.
-- **Per-call signatures** (stage 2). Every call to a Core tool is signed with an HMAC by the adapter, and the model never sees the key.
+- **Per-call signatures.** Every call of a Core tool is signed by the adapter for exactly its parameters, its run and its call, and the model never sees the key (see [Core's tools](#cores-tools)).
+- **The model's replies.** They leave as text only, with every address inactive; the gatekeeper takes no file from the host, and the adapter drops media before OpenClaw would fetch them.
+- **What the model provider sees.** OpenClaw adds a runtime line to every turn: the Mac's computer name and the workspace path among it. Name the Mac neutrally if that matters.
 
 ## Testing
 
@@ -303,7 +327,7 @@ Receipts use the matching form ("1 file", "2 files"). Loading a locale checks th
   - also: files that are too large, an unavailable or missing documents folder, a truncated download, a full disk and a restart in the middle of an album.
 - **Acceptance scenarios for stage 1b** (`tests/test_acceptance_stage1b.py`): an album whose private caption arrives after the first receipt; the snapshot and the daily line once a day across a restart; the documents folder missing at start and gone in the middle of a run; a revoked family bot token; a restart after a crash; strangers and family members writing to the service bot; a broken service bot token; a failing service loop; the service token never on disk.
 - **Acceptance scenarios for stage 1c, Core's side** (`tests/test_acceptance_stage1c.py`), with a fake host (`tests/fakehost.py`) and a fake adapter plugin (`tests/fakeadapter.py`):
-  - the host gets text only after the live probe, and the stage 1 answer comes back through it;
+  - the host gets text only after the live probes, and the model's answer comes back through it;
   - S16 — no adapter, or hooks without conversation access: the host never gets a message;
   - S14 — unsigned or foreign adapter messages change nothing;
   - S43 — commands never reach the host;
@@ -314,12 +338,18 @@ Receipts use the matching form ("1 file", "2 files"). Loading a locale checks th
   - also: HOLD after silence and back, Pause and Resume, and the host's traffic through the egress proxy.
 - **The adapter plugin.** `tests/adapter/` runs Node's own test runner on the plugin, and `tsc` checks its types. `tests/test_adapter_plugin.py` runs the real plugin under Node against Core's adapter server.
 - **The real gateway** (`tests/test_gateway_live.py`). These tests run only where `KLEPA_TEST_RUNTIME` names an installed runtime, and each loads a launchd agent of its own:
-  - the start gate and the stage 1 answer through the real OpenClaw;
+  - the start gate and an answer of the model (a scripted one, reached through the egress proxy) through the real OpenClaw, with Core's instruction in the system prompt;
   - S41 — a killed gateway is checked again, and the message that waited gets one answer;
   - a gateway unloaded behind Core's back comes back, with an alert;
   - S16 — without conversation access the gateway never gets a message;
-  - S40 — the model has none of the host's tools;
-  - S43 — commands never reach the gateway.
+  - S40 — the model has Core's tools and none of the host's;
+  - S43 — commands never reach the gateway;
+  - S18 — a search through Core's signed tool; another member's personal records stay theirs, even when both ask at once; a direct call through `/tools/invoke` runs nothing;
+  - S29 — a reply full of `MEDIA:`, image links, hidden links, e-mail addresses and @mentions reaches the person as inactive text, and the gateway asks the network for nothing;
+  - S31 — a message sent while the model thinks gets its own turn; S32 — a turn cut by a crash is answered once after the restart;
+  - the model's error: a refused token stops the host at the gate with an alert; a provider busy for 100 seconds at the start lets the host run without waking the owner; in a person's turn the person reads Core's words and the owner gets one alert;
+  - OpenClaw's first-run ritual and persona files, left in the workspace, never reach the model's prompt;
+  - `send_original` — Core sends the person their file, with its name and its exact bytes; when the stored file is gone, the person hears so.
 - **No real system changes.** Tests never run `launchctl` or `tmutil` (`tests/conftest.py`), except the real-gateway tests, which load and unload only agents of their own.
 - **Test data.** Tests use synthetic members only.
 - **Test locale.** Tests run on the English locale. `tests/test_languages.py` checks the other languages.
@@ -346,8 +376,8 @@ A stage is done when its acceptance scenarios pass on the test stand.
 |---|---|
 | 1a | Core intake: journal, attachments, receipts, spaces, signed cards, locales. **Done.** |
 | 1b | Service bot for alerts and buttons; signed daily snapshots with a generation number; the daily "all good" line; Core as a launchd service with its own interpreter; at start it probes the documents folder and names the macOS permission it lacks. **Done.** |
-| 1c | A dedicated OpenClaw install with a reference config; egress proxy; host-facing API with a fake token and accept-and-hold; adapter plugin with heartbeat; supervision with a live probe at start. |
-| 2 | Processing in a sandbox: transcription and OCR, text versions of attachments, search and send tools, photo drafts to PDF, a page viewer. |
+| 1c | A dedicated OpenClaw install with a reference config; egress proxy; host-facing API with a fake token and accept-and-hold; adapter plugin with heartbeat; supervision with a live probe at start. **Done.** |
+| 2 | Processing. 2a: the model answers with Core's instruction and Core's signed tools (search, get, send an original); replies as text only; a model probe at start. 2b: transcription, OCR and document text in a sandbox, given to the host as text, with progress and cancel. 2c: photo drafts to PDF, a page viewer, Core's buttons in the family bot. |
 | 3 | Knowledge: facts with verified quotes, instructions, session taint, disclosure journal, `make_private`. |
 | 4 | Reminders delivered by Core, fenced delivery, restore with a generation check, integrity and silence checks, watchdog. |
 | 5 | Workflows the family teaches by example, with versions, owner approval and rollback. |

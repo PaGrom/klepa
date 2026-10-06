@@ -8,7 +8,7 @@ Klepa is a family second-brain engine for AI agent hosts.
 
 Family members send documents, photos and voice messages to a Telegram bot. Klepa keeps every original safe on the family's own Mac and files it into a shared or a personal space. In later stages it will let an agent host such as OpenClaw answer questions about those files, without ever holding the keys to the family's data.
 
-> **Status: stage 1c.** Core receives files from Telegram and stores them durably, runs as a launchd service, takes signed daily snapshots and reports to the owner through a service bot. OpenClaw runs behind the gatekeeper: Core installs its own pinned OpenClaw, starts it under launchd and checks it with a live probe before it gets messages. In stage 1 Core still answers people itself. Run it only against test bots and with test data.
+> **Status: stage 2a.** Core receives files from Telegram and stores them durably, runs as a launchd service, takes signed daily snapshots and reports to the owner through a service bot. OpenClaw runs behind the gatekeeper: Core installs its own pinned OpenClaw, starts it under launchd and checks it, with one model call, before it gets messages. The model answers people with Core's instruction and can find a stored file and have Core send it back, through Core's own tools, each call signed. Run it only against test bots and with test data.
 
 ## Principles
 
@@ -142,7 +142,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and the rules.
 | 1a | Core receives files from Telegram and stores them durably | done |
 | 1b | Service bot, signed daily snapshots, Core as a launchd service | done |
 | 1c | OpenClaw behind the gatekeeper: its own install, reference config, adapter plugin, egress proxy, supervision | done |
-| 2 | Processing: transcription and OCR in a sandbox, photo drafts to PDF, page viewer | planned |
+| 2 | Processing: the model answers through Core's signed tools (2a); transcription and OCR in a sandbox (2b); photo drafts to PDF, page viewer (2c) | in progress |
 | 3 | Knowledge: facts with verified quotes, `make_private`, disclosure journal | planned |
 | 4 | Reminders and self-checks, fenced outbound delivery | planned |
 | 5 | Workflows the family teaches by example | planned |
