@@ -162,8 +162,21 @@ async def test_a_failed_turn_of_a_person_alerts_the_owner_and_a_blocked_one_does
     await adapter.turn_start("run-1", MEMBER)
     await adapter.turn_reply("run-1", error=True, error_kind="auth")
     await adapter.turn_reply("run-unknown", error=True, error_kind="auth")  # a run Core never registered
-    assert adapter_server.alerts.raised == [("host_turn_failed", {"reason": "auth"})]
+    # A refused token also raises its own alert: an hourly host_turn_failed of another reason must not hide it.
+    assert adapter_server.alerts.raised == [
+        ("host_turn_failed", {"reason": "auth"}),
+        ("host_model_auth", {"reason": "auth"}),
+    ]
     assert conn.execute("SELECT succeeded FROM host_run WHERE run_id='run-1'").fetchone()[0] == 0
+
+
+async def test_a_busy_provider_in_a_persons_turn_is_no_token_alert(server):
+    adapter_server, adapter, _, journal = server
+    issue(adapter_server, journal, 1, MEMBER, 10)
+    await adapter.prompt_built("run-1", MEMBER)
+    await adapter.turn_start("run-1", MEMBER)
+    await adapter.turn_reply("run-1", error=True, error_kind="rate_limit")
+    assert adapter_server.alerts.raised == [("host_turn_failed", {"reason": "rate_limit"})]
 
 
 async def test_the_model_probe_hears_how_its_own_turn_replied(server):

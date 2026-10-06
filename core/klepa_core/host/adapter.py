@@ -251,6 +251,8 @@ class AdapterServer:
             self.events.log("turn_failed", {"reason": reason})
             if self.alerts is not None:
                 self.alerts.raise_("host_turn_failed", reason=reason)
+                if reason == "auth":  # its own class: an earlier alert of another reason must not hide it for an hour
+                    self.alerts.raise_("host_model_auth", reason=reason)
         return {"ok": True}
 
     def _turn_start(self, boot_id: str, message: dict[str, Any]) -> dict[str, Any]:

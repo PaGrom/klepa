@@ -59,6 +59,6 @@ alert_host_not_polling = "⚠️ Host već pet minuta ne traži poruke od čuvar
 alert_host_send_failed = "⚠️ Telegram nije prihvatio odgovor hosta ({error}). Osoba je zamoljena da ponovo pošalje poruku."
 alert_host_send_refused = "⚠️ Čuvar nije primio odgovor hosta ({reason}). Osoba je možda ostala bez odgovora."
 alert_host_turn_failed = "⚠️ Poruka je ostala bez odgovora: model nije uspeo ({reason}). Ako je razlog auth, token modela više ne radi: pokreni klepa-core host login."
-alert_host_model_auth = "⚠️ Model nije prihvatio token. Host ne dobija poruke; ljudima ide fiksni odgovor, a njihove poruke čekaju. Pokreni klepa-core host login sa novim setup-token, pa pritisni Resume."
+alert_host_model_auth = "⚠️ Model nije prihvatio token: dok ponovo ne proradi, ljudi dobijaju fiksni odgovor. Pokreni klepa-core host login sa novim setup-token; ako je host zaustavljen, pritisni Resume."
 alert_host_model_unavailable = "⚠️ Model nije odgovorio na početnu proveru ({reason}). Host ipak radi: na svaku poruku ljudi dobijaju izvinjenje dok model ponovo ne odgovori."
 alert_egress_failed = "⚠️ Proksi za odlazni saobraćaj ne može da se pokrene ({error}). Host ne može da dođe do modela."
