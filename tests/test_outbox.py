@@ -1,9 +1,12 @@
+import functools
+import json
+
 import pytest
 
 from helpers import OWNER
 from klepa_core import db
 from klepa_core.events import EventLog
-from klepa_core.gatekeeper.outbox import Outbox
+from klepa_core.gatekeeper.outbox import Outbox, tell_failed_original
 
 
 @pytest.fixture
@@ -101,3 +104,74 @@ async def test_each_bot_sends_only_its_own_messages(fake_tg, api, outbox_factory
     assert await family.send_due() == 1
     assert [item["params"]["text"] for item in fake_tg.sent] == ["service text", "family text"]
     assert service.events.kinds().count("service_sent") == 1  # every service send is logged, family sends are not
+
+
+def document(path, data, name="Διαβατήριο scan.pdf"):
+    import hashlib
+
+    return {
+        "path": str(path),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size": len(data),
+        "mime": "application/pdf",
+        "name": name,
+    }
+
+
+async def test_an_original_goes_out_as_its_stored_bytes_with_its_name(fake_tg, api, outbox_factory, tmp_path):
+    original = tmp_path / "x.pdf"
+    original.write_bytes(b"%PDF original")
+    outbox = outbox_factory(api)
+    assert outbox.enqueue_document("original:r:1", OWNER, document(original, b"%PDF original"))
+    assert await outbox.send_due() == 1
+    [sent] = fake_tg.documents
+    assert (sent["name"], sent["data"], int(sent["params"]["chat_id"])) == (
+        "Διαβατήριο scan.pdf",
+        b"%PDF original",
+        OWNER,
+    )
+    assert state(outbox, "original:r:1")["state"] == "CONFIRMED"
+
+
+async def test_a_file_changed_after_it_was_stored_is_never_sent(fake_tg, api, outbox_factory, tmp_path):
+    """Spec 6.5 and scenario 46: the bytes are read once and checked against the record; another file at the same
+    path is refused, never sent."""
+    original = tmp_path / "x.pdf"
+    original.write_bytes(b"%PDF a swapped file")
+    outbox = outbox_factory(api)
+    outbox.enqueue_document("original:r:1", OWNER, document(original, b"%PDF original"))
+    assert await outbox.send_due() == 0
+    assert fake_tg.documents == []
+    assert state(outbox, "original:r:1")["state"] == "FAILED"
+
+
+async def test_a_send_that_breaks_fails_alone_and_the_outbox_goes_on(fake_tg, api, outbox_factory, tmp_path):
+    """A name that cannot go into a request, here with a line break, fails that send only: one row never stops
+    Core, which would leave it UNKNOWN after the restart and stop again at the next request for it."""
+    original = tmp_path / "x.pdf"
+    original.write_bytes(b"%PDF original")
+    outbox = outbox_factory(api)
+    outbox.enqueue_document("original:r:1", OWNER, document(original, b"%PDF original", name="line\nbreak.pdf"))
+    outbox.enqueue_text("k", OWNER, "after it")
+    assert await outbox.send_due() == 1
+    assert state(outbox, "original:r:1")["state"] == "FAILED"
+    assert [item["params"]["text"] for item in fake_tg.sent] == ["after it"]
+    assert "outbound_failed" in outbox.events.kinds()
+
+
+async def test_the_person_hears_when_their_original_could_not_be_sent(fake_tg, api, outbox_factory, tmp_path):
+    """The model has already said the file is on its way; a send that ends FAILED is told to the person, once, in
+    Core's words."""
+    original = tmp_path / "x.pdf"
+    original.write_bytes(b"%PDF a swapped file")
+    outbox = outbox_factory(api)
+    outbox.on_failed = functools.partial(tell_failed_original, outbox, "could not send {name}")
+    outbox.enqueue_document("original:r:1", OWNER, document(original, b"%PDF original"))
+    outbox.enqueue_text("k", OWNER, "a text")
+    fake_tg.fail("sendMessage", status=400, description="Bad Request: chat not found")
+    await outbox.send_due()
+    assert state(outbox, "k")["state"] == "FAILED"  # Core's own text that failed is not told
+    notices = outbox.conn.execute("SELECT idempotency_key, chat_id, payload FROM outbound WHERE state='PENDING'")
+    assert [(row["idempotency_key"], row["chat_id"], json.loads(row["payload"])["text"]) for row in notices] == [
+        ("failed:original:r:1", OWNER, "could not send Διαβατήριο scan.pdf")
+    ]

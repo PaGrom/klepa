@@ -54,10 +54,13 @@ class BotApi:
         self._base = api_root.rstrip("/")
         self._token = token
 
-    async def call(self, method: str, params: dict[str, Any], *, timeout: float) -> Any:
+    async def call(
+        self, method: str, params: dict[str, Any], *, timeout: float, form: aiohttp.FormData | None = None
+    ) -> Any:
         url = f"{self._base}/bot{self._token}/{method}"
+        body: dict[str, Any] = {"json": params} if form is None else {"data": form}
         try:
-            async with self._session.post(url, json=params, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+            async with self._session.post(url, **body, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
                 status = resp.status
                 raw = await resp.read()
         except aiohttp.ClientConnectorError as exc:
@@ -134,6 +137,21 @@ class BotApi:
         if reply_markup is not None:
             params["reply_markup"] = reply_markup
         return await self._call_for_object("sendMessage", params, timeout=30)
+
+    async def send_document(
+        self, chat_id: int, data: bytes, filename: str, mime: str, reply_to_message_id: int | None = None
+    ) -> dict[str, Any]:
+        """Upload these bytes as a document named `filename`: the person gets back the name the file came with."""
+        form = aiohttp.FormData(quote_fields=False)  # the name as UTF-8: percent-encoding would reach the person
+        form.add_field("chat_id", str(chat_id))
+        if reply_to_message_id is not None:
+            reply = {"message_id": reply_to_message_id, "allow_sending_without_reply": True}
+            form.add_field("reply_parameters", json.dumps(reply))
+        form.add_field("document", data, filename=filename.replace('"', "'"), content_type=mime)
+        result = await self.call("sendDocument", {}, timeout=120, form=form)
+        if not isinstance(result, dict):
+            raise Ambiguous("sendDocument: unexpected result")
+        return result
 
     async def send_chat_action(self, chat_id: int, action: str) -> None:
         await self.call("sendChatAction", {"chat_id": chat_id, "action": action}, timeout=10)

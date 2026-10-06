@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -115,3 +116,12 @@ async def test_html_messages_and_the_typing_action(fake_tg, api):
     assert fake_tg.sent[-1]["params"]["parse_mode"] == "HTML"
     await api.send_chat_action(OWNER, "typing")
     assert fake_tg.calls[-1] == "sendChatAction"
+
+
+async def test_a_document_is_uploaded_under_its_name_as_utf8(fake_tg, api):
+    """The person gets the file back under the name it came with: percent-encoding would reach them as it is."""
+    message = await api.send_document(OWNER, b"%PDF x", 'Διαβατήριο "1".pdf', "application/pdf", reply_to_message_id=5)
+    [sent] = fake_tg.documents
+    assert (sent["name"], sent["data"]) == ("Διαβατήριο '1'.pdf", b"%PDF x")
+    assert json.loads(sent["params"]["reply_parameters"])["message_id"] == 5
+    assert message["document"]["file_name"] == sent["name"]

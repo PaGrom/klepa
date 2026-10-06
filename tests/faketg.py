@@ -24,6 +24,7 @@ class FakeTelegram:
         self.offsets_seen: list[int | None] = []
         self.files: dict[str, dict[str, Any]] = {}
         self.sent: list[dict[str, Any]] = []
+        self.documents: list[dict[str, Any]] = []
         self.calls: list[str] = []
         self.failures: dict[str, list[dict[str, Any]]] = {}
         self.url = ""
@@ -173,7 +174,12 @@ class FakeTelegram:
         self.calls.append(method)
         if request.match_info["token"] != self.token or not self.token_valid:
             return web.json_response({"ok": False, "error_code": 401, "description": "Unauthorized"}, status=401)
-        params = await request.json() if request.body_exists else {}
+        if request.content_type.startswith("multipart/"):
+            form = await request.post()
+            params = {key: (value.file.read() if hasattr(value, "file") else value) for key, value in form.items()}
+            params["_filenames"] = {key: value.filename for key, value in form.items() if hasattr(value, "filename")}
+        else:
+            params = await request.json() if request.body_exists else {}
         queue = self.failures.get(method)
         if queue:
             failure = queue.pop(0)
@@ -188,6 +194,7 @@ class FakeTelegram:
             "getUpdates": self._get_updates,
             "getFile": self._get_file,
             "sendMessage": self._send_message,
+            "sendDocument": self._send_document,
             "answerCallbackQuery": self._answer_callback,
             "getMe": self._get_me,
         }.get(method)
@@ -248,6 +255,18 @@ class FakeTelegram:
             "text": params.get("text", ""),
         }
         self.sent.append({"params": params, "message": message})
+        return message
+
+    async def _send_document(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._next_sent_id += 1
+        name = params.get("_filenames", {}).get("document")
+        message = {
+            "message_id": self._next_sent_id,
+            "date": int(time.time()),
+            "chat": {"id": int(params["chat_id"]), "type": "private"},
+            "document": {"file_name": name, "file_size": len(params.get("document", b""))},
+        }
+        self.documents.append({"params": params, "message": message, "name": name, "data": params.get("document")})
         return message
 
     async def _file(self, request: web.Request) -> web.StreamResponse:
