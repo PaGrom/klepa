@@ -149,6 +149,22 @@ def test_a_token_the_terminal_wrapped_is_joined(cfg):
     assert next(call[2] for call in fake.calls if "paste-token" in call[0]) == TOKEN + "\n"
 
 
+def test_a_token_copied_with_its_frame_is_taken_out_of_it(cfg):
+    _, fake = installed(cfg)
+    framed = "\u2502 " + TOKEN[:40] + " \u2502\n\u2502 " + TOKEN[40:] + " \u2502\n"
+    host.login(cfg, framed, run=fake)
+    assert next(call[2] for call in fake.calls if "paste-token" in call[0]) == TOKEN + "\n"
+
+
+@pytest.mark.parametrize("extra", ['"', "\u2026", "?", "Your token: "])
+def test_a_paste_with_more_than_the_token_is_refused(cfg, extra):
+    _, fake = installed(cfg)
+    calls = len(fake.calls)
+    with pytest.raises(rt.HostRuntimeError, match="only the token"):
+        host.login(cfg, extra + TOKEN, run=fake)
+    assert len(fake.calls) == calls
+
+
 @pytest.mark.parametrize("token", ["", "hello", "sk-ant-oat01-too-short", "sk-ant-api03-" + "x" * 90])
 def test_login_takes_only_a_setup_token(cfg, token):
     runtime = rt.Runtime(cfg.host.runtime_dir)
@@ -187,7 +203,7 @@ def test_status_shows_the_runtime_the_agent_the_model_and_cores_view(cfg):
 
 def test_the_cli_reads_the_token_without_echo(cfg, monkeypatch, capsys, tmp_path):
     given = {}
-    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: TOKEN)
+    monkeypatch.setattr(cli, "_read_token", lambda: TOKEN)
     monkeypatch.setattr(cli.host, "login", lambda config, token: given.update(token=token) or True)
     path = tmp_path / "config.toml"  # make_config wrote the config here
     assert cli.main(["host", "login", "--config", str(path)]) == 0
@@ -195,6 +211,50 @@ def test_the_cli_reads_the_token_without_echo(cfg, monkeypatch, capsys, tmp_path
     out = capsys.readouterr().out
     assert TOKEN not in out
     assert "uses it now" in out
+    assert f"{len(TOKEN)} characters" in out  # what the owner can check against the token they copied
+
+
+def test_a_token_from_a_pipe_is_read_whole(cfg, monkeypatch, capsys, tmp_path):
+    """pbpaste | klepa-core host login …: the token never appears on a screen or in a prompt."""
+    import io
+
+    given = {}
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(TOKEN[:40] + "\n" + TOKEN[40:] + "\n"))
+    monkeypatch.setattr(cli.host, "login", lambda config, token: given.update(token=token) or False)
+    assert cli.main(["host", "login", "--config", str(tmp_path / "config.toml")]) == 0
+    assert "".join(given["token"].split()) == TOKEN
+
+
+def test_a_paste_on_a_terminal_is_read_whole_and_not_shown(monkeypatch):
+    """A terminal or the display that printed the token can break it into lines; getpass took the first line only,
+    stored a token cut short, and the rest of the paste ran as a command in the shell."""
+    import pty
+    import threading
+    import time
+
+    master, slave = pty.openpty()
+    monkeypatch.setattr(cli.sys, "stdin", os.fdopen(slave, "r"))
+    paste = (TOKEN[:50] + "\n" + TOKEN[50:] + "\n").encode()
+    threading.Thread(target=lambda: (time.sleep(0.3), os.write(master, paste)), daemon=True).start()
+    assert "".join(cli._read_token().split()) == TOKEN
+    os.set_blocking(master, False)
+    try:
+        shown = os.read(master, 4096)
+    except BlockingIOError:
+        shown = b""
+    assert TOKEN[:20].encode() not in shown
+    assert TOKEN[50:70].encode() not in shown
+    os.close(master)
+
+
+def test_a_line_typed_later_is_not_part_of_the_paste():
+    read, write = os.pipe()
+    os.write(write, b"sk-ant-oat01-first\n")
+    assert cli.read_paste(read, settle=0.05) == "sk-ant-oat01-first\n"
+    os.write(write, b"later\n")
+    os.close(write)
+    assert os.read(read, 100) == b"later\n"
+    os.close(read)
 
 
 def test_a_host_problem_ends_the_command_with_its_own_code(cfg, monkeypatch, capsys, tmp_path):

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import getpass
+import contextlib
 import os
+import select
 import signal
 import sys
+import termios
+from collections.abc import Iterator
 from pathlib import Path
 
 import aiohttp
@@ -26,6 +29,44 @@ PAPER_NOTE = (
     "The snapshot signing key of this installation. Write the lines below on paper and keep the paper safe:\n"
     "the key proves that snapshots are yours. Never type it into a chat or a website.\n"
 )
+
+
+PASTE_SETTLE_SECONDS = 0.3  # the lines of one paste arrive together; a line typed later is not part of it
+
+
+def read_paste(fd: int, settle: float = PASTE_SETTLE_SECONDS) -> str:
+    """The first line, then every line that follows within `settle` seconds: the rest of the same paste. A terminal
+    in canonical mode hands over one line per read, so the lines still queued are the paste's own."""
+    chunks = [os.read(fd, 65536)]
+    while chunks[-1] and select.select([fd], [], [], settle)[0]:
+        chunks.append(os.read(fd, 65536))
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
+@contextlib.contextmanager
+def _no_echo(fd: int) -> Iterator[None]:
+    old = termios.tcgetattr(fd)
+    new = termios.tcgetattr(fd)
+    new[3] &= ~termios.ECHO
+    termios.tcsetattr(fd, termios.TCSAFLUSH, new)
+    try:
+        yield
+    finally:
+        termios.tcsetattr(fd, termios.TCSAFLUSH, old)
+
+
+def _read_token() -> str:
+    """The setup-token, never shown. From a pipe (`pbpaste | klepa-core host login …`), all of it; from a terminal,
+    the whole paste, also when the display that printed the token broke it into lines (getpass took the first line
+    only, and the rest of the paste ran in the shell)."""
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+    fd = sys.stdin.fileno()
+    print("Paste the setup-token (it is not shown): ", end="", flush=True)
+    with _no_echo(fd):
+        paste = read_paste(fd)
+    print()
+    return paste
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -136,9 +177,10 @@ def _host(cfg: Config, action: str) -> int:
         print(f"  OpenClaw as the engine runs it, for your own use: {runtime.wrapper}")
         return 0
     if action == "login":
-        token = getpass.getpass("Paste the setup-token (it is not shown): ")
-        now = host.login(cfg, token)
-        print(f"klepa-core: the setup-token is stored for the gateway ({host.PROFILE_ID})")
+        paste = _read_token()
+        now = host.login(cfg, paste)
+        size = len(host.setup_token(paste))
+        print(f"klepa-core: the setup-token is stored for the gateway ({host.PROFILE_ID}), {size} characters")
         print("The running gateway uses it now." if now else "The gateway reads it when Core starts it.")
         return 0
     if action == "status":

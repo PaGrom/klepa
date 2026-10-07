@@ -101,7 +101,7 @@ python -m klepa_core service uninstall                          # stop Core for 
 python -m klepa_core keys paper-backup --config PATH            # print the signing key for a paper copy; run it yourself
 python -m klepa_core keys restore --config PATH                 # type the paper copy back in (stdin)
 python -m klepa_core host install --config PATH                 # put the gateway's Node, OpenClaw, adapter and config in place
-python -m klepa_core host login --config PATH                   # give the gateway the model's setup-token, typed without echo
+python -m klepa_core host login --config PATH                   # give the gateway the model's setup-token: pasted without echo, or piped in
 python -m klepa_core host status --config PATH                  # the runtime, the launchd agent, model access, Core's view
 python -m klepa_core host uninstall --config PATH               # unload the gateway; refused while Core runs, which would load it again
 ```

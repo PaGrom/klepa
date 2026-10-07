@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing
@@ -61,6 +62,23 @@ def install(
     return runtime
 
 
+_FRAME = re.compile(r"[\s\u2500-\u257f]")  # whitespace, and the box a terminal display may draw around the token
+_TOKEN = re.compile(r"[A-Za-z0-9_-]*")
+
+
+def setup_token(paste: str) -> str:
+    """The setup-token in a paste, without the line breaks and the frame a terminal or a display put into it. A paste
+    that holds anything else is refused: a token with a stray character in it would be stored, and fail at the start."""
+    token = _FRAME.sub("", paste)
+    if not _TOKEN.fullmatch(token):
+        raise rt.HostRuntimeError("the paste holds more than a setup-token: paste only the token; nothing was stored")
+    if not token.startswith(SETUP_TOKEN_PREFIX) or len(token) < SETUP_TOKEN_MIN_LENGTH:
+        raise rt.HostRuntimeError(
+            "that is not a setup-token (sk-ant-oat01-…, from claude setup-token); nothing was stored"
+        )
+    return token
+
+
 def login(cfg: Config, token: str, *, run: rt.Runner = rt._run) -> bool:
     """Store the model's setup-token in the gateway's own auth store (spec 7.1, the owner's action). True when a
     running gateway took it at once; a gateway that is not running reads it when Core starts it.
@@ -69,11 +87,7 @@ def login(cfg: Config, token: str, *, run: rt.Runner = rt._run) -> bool:
     That refusal is expected, and the profile list proves the token is stored. A running gateway keeps the credentials
     it read until it is asked to refresh them (OpenClaw's own command would ask only after the config write)."""
     runtime, layout = _parts(cfg)
-    token = "".join(token.split())  # a terminal may wrap a long paste; OpenClaw drops whitespace inside it too
-    if not token.startswith(SETUP_TOKEN_PREFIX) or len(token) < SETUP_TOKEN_MIN_LENGTH:
-        raise rt.HostRuntimeError(
-            "that is not a setup-token (sk-ant-oat01-…, from claude setup-token); nothing was stored"
-        )
+    token = setup_token(token)
     if not layout.config_path.exists():
         raise rt.HostRuntimeError("the gateway is not installed: run klepa-core host install first")
     argv = rt.openclaw_argv(

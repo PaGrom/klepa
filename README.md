@@ -114,8 +114,10 @@ Core runs its own OpenClaw gateway, apart from any other OpenClaw on the Mac. It
    pinned lockfile (about 540 MB), then writes the gateway's config, which OpenClaw itself may not change.
 3. **Give it the model.** In your own terminal run `claude setup-token`, then
    `"$KLEPA_HOME/venv/bin/python" -m klepa_core host login --config ~/KlepaData-test/config.toml` and paste the token
-   when it asks; it is not shown. Never paste it into a chat. Run `host login` again to replace the token; a running
-   gateway takes the new one at once.
+   when it asks; it is not shown. Or copy the token and pipe it in, so it never meets a prompt:
+   `pbpaste | "$KLEPA_HOME/venv/bin/python" -m klepa_core host login --config ~/KlepaData-test/config.toml`. Either way
+   the command says how many characters it stored: compare that with the token. Never paste it into a chat. Run
+   `host login` again to replace the token; a running gateway takes the new one at once.
 4. **Restart Core:** `"$KLEPA_HOME/venv/bin/python" -m klepa_core service restart`. Core starts the gateway, checks it,
    and only then gives it messages. `host status` shows the runtime, the gateway, the model's token and Core's view.
 
