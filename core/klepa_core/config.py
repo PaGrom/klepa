@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import stat
+import sys
 import tomllib
 from dataclasses import dataclass
 from datetime import time as time_of_day
@@ -31,6 +32,11 @@ DEFAULT_RUNTIME_DIR = Path.home() / "Library" / "Application Support" / "Klepa" 
 GATEWAY_MODES = ("launchd", "external")
 # The provider is Anthropic's API, through the proxy; no dots, so the model can be part of a dotted settings key.
 _MODEL = re.compile(r"^anthropic/[a-z0-9][a-z0-9-]{0,63}$")
+HOMEBREW_BIN = Path("/opt/homebrew/bin")
+DEFAULT_TESSDATA = Path.home() / "Library" / "Application Support" / "Klepa" / "tessdata"
+# Scans are read in the installation's language and in English, which documents mix in most often.
+OCR_LANGUAGES = {"en": "eng", "ru": "rus+eng", "uk": "ukr+rus+eng", "sr": "srp+srp_latn+eng"}
+_OCR_LANGUAGES = re.compile(r"[a-z_]{3,16}(?:\+[a-z_]{3,16}){0,7}")
 
 
 class ConfigError(Exception):
@@ -60,6 +66,23 @@ class HostConfig:
 
 
 @dataclass(frozen=True)
+class ProcessingConfig:
+    """Attachments read in a sandbox (spec 6.1 item 4, stage 2b): the programs that read them and their data. The
+    programs are installed beside Core, not by it: Homebrew's, and ocrmypdf from the engine's `processing` extra."""
+
+    whisper: Path
+    whisper_model: Path | None  # without a model, voice messages are kept but not transcribed
+    ffmpeg: Path
+    ffprobe: Path  # reads an image's size before tesseract reads it, and whether a video has sound
+    pdftotext: Path
+    tesseract: Path
+    ocrmypdf: Path
+    tessdata: Path  # the languages tesseract reads, with its own configs linked in
+    ocr_languages: str
+    textutil: Path = Path("/usr/bin/textutil")  # macOS's: Word, RTF, OpenDocument and HTML documents as text
+
+
+@dataclass(frozen=True)
 class Config:
     data_dir: Path
     documents_dir: Path
@@ -80,6 +103,7 @@ class Config:
     poll_timeout_seconds: int
     private_keywords: tuple[str, ...]
     host: HostConfig | None = None
+    processing: ProcessingConfig | None = None  # absent: attachments are kept, not read
 
     @property
     def keys_dir(self) -> Path:
@@ -88,6 +112,11 @@ class Config:
     @property
     def incoming_dir(self) -> Path:
         return self.data_dir / "incoming"
+
+    @property
+    def jobs_dir(self) -> Path:
+        """Each processing job's own folder, the only place its sandbox may write."""
+        return self.data_dir / "jobs"
 
     @property
     def journal_path(self) -> Path:
@@ -243,6 +272,33 @@ def _host(raw: object, data_dir: Path) -> HostConfig | None:
     )
 
 
+def _processing(raw: object, locale_code: str) -> ProcessingConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigError("[processing] must be a table")
+
+    def program(key: str, default: Path) -> Path:
+        return _abs_path(raw[key], f"processing.{key}") if key in raw else default
+
+    languages = raw.get("ocr_languages", OCR_LANGUAGES.get(locale_code, "eng"))
+    if not isinstance(languages, str) or not _OCR_LANGUAGES.fullmatch(languages):
+        raise ConfigError("processing.ocr_languages must be tesseract languages joined by '+', for example 'rus+eng'")
+    model = raw.get("whisper_model")
+    return ProcessingConfig(
+        whisper=program("whisper", HOMEBREW_BIN / "whisper-cli"),
+        whisper_model=None if model is None else _abs_path(model, "processing.whisper_model"),
+        ffmpeg=program("ffmpeg", HOMEBREW_BIN / "ffmpeg"),
+        ffprobe=program("ffprobe", HOMEBREW_BIN / "ffprobe"),
+        pdftotext=program("pdftotext", HOMEBREW_BIN / "pdftotext"),
+        tesseract=program("tesseract", HOMEBREW_BIN / "tesseract"),
+        ocrmypdf=program("ocrmypdf", Path(sys.executable).parent / "ocrmypdf"),
+        tessdata=program("tessdata", DEFAULT_TESSDATA),
+        ocr_languages=languages,
+        textutil=program("textutil", Path("/usr/bin/textutil")),
+    )
+
+
 def parse_time_of_day(text: str) -> time_of_day | None:
     """'HH:MM' in local time, or 'off' to disable a daily job."""
     if text == "off":
@@ -332,6 +388,7 @@ def load_config(path: Path) -> Config:
         poll_timeout_seconds=int(intake.get("poll_timeout_seconds", 30)),
         private_keywords=tuple(str(k) for k in intake.get("private_keywords", locale.private_keywords)),
         host=_host(raw.get("host"), data_dir),
+        processing=_processing(raw.get("processing"), code),
     )
 
 

@@ -226,3 +226,43 @@ def test_the_socket_needs_a_private_directory(make_config, short_dir):
 def test_a_port_in_other_digits_is_refused(make_config):
     with pytest.raises(ConfigError, match="exact"):
         make_config(text=BASE_CONFIG + '\n[host]\nsocket = "/tmp/klepa-test.sock"\negress_allow = ["x.example:4²"]\n')
+
+
+def test_processing_is_off_without_its_section(make_config):
+    assert make_config().processing is None
+
+
+def test_processing_takes_its_programs_and_languages(make_config, tmp_path):
+    import sys
+
+    section = f'\n[processing]\nwhisper_model = "{tmp_path / "model.bin"}"\n'
+    processing = make_config(text=BASE_CONFIG + section).processing
+    assert processing is not None
+    assert processing.whisper == Path("/opt/homebrew/bin/whisper-cli")
+    assert processing.ffprobe == Path("/opt/homebrew/bin/ffprobe")
+    assert processing.textutil == Path("/usr/bin/textutil")  # macOS's
+    assert processing.whisper_model == tmp_path / "model.bin"
+    assert processing.ocrmypdf == Path(sys.executable).parent / "ocrmypdf"  # the engine's own, an extra of it
+    assert processing.tessdata == Path("~/Library/Application Support/Klepa/tessdata").expanduser()
+    assert processing.ocr_languages == "eng"  # the installation's language is English
+
+
+@pytest.mark.parametrize(("code", "languages"), [("ru", "rus+eng"), ("uk", "ukr+rus+eng"), ("sr", "srp+srp_latn+eng")])
+def test_the_languages_of_scans_follow_the_installation(make_config, code, languages):
+    text = BASE_CONFIG.replace('locale = "en"', f'locale = "{code}"') + "\n[processing]\n"
+    processing = make_config(text=text).processing
+    assert processing is not None
+    assert processing.ocr_languages == languages
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        ('whisper = "relative/whisper-cli"', "absolute"),
+        ('ocr_languages = "rus;touch x"', "ocr_languages"),
+        ('ocr_languages = ""', "ocr_languages"),
+    ],
+)
+def test_processing_values_are_checked(make_config, line, message):
+    with pytest.raises(ConfigError, match=message):
+        make_config(text=BASE_CONFIG + "\n[processing]\n" + line + "\n")
