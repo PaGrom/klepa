@@ -68,7 +68,7 @@ Optional. With it, members' text goes to an agent host behind the gatekeeper ([a
 | `proxy_port` | `19202` | The egress proxy on `127.0.0.1`, the host's proxy for all its HTTP. |
 | `egress_allow` | `[]` | Exact `"name:port"` destinations the host may reach through the proxy, for example `"api.anthropic.com:443"`. No masks and no addresses. The gatekeeper is always allowed. |
 | `socket` | `<data_dir>/run/adapter.sock` | The adapter plugin's Unix socket, in a directory of its own (0700). The path must fit in 103 bytes. |
-| `gateway` | `"launchd"` | `"launchd"`: Core runs its own OpenClaw gateway under launchd (install it with `host install`). `"external"`: somebody else runs the gateway, and only the heartbeat and the live probe gate it. |
+| `gateway` | `"launchd"` | `"launchd"`: Core runs its own OpenClaw gateway under launchd (install it with `host install`). `"external"`: somebody else runs the gateway, and only the heartbeat and the live probe gate it; its `channels.telegram.allowFrom` must hold exactly the ids `host allowed` prints, the members' stand-ins and the live probe's, never Telegram ids. |
 | `gateway_port` | `19300` | The gateway's own port on `127.0.0.1`. OpenClaw also takes some ports above it, so keep it well away from another OpenClaw's (18789 by default). |
 | `model` | `"anthropic/claude-sonnet-5"` | The one model the gateway may use, through Anthropic's API. |
 | `runtime_dir` | `~/Library/Application Support/Klepa/openclaw` | Where `host install` puts Node, OpenClaw and the adapter plugin. |
@@ -122,6 +122,7 @@ python -m klepa_core keys restore --config PATH                 # type the paper
 python -m klepa_core host install --config PATH                 # put the gateway's Node, OpenClaw, adapter and config in place
 python -m klepa_core host login --config PATH                   # give the gateway the model's setup-token: pasted without echo, or piped in
 python -m klepa_core host status --config PATH                  # the runtime, the launchd agent, model access, Core's view
+python -m klepa_core host allowed --config PATH                 # the ids the gateway admits: the members' stand-ins and the live probe's
 python -m klepa_core host uninstall --config PATH               # unload the gateway; refused while Core runs, which would load it again
 ```
 
