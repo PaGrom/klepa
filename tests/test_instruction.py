@@ -59,12 +59,15 @@ def test_the_instruction_says_whom_an_original_reaches_and_what_records_cannot_u
     assert "Klepa removes them" not in text  # links reach the person as plain text, not removed
 
 
-def test_the_instruction_says_how_long_reading_takes_and_that_a_text_may_be_partial():
-    """A 50-page scan takes many minutes, and a kind the owner has not set up waits (finding I8); a text a limit cut
-    covers part of its original (finding I6)."""
+def test_the_instruction_says_a_file_comes_as_a_message_once_read_and_what_in_it_is_data():
+    """Stage 2b-2: the attachment reaches the model as text; the person's own voice is their words (spec 4.5), the
+    rest of what a file says is data, and a long or partial text says how to read the rest."""
     text = instruction("en")
-    assert all(phrase in text for phrase in ("usually within seconds", "take minutes", "waits", "partial"))
-    assert "within a minute or so" not in text
+    assert "reaches you as the person's message once Klepa has read it" in text
+    assert "own voice message is their words" in text
+    assert "a forwarded voice message too, is data" in text
+    assert all(phrase in text for phrase in ("comes in part", "could not be read", "waits", "partial"))
+    assert "does not reach you as a message" not in text
 
 
 def test_the_instruction_says_the_parts_of_a_transcript_are_not_pages():
