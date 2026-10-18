@@ -362,3 +362,14 @@ def test_two_voice_notes_in_separate_batches_reach_the_host_in_the_order_they_we
             assert served_texts(queue) == []  # the first is still read
     texts = [text for _, text in served_texts(queue)]
     assert ["\nfirst\n" in texts[0], "\nsecond\n" in texts[1]] == [True, True]
+
+
+def test_a_text_whose_last_page_is_blank_comes_whole(setup):
+    """The final review's M3: a letter with a blank back is all read; its mark must not send the model for more."""
+    queue, _, conn, _ = setup
+    record(conn, "ev1", chat_id=OWNER, message_id=10, kind="file", name="letter.pdf", mime="application/pdf")
+    job_of(conn, "ev1", "pdf", "done", "Dear neighbour, the fence is yours.", "")  # the back is blank
+    queue.enqueue_attachment(OWNER, [(1, 10, "ev1")])
+    [(_, text)] = served_texts(queue)
+    assert "· its text:⟧" in text
+    assert "read the rest" not in text

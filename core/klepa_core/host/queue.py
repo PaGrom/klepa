@@ -208,11 +208,13 @@ class HostQueue:
 
     def _items(self, host_message_id: int) -> list[Item]:
         """The batch's files as the served text needs them: of a text, only the first pages a message can show, and
-        how many there are in all; a 2,000-page PDF is not loaded for a beginning of 3,000 characters."""
+        how many there are up to the last with text (a blank back is not more to read); a 2,000-page PDF is not loaded
+        for a beginning of 3,000 characters."""
         readable = self.readable()
         items = []
         for row in self.conn.execute(
-            "SELECT e.id, e.kind, e.original_name, e.mime, j.kind AS reader, j.state, j.note, j.pages "
+            "SELECT e.id, e.kind, e.original_name, e.mime, j.kind AS reader, j.state, j.note, "
+            "(SELECT MAX(page) FROM evidence_text t WHERE t.evidence_id = e.id) AS last_page "
             "FROM host_message_item i JOIN evidence e ON e.id = i.evidence_id LEFT JOIN job j ON j.evidence_id = e.id "
             "WHERE i.host_message_id=? ORDER BY i.position",
             (host_message_id,),
@@ -241,7 +243,7 @@ class HostQueue:
                     reader in readable,
                     row["note"],
                     tuple(texts),
-                    int(row["pages"] or 0),
+                    int(row["last_page"] or 0),
                 )
             )
         return items
