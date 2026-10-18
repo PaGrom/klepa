@@ -270,8 +270,8 @@ class Gatekeeper:
         self.batcher.add(c.chat_id, update_id, c.message_id, att.kind, row["id"])
 
     def _retry_later(self, update_id: int, c: Classified, exc: Exception) -> None:
+        # The chat's batch stays held while the file waits for its next try: an album stays one message.
         assert c.chat_id is not None
-        self.batcher.release(c.chat_id)
         if isinstance(exc, (DownloadFailed, Ambiguous, OSError)):  # trouble with this file, not with the channel
             self._attempts[update_id] = self._attempts.get(update_id, 0) + 1
             if self._attempts[update_id] >= MAX_FILE_ATTEMPTS:
@@ -289,6 +289,7 @@ class Gatekeeper:
         assert c.chat_id is not None
         assert c.message_id is not None
         self._settled(update_id)
+        self.batcher.release(c.chat_id)  # the file will not come: the batch closes on what it has
         self.events.log("attachment_failed", {"update_id": update_id, "reason": reason})
         self.outbox.enqueue_text(
             f"failed:{c.chat_id}:{c.message_id}", c.chat_id, self.cfg.locale.text("failed"), reply_to=c.message_id

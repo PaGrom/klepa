@@ -164,10 +164,19 @@ class FakeTelegram:
         drop: bool = False,
         stall: bool = False,
         times: int = 1,
+        file_id: str | None = None,
     ) -> None:
+        """The next calls of the method fail; with `file_id`, only the calls for that file."""
         for _ in range(times):
             self.failures.setdefault(method, []).append(
-                {"status": status, "description": description, "retry_after": retry_after, "drop": drop, "stall": stall}
+                {
+                    "status": status,
+                    "description": description,
+                    "retry_after": retry_after,
+                    "drop": drop,
+                    "stall": stall,
+                    "file_id": file_id,
+                }
             )
 
     # ---- HTTP --------------------------------------------------------------------------------
@@ -182,9 +191,10 @@ class FakeTelegram:
             params["_filenames"] = {key: value.filename for key, value in form.items() if hasattr(value, "filename")}
         else:
             params = await request.json() if request.body_exists else {}
-        queue = self.failures.get(method)
-        if queue:
-            failure = queue.pop(0)
+        queue = self.failures.get(method) or []
+        failure = next((f for f in queue if f["file_id"] in (None, params.get("file_id"))), None)
+        if failure is not None:
+            queue.remove(failure)
             if failure["drop"]:
                 request.transport.close()
                 return web.Response(status=500)

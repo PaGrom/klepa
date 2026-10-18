@@ -214,3 +214,17 @@ async def test_stand_ins_that_clash_turn_the_host_off_and_core_runs_on(cfg, fake
         stop.set()
         await asyncio.wait_for(core, 20)
     assert "host_off" in [row["kind"] for row in query(cfg, "SELECT kind FROM event_log")]
+
+
+async def test_an_album_whose_photo_is_fetched_again_is_still_one_message(cfg, fake_tg):
+    """The final review's M2: an album's photo that Telegram did not give at the first try keeps its album one message
+    for the host; the batch waits for it."""
+    async with stand(cfg) as s:
+        await running(cfg)
+        pages = [
+            fake_tg.add_photo(OWNER, f"page {page} of the lease".encode(), media_group_id="album2")
+            for page in ("one", "two", "three")
+        ]
+        fake_tg.fail("getFile", file_id=pages[1]["message"]["photo"][-1]["file_id"])
+        await wait_until(lambda: sum(text.count("⟦photo · record") for text in host_texts(s)) == 3, timeout=30)
+        assert len(host_texts(s)) == 1
