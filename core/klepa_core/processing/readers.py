@@ -35,6 +35,9 @@ _CELLAR = re.compile(r"/Cellar/[^/]+/([^/]+)/")
 _SKIPPED = re.compile(r"\[OCR skipped on page\(s\) (\d+)(?:-(\d+))?\]")
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
 _LETTER = re.compile(r"[^\W\d_]")
+# How an installer (uv, pip) begins a Python program when its interpreter's path has a space, as under "Application
+# Support": a shell starts the interpreter with the script.
+_TRAMPOLINE = re.compile(rb"#!/bin/sh\n'''exec' (['\"])([^'\"\n]+)\1 \"\$0\" \"\$@\"\n")
 
 
 class ReaderFailed(Exception):
@@ -163,6 +166,17 @@ def _missing(*programs: Path) -> list[str]:
     return [program.name for program in programs if not os.access(program, os.X_OK)]
 
 
+def _launcher(program: Path) -> list[str]:
+    """How the sandbox starts a program. No shell may run there, so a Python program that begins with a shell
+    trampoline is started by its interpreter, with the script (found in the live run of stage 2b-1)."""
+    try:
+        with program.open("rb") as file:
+            match = _TRAMPOLINE.match(file.read(1024))
+    except OSError:
+        match = None
+    return [match[2].decode(), str(program)] if match else [str(program)]
+
+
 def fragments(text: str, size: int = FRAGMENT_CHARS) -> list[str]:
     """A text without pages in pieces of at most `size` characters, cut after a paragraph, a line, a sentence or a
     word where one ends in the second half of the piece."""
@@ -248,7 +262,8 @@ class Readers:
         if not os.access(program, os.X_OK):
             raise ReaderMissing(program.name)
         timeout = self.seconds or limit
-        result = await self.runner.run([str(arg) for arg in argv], job, timeout=timeout, env=env, gpu=gpu)
+        command = [*_launcher(program), *(str(arg) for arg in argv[1:])]
+        result = await self.runner.run(command, job, timeout=timeout, env=env, gpu=gpu)
         if result.returncode != 0:
             raise ReaderFailed(f"{name or program.name} exited with {result.returncode}")
         return result

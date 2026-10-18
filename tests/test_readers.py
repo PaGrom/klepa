@@ -5,12 +5,13 @@ import asyncio
 import dataclasses
 import json
 import os
+import sys
 import threading
 import zipfile
 
 import pytest
 
-from fakereaders import PlainRunner, processing_config
+from fakereaders import INSIDE, OCRMYPDF, PlainRunner, processing_config
 from klepa_core.processing import readers as readers_module
 from klepa_core.processing.readers import (
     FRAGMENT_CHARS,
@@ -21,7 +22,7 @@ from klepa_core.processing.readers import (
     fragments,
     program_version,
 )
-from klepa_core.processing.sandbox import ProcessingTimeout, Sandbox, sandbox_available
+from klepa_core.processing.sandbox import ProcessingTimeout, Sandbox, sandbox_available, sandbox_for
 
 # A page of a document's text layer: enough letters to be taken for text, not for a scan.
 POLICY = (
@@ -118,6 +119,27 @@ def test_a_scan_whose_ocr_fails_fails(setup):
     """Nothing but scans, and OCR failed: there is no text to keep."""
     with pytest.raises(ReaderFailed, match="ocrmypdf exited with 5"):
         read(setup, "pdf", b"SCAN OCRFAIL", "scan.pdf")
+
+
+@pytest.mark.skipif(not sandbox_available(), reason="sandbox-exec exists on macOS only")
+@pytest.mark.parametrize("quote", ["'", '"'])
+def test_a_python_reader_installed_under_a_path_with_a_space_runs_in_the_sandbox(tmp_path, quote):
+    """Under a path with a space, as in "Application Support", an installer (uv, pip) begins a Python program with a
+    shell that starts its interpreter, and no shell may run in the sandbox: Core starts the interpreter itself, with the
+    script (found in the live run of stage 2b-1)."""
+    tool = tmp_path / "Application Support" / "bin" / "ocrmypdf"
+    tool.parent.mkdir(parents=True)
+    trampoline = "#!/bin/sh\n'''exec' " + quote + sys.executable + quote + ' "$0" "$@"\n' + "' '''\n"
+    tool.write_text(f"{trampoline}import sys\n{INSIDE}\n{OCRMYPDF}")
+    tool.chmod(0o755)
+    processing = dataclasses.replace(processing_config(tmp_path), ocrmypdf=tool)
+    source = tmp_path / "incoming" / "scan.pdf"
+    source.parent.mkdir()
+    source.write_bytes(b"SCAN")
+    job = tmp_path / "jobs" / "scan"
+    job.mkdir(parents=True)
+    pages = asyncio.run(Readers(processing, sandbox_for(processing, ())).read("pdf", source, job))
+    assert pages.texts == ["scanned page 1 in eng", "scanned page 2 in eng"]
 
 
 def test_a_scan_is_read_with_ocr_in_the_installations_languages(setup):
