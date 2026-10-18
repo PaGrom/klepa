@@ -478,3 +478,26 @@ def test_a_recording_is_read_while_a_long_scan_is_read(setup, tmp_path):
 
     assert asyncio.run(read_both()) == "running"  # the voice note was read while the scan still was
     assert texts(conn, "ev-voice") == [(1, "transcript: a short note")]
+
+
+def test_a_worker_hears_of_a_job_of_its_kind_whatever_the_other_worker_did_meanwhile(setup, tmp_path):
+    """The final review's M1: the documents worker wakes for a voice note, looks, finds nothing of its kind and waits
+    again; the recordings worker must still hear of the voice note, not sleep a minute on a wake-up it never saw."""
+    from klepa_core.processing.jobs import RECORDING_KINDS
+
+    cfg, conn, jobs, _ = setup
+    readers = Readers(processing_config(tmp_path), PlainRunner())
+    events = EventLog(conn)
+    recordings = Worker(conn, jobs, readers, cfg.incoming_dir, tmp_path / "jobs", events, kinds=RECORDING_KINDS)
+    documents = Worker(conn, jobs, readers, cfg.incoming_dir, tmp_path / "jobs", events, kinds=KINDS - RECORDING_KINDS)
+
+    def wake_of(worker):  # the event the worker waits on before it looks at the queue again
+        return getattr(worker, "wake", jobs.__dict__.get("wake"))
+
+    for worker in (recordings, documents):
+        wake_of(worker).clear()  # both found the queue empty and are about to wait
+    store(cfg, conn, "ev-voice", "voice", None, b"a short note", mime="audio/ogg")
+    jobs.add("ev-voice", "voice")
+    wake_of(documents).clear()  # the documents worker woke first, looked, and found nothing of its kind
+    assert documents.jobs.claim(documents.kinds) is None
+    assert wake_of(recordings).is_set()

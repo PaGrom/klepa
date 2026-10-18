@@ -126,7 +126,7 @@ class Jobs:
         self.conn = conn
         self.events = events
         self.clock = clock
-        self.wake = asyncio.Event()  # set by add: the worker stops waiting
+        self._wakes: list[asyncio.Event] = []  # each worker's own: one that looks and finds nothing clears only its own
 
     def add(self, evidence_id: str, kind: str) -> bool:
         """Queue an original's job; False when it has one already."""
@@ -137,8 +137,15 @@ class Jobs:
         )
         if added.rowcount != 1:
             return False
-        self.wake.set()
+        for wake in self._wakes:
+            wake.set()
         return True
+
+    def waker(self) -> asyncio.Event:
+        """A worker's own event, set whenever a job is added: the worker stops waiting and looks at the queue."""
+        wake = asyncio.Event()
+        self._wakes.append(wake)
+        return wake
 
     def claim(self, kinds: frozenset[str] = KINDS) -> Job | None:
         """The oldest queued job of these kinds, now running; None also when no kind is given."""
@@ -295,6 +302,7 @@ class Worker:
         self.events = events
         self.clock = clock
         self.on_end: Callable[[], None] | None = None  # told when a job ends: its message may be ready for the host
+        self.wake = jobs.waker()  # the final review's M1: never cleared by another worker's look at the queue
         self._current: Job | None = None
         self._reading: asyncio.Future[Pages] | None = None
 
@@ -320,13 +328,13 @@ class Worker:
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            self.jobs.wake.clear()  # before the claim: a job added while one is read is not missed
+            self.wake.clear()  # before the claim: a job added while one is read is not missed
             if not await until_stopped(stop, self.run_once()):
                 await until_stopped(stop, self._idle())
 
     async def _idle(self) -> None:
         with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(self.jobs.wake.wait(), IDLE_SECONDS)
+            await asyncio.wait_for(self.wake.wait(), IDLE_SECONDS)
 
     async def run_once(self) -> bool:
         """Read the oldest queued original. False when there was none."""
