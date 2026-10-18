@@ -14,6 +14,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import pwd
 import re
 import secrets
 import signal
@@ -586,6 +587,8 @@ async def test_only_the_declared_set_reaches_the_model_provider(stand_args, fake
         assert "FOUND: 1" in live.sent()  # the search found the voice note
         cfg = live.cfg
         account, host_name = os.environ.get("USER", ""), os.uname().nodename.removesuffix(".local")
+        zone = os.path.realpath("/etc/localtime").partition("zoneinfo/")[2]  # Area/City: where the family lives
+        full_name = pwd.getpwuid(os.getuid()).pw_gecos.split(",")[0].strip()
         forbidden = {
             "the member's Telegram id": str(CANARY_MEMBER),
             "the owner's Telegram id": str(CANARY_OWNER),
@@ -600,6 +603,9 @@ async def test_only_the_declared_set_reaches_the_model_provider(stand_args, fake
             "the local host name": _scutil("LocalHostName"),
             "the host name": host_name if len(host_name) >= 4 else None,
             "the account name": account if len(account) >= 5 else None,  # a short one is a word; its paths are below
+            "the account's full name": full_name if len(full_name) >= 5 else None,
+            "the time zone's name": zone if "/" in zone else None,  # the offset is declared, the place is not
+            "the time zone's city": zone.rsplit("/", 1)[-1].replace("_", " ") if "/" in zone else None,
             "the home folder": str(Path.home()),
             "the data folder": str(cfg.data_dir),
             "the documents folder": str(cfg.documents_dir),
