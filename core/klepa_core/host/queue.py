@@ -1,23 +1,29 @@
 """What the host receives (docs/architecture.md: Host interface; spec 4.2, 4.6, 6.1).
 
-Members' text messages wait here until the host may have them. The host takes them with getUpdates, under
-Core's own update numbering, each chat strictly in order. A served message is built from a fixed list of fields
-when the host polls, from the inbound journal: message text never lands in core.db, which snapshots copy.
+Members' messages wait here until the host may have them. The host takes them with getUpdates, under Core's own
+update numbering, each chat strictly in order. A served message is built from a fixed list of fields when the host
+polls: a text from the inbound journal (message text never lands in core.db, which snapshots copy), an attachment from
+what Core read of its files (spec 6.1 item 4). An attachment waits for its reading, and its chat's later messages wait
+behind it (spec 6.1 item 5): a voice note asking for something, then "cancel", must not reach the host the other way
+round.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import time
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Sequence
 from typing import Any
 
 from ..config import Member
 from ..db import transaction
 from ..gatekeeper.outbox import Outbox
 from ..journal import InboundJournal
+from ..processing.jobs import KINDS, job_kind
 from .peers import Peers
+from .served import BEGINNING_CHARS, RECORDINGS, TRANSCRIPT_CHARS, Item, attachment_text, clean
 
 MAX_UPDATES = 100
 ANSWER_WINDOW_SECONDS = 600.0  # the host may go on writing to a chat this long after an answer (spec 4.2)
@@ -39,6 +45,7 @@ class HostQueue:
         members: dict[int, Member],
         peers: Peers,
         *,
+        readable: Callable[[], Collection[str]] = lambda: KINDS,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.conn = conn
@@ -46,6 +53,7 @@ class HostQueue:
         self.members = members
         self.peers = peers  # the host knows people by stand-ins, never by their Telegram ids
         self.probe_peer = peers.probe
+        self.readable = readable  # the kinds Core reads now: a file of another kind waits, and its chat must not
         self.clock = clock
         self.changed = asyncio.Event()
 
@@ -64,6 +72,44 @@ class HostQueue:
         )
         self.wake()
         return cursor.rowcount == 1
+
+    def enqueue_attachment(self, chat_id: int, items: Sequence[tuple[int, int, str]]) -> int | None:
+        """A batch of a member's attachments for the host, as (update id, message id, record) in the order they were
+        sent: one message, issued once their reading ends. An original already in another message is left out (a
+        batch redone after a crash), and the message takes the ids of the first one left; None when none is left."""
+        records = [evidence_id for _, _, evidence_id in items]
+        marks = ",".join("?" * len(records))
+        with transaction(self.conn):
+            given = {
+                row[0]
+                for row in self.conn.execute(
+                    f"SELECT evidence_id FROM host_message_item WHERE evidence_id IN ({marks})", records
+                )
+            }
+            fresh = [item for item in items if item[2] not in given]
+            if not fresh:
+                return None
+            update_id, message_id, _ = fresh[0]
+            kept = [evidence_id for _, _, evidence_id in fresh]
+            rows = self.conn.execute(
+                f"SELECT message_date, tags FROM evidence WHERE id IN ({','.join('?' * len(kept))})", kept
+            ).fetchall()
+            date = min((int(row["message_date"]) for row in rows if row["message_date"]), default=int(self.clock()))
+            forwarded = any("forwarded" in json.loads(row["tags"] or "[]") for row in rows)
+            cursor = self.conn.execute(
+                "INSERT OR IGNORE INTO host_message(source_update_id, kind, chat_id, message_id, sender_id, date, "
+                "forwarded, created_at) VALUES (?, 'attachment', ?, ?, ?, ?, ?, ?)",
+                (update_id, chat_id, message_id, chat_id, date, int(forwarded), self.clock()),
+            )
+            if cursor.rowcount != 1:
+                return None
+            host_message_id = cursor.lastrowid
+            self.conn.executemany(
+                "INSERT INTO host_message_item(host_message_id, position, evidence_id) VALUES (?, ?, ?)",
+                [(host_message_id, position, evidence_id) for position, evidence_id in enumerate(kept)],
+            )
+        self.wake()
+        return host_message_id
 
     def add_probe(self, kind: str = "probe") -> int:
         """The synthetic message of the live probe (spec 4.6), in the probe peer's own chat. Every earlier probe is
@@ -121,10 +167,13 @@ class HostQueue:
                 message = self._message(row)
                 if message is not None:
                     updates.append({"update_id": int(row["update_id"]), "message": message})
+            behind: set[int] = set()  # chats whose oldest waiting message is not served now: the rest wait behind it
             for row in self._waiting():
                 if len(updates) >= limit:
                     break
-                if not may_serve(int(row["id"]), str(row["kind"])):
+                chat_id = int(row["chat_id"])
+                if chat_id in behind or not self.ready(row) or not may_serve(int(row["id"]), str(row["kind"])):
+                    behind.add(chat_id)
                     continue
                 message = self._message(row)
                 if message is None:  # its journal entry is gone: never leave the chat waiting on it
@@ -144,6 +193,71 @@ class HostQueue:
             "WHERE u.update_id IS NULL AND m.answered_at IS NULL ORDER BY m.id"
         ).fetchall()
 
+    def ready(self, row: sqlite3.Row) -> bool:
+        """An attachment is ready once each of its files is read, failed, cancelled, has no reader, or waits for
+        what the owner installs: a kind Core cannot read now must not hold the chat (spec 6.1 item 5)."""
+        if row["kind"] != "attachment":
+            return True
+        readable = self.readable()
+        jobs = self.conn.execute(
+            "SELECT j.kind, j.state FROM host_message_item i JOIN job j ON j.evidence_id = i.evidence_id "
+            "WHERE i.host_message_id=?",
+            (row["id"],),
+        ).fetchall()
+        return all(job["state"] in ("done", "failed", "cancelled") or job["kind"] not in readable for job in jobs)
+
+    def _items(self, host_message_id: int) -> list[Item]:
+        """The batch's files as the served text needs them: of a text, only the first pages a message can show, and
+        how many there are in all; a 2,000-page PDF is not loaded for a beginning of 3,000 characters."""
+        readable = self.readable()
+        items = []
+        for row in self.conn.execute(
+            "SELECT e.id, e.kind, e.original_name, e.mime, j.kind AS reader, j.state, j.note, j.pages "
+            "FROM host_message_item i JOIN evidence e ON e.id = i.evidence_id LEFT JOIN job j ON j.evidence_id = e.id "
+            "WHERE i.host_message_id=? ORDER BY i.position",
+            (host_message_id,),
+        ).fetchall():
+            reader = row["reader"] or job_kind(row["kind"], row["mime"], row["original_name"])
+            texts: list[str] = []
+            if row["state"] == "done":
+                limit = TRANSCRIPT_CHARS if reader in RECORDINGS else BEGINNING_CHARS
+                used = 0
+                for page in self.conn.execute(
+                    "SELECT page, text FROM evidence_text WHERE evidence_id=? ORDER BY page", (row["id"],)
+                ):
+                    texts += [""] * (int(page["page"]) - 1 - len(texts))  # a page without text has no row
+                    texts.append(str(page["text"]))
+                    used += len(texts[-1])
+                    if used > limit:
+                        break
+            items.append(
+                Item(
+                    row["id"],
+                    row["kind"],
+                    row["original_name"],
+                    row["mime"],
+                    reader,
+                    row["state"],
+                    reader in readable,
+                    row["note"],
+                    tuple(texts),
+                    int(row["pages"] or 0),
+                )
+            )
+        return items
+
+    def _attachment_text(self, row: sqlite3.Row) -> str:
+        captions = [
+            str(caption[0])
+            for caption in self.conn.execute(
+                "SELECT e.caption FROM host_message_item i JOIN evidence e ON e.id = i.evidence_id "
+                "WHERE i.host_message_id=? AND e.caption IS NOT NULL ORDER BY i.position",
+                (row["id"],),
+            )
+        ]
+        mark = FORWARDED_MARK if row["forwarded"] else None
+        return attachment_text(captions, self._items(int(row["id"])), forwarded_mark=mark)
+
     def _next_update_id(self, now: float) -> int:
         last = self.conn.execute("SELECT COALESCE(MAX(update_id), 0) FROM host_update").fetchone()[0]
         return max(int(last) + 1, int(now))
@@ -157,6 +271,11 @@ class HostQueue:
             return None
         if row["kind"] in PROBE_KINDS:
             name, text = PROBE_NAME, PROBE_TEXT if row["kind"] == "probe" else MODEL_PROBE_TEXT
+        elif row["kind"] == "attachment":
+            member = self.members.get(sender_id)
+            if member is None:
+                return None
+            name, text = member.name, self._attachment_text(row)
         else:
             update = self.journal.get(int(row["source_update_id"])) or {}
             original = (update.get("message") or {}).get("text")
@@ -164,7 +283,8 @@ class HostQueue:
             if not isinstance(original, str) or member is None:
                 return None
             name = member.name
-            text = f"{FORWARDED_MARK}\n{original}" if row["forwarded"] else original
+            text = clean(original)  # no text a person writes or forwards can hold a mark of Core's
+            text = f"{FORWARDED_MARK}\n{text}" if row["forwarded"] else text
         person = {"id": host_id, "is_bot": False, "first_name": name}
         return {
             "message_id": int(row["message_id"]),
@@ -227,10 +347,11 @@ class HostQueue:
 
     # ---- notices -------------------------------------------------------------------------------------------------
     def waiting_chats(self) -> list[int]:
-        """Chats whose text waits for the host."""
+        """Chats whose messages wait for the host."""
         rows = self.conn.execute(
             "SELECT DISTINCT m.chat_id FROM host_message m LEFT JOIN host_update u ON u.host_message_id = m.id "
-            "WHERE u.update_id IS NULL AND m.kind='text' AND m.answered_at IS NULL ORDER BY m.chat_id"
+            "WHERE u.update_id IS NULL AND m.kind IN ('text', 'attachment') AND m.answered_at IS NULL "
+            "ORDER BY m.chat_id"
         ).fetchall()
         return [int(row[0]) for row in rows]
 

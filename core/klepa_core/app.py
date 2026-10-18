@@ -209,7 +209,7 @@ def _host(
     key = load_or_create_key(cfg.adapter_key_path)
     members = cfg.members_by_telegram_id()
     probe = probe_peer(key)
-    queue = HostQueue(conn, journal, members, Peers(key, members, probe))
+    queue = HostQueue(conn, journal, members, Peers(key, members, probe), readable=readable)
     turns = TurnRegistry(conn, queue)
     hold_text = cfg.locale.text("hold")
     expect, control = _gateway(cfg, key)
@@ -387,7 +387,9 @@ async def run_service(
                         cfg, service_api, conn, service_outbox, health, events, probe=probe, supervisor=supervisor
                     )
                 backups = Backups(snapshots, documents, alerts, events)
-                batcher = ReceiptBatcher(outbox, journal, cfg.batch_window_seconds, cfg.locale)
+                batcher = ReceiptBatcher(
+                    outbox, journal, cfg.batch_window_seconds, cfg.locale, host=None if host is None else host.queue
+                )
                 gatekeeper = Gatekeeper(
                     cfg,
                     api,

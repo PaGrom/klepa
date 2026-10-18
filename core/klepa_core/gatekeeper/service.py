@@ -68,6 +68,7 @@ class Gatekeeper:
         self._album_alerted: set[tuple[int, str]] = set()
         self.members: dict[int, Member] = cfg.members_by_telegram_id()
         self._retry_at: dict[int, float] = {}
+        self._retry_chat: dict[int, int] = {}  # update id -> its chat, while its file waits to be fetched again
         self._attempts: dict[int, int] = {}
 
     async def process_pending(self) -> None:
@@ -80,6 +81,8 @@ class Gatekeeper:
 
     async def process(self, update_id: int, update: dict[str, Any]) -> None:
         c = classify(update, self.members)
+        if c.action not in ("ignore", "reject") and self._behind_a_retry(update_id, c.chat_id):
+            return  # stays 'new': process_pending takes it after the chat's earlier file (spec 6.1 item 5)
         if c.action == "ignore":
             self.events.log("update_ignored", {"update_id": update_id, "reason": c.reason})
             self.journal.mark(update_id, "done", c.reason)
@@ -97,6 +100,16 @@ class Gatekeeper:
         else:
             await self._ingest(update_id, c)
 
+    def _behind_a_retry(self, update_id: int, chat_id: int | None) -> bool:
+        """An earlier update of this chat waits to fetch its file again: nothing of the chat may overtake it."""
+        return any(chat == chat_id and earlier < update_id for earlier, chat in self._retry_chat.items())
+
+    def _settled(self, update_id: int) -> None:
+        """The update's file was stored, refused or given up: the chat's later updates go on."""
+        self._retry_at.pop(update_id, None)
+        self._retry_chat.pop(update_id, None)
+        self._attempts.pop(update_id, None)
+
     def _reply(self, update_id: int, c: Classified, text_key: str) -> None:
         assert c.chat_id is not None
         assert c.message_id is not None
@@ -110,6 +123,7 @@ class Gatekeeper:
         assert c.chat_id is not None
         assert c.message_id is not None
         assert c.from_id is not None
+        self.batcher.flush(c.chat_id)  # the chat's open batch came first: its message must too (spec 6.1 item 5)
         self.host.enqueue(
             update_id, c.chat_id, c.message_id, c.from_id, c.date or int(time.time()), forwarded=c.forwarded
         )
@@ -211,8 +225,7 @@ class Gatekeeper:
         except OSError as exc:  # a full or failing data disk: keep the update and try again later
             self._retry_later(update_id, c, exc)
             return
-        self._retry_at.pop(update_id, None)
-        self._attempts.pop(update_id, None)
+        self._settled(update_id)
         if self.jobs is not None:
             kind = job_kind(row["kind"], row["mime"], row["original_name"])
             if kind is not None:
@@ -222,7 +235,7 @@ class Gatekeeper:
             self.batcher.release(c.chat_id)
             self.journal.mark(update_id, "done", "repeat")
             return
-        self.batcher.add(c.chat_id, update_id, c.message_id, att.kind)
+        self.batcher.add(c.chat_id, update_id, c.message_id, att.kind, row["id"])
 
     def _retry_later(self, update_id: int, c: Classified, exc: Exception) -> None:
         assert c.chat_id is not None
@@ -238,12 +251,12 @@ class Gatekeeper:
             {"update_id": update_id, "error": type(exc).__name__, "errno": getattr(exc, "errno", None)},
         )
         self._retry_at[update_id] = time.monotonic() + self.retry_seconds
+        self._retry_chat[update_id] = c.chat_id
 
     def _give_up(self, update_id: int, c: Classified, reason: str) -> None:
         assert c.chat_id is not None
         assert c.message_id is not None
-        self._attempts.pop(update_id, None)
-        self._retry_at.pop(update_id, None)
+        self._settled(update_id)
         self.events.log("attachment_failed", {"update_id": update_id, "reason": reason})
         self.outbox.enqueue_text(
             f"failed:{c.chat_id}:{c.message_id}", c.chat_id, self.cfg.locale.text("failed"), reply_to=c.message_id
@@ -254,6 +267,7 @@ class Gatekeeper:
         assert c.attachment is not None
         assert c.chat_id is not None
         assert c.message_id is not None
+        self._settled(update_id)
         self.store.record_too_large(self._incoming(update_id, c, b"", space_id), c.attachment.file_size)
         self.outbox.enqueue_text(
             f"too_large:{c.chat_id}:{c.message_id}", c.chat_id, self.cfg.locale.text("too_large"), reply_to=c.message_id

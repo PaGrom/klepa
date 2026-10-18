@@ -25,6 +25,7 @@ from ..names import sanitize_original_name
 from ..processing.jobs import KINDS
 from ..search import find
 from ..signing import canonical_json
+from .served import clean
 
 TOOL_DOMAIN = b"klepa-tool-call-v1"
 MAX_CALL_BYTES = 16 * 1024
@@ -236,15 +237,20 @@ def _search(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
         result = {
             "id": row["id"],
             "kind": row["kind"],
-            "name": row["original_name"],
-            "caption": row["caption"],
+            "name": _clean(row["original_name"]),
+            "caption": _clean(row["caption"]),
             "date": row["received_at"][:10],
             "from": box.names.get(row["authenticated_subject"], row["authenticated_subject"]),
         }
         if record_id in pages:  # found by its text: which page, and the words around
-            result |= {"page": pages[record_id].page, "snippet": pages[record_id].snippet}
+            result |= {"page": pages[record_id].page, "snippet": _clean(pages[record_id].snippet)}
         found.append(result)
     return {"results": found}
+
+
+def _clean(text: str | None) -> str | None:
+    """What a file or a person wrote, without the brackets of Core's marks (served.clean)."""
+    return None if text is None else clean(text)
 
 
 _SENDABLE = ("stored", "processing", "processed", "failed")  # failed: its text, never its file
@@ -277,11 +283,11 @@ def _get(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
     record: dict[str, Any] = {
         "id": row["id"],
         "kind": row["kind"],
-        "name": row["original_name"],
-        "caption": row["caption"],
+        "name": _clean(row["original_name"]),
+        "caption": _clean(row["caption"]),
         "date": row["received_at"][:10],
         "from": box.names.get(row["authenticated_subject"], row["authenticated_subject"]),
-        "mime": row["mime"],
+        "mime": _clean(row["mime"]),  # as the sender's app gave it
         "size": row["size"],
         "state": row["state"],
         "space": "shared" if row["space_id"] == "shared" else "personal",
@@ -305,7 +311,7 @@ def _get(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
         "SELECT text FROM evidence_text WHERE evidence_id=? AND page=?", (row["id"], page)
     ).fetchone()
     text = "" if text_row is None else str(text_row["text"])  # a page without text has no row
-    record |= {"page": page, "text": text[:GET_CHARS]}
+    record |= {"page": page, "text": clean(text[:GET_CHARS])}
     if len(text) > GET_CHARS:
         record["cut"] = True
     return record

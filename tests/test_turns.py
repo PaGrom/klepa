@@ -1,6 +1,6 @@
 import pytest
 
-from helpers import HOST_MEMBER, HOST_OWNER, MEMBER, OWNER, Clock, host_peers
+from helpers import HOST_MEMBER, HOST_OWNER, MEMBER, OWNER, Clock, host_peers, job_of, record
 from klepa_core.host.queue import HostQueue
 from klepa_core.host.turns import TURN_TTL_SECONDS, TurnRegistry, session_of
 
@@ -180,3 +180,18 @@ def test_the_model_probe_turn_is_marked(setup):
     turns.prompt_built("run-m", BOOT, PEER, PEER)
     turn = turns.start("run-m", BOOT, PEER, PEER, key(PEER))
     assert (turn.registered, turn.probe, turn.model_probe) == (True, False, True)
+
+
+def test_a_turn_on_a_read_attachment_is_its_senders_like_any_message(setup, core_db):
+    """Scenario 18: a turn on a processed attachment registers for the person who sent it; another member's run finds
+    nothing of theirs to answer."""
+    turns, queue, _, _ = setup
+    _, conn, _ = core_db
+    record(conn, "ev1", chat_id=OWNER, message_id=10, kind="voice")
+    job_of(conn, "ev1", "voice", "done", "buy milk")
+    queue.enqueue_attachment(OWNER, [(1, 10, "ev1")])
+    queue.serve(None, 100, everything)
+    assert start(turns, "run-m", MEMBER).reason == "no_issued_message"
+    turn = start(turns, "run-1")
+    assert (turn.registered, turn.reason) == (True, "registered")
+    assert turns.active_message(OWNER) == turn.host_message_id

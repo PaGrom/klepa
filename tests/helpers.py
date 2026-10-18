@@ -166,3 +166,44 @@ def host_peers(cfg, probe, key=HOST_KEY):
     from klepa_core.host.peers import Peers
 
     return Peers(key, cfg.members_by_telegram_id(), probe)
+
+
+def record(conn, record_id, *, chat_id, message_id, kind="file", name=None, mime=None, caption=None, tags=()):
+    """An original as the evidence store keeps it, sent in a chat (stage 2b-2's tests)."""
+    import json as _json
+
+    person = {OWNER: "owner", MEMBER: "member"}.get(chat_id, "owner")
+    conn.execute(
+        "INSERT INTO evidence(id, space_id, kind, original_name, disk_name, incoming_path, mime, size, sha256, "
+        "received_at, message_date, channel, chat_id, message_id, update_id, authenticated_subject, ingest_key, state, "
+        "caption, tags) "
+        "VALUES (?, 'shared', ?, ?, ?, ?, ?, 3, ?, 't', 1700000000, 'telegram', ?, ?, ?, ?, ?, 'stored', ?, ?)",
+        (
+            record_id,
+            kind,
+            name,
+            record_id,
+            f"2026/10/{record_id}",
+            mime,
+            "a" * 64,
+            chat_id,
+            message_id,
+            message_id,
+            person,
+            f"telegram:{chat_id}:{message_id}",
+            caption,
+            _json.dumps(list(tags)),
+        ),
+    )
+
+
+def job_of(conn, record_id, kind, state="queued", *pages, note=None):
+    """The record's job in this state; when done, its text, a page per argument (empty pages keep no row)."""
+    conn.execute(
+        "INSERT INTO job(evidence_id, kind, state, pages, note, created_at) VALUES (?, ?, ?, ?, ?, 1)",
+        (record_id, kind, state, len(pages) if state == "done" else None, note),
+    )
+    conn.executemany(
+        "INSERT INTO evidence_text(evidence_id, page, text, extractor, created_at) VALUES (?, ?, ?, 'test', 1)",
+        [(record_id, n, text) for n, text in enumerate(pages, 1) if text],
+    )

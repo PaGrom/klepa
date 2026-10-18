@@ -191,6 +191,24 @@ SCHEMA_V5 = (
 )
 
 
+# Stage 2b-2: an attachment given to the host as text (spec 6.1 items 4-6). A batch of attachments is one host message
+# whose items are its originals; it is issued once their reading ends, the person may cancel it, and Core's interim
+# message about it ("listening…") is known by its outbound key and what it says now. A cancel word Core took is a host
+# message of its own kind that the host is never given.
+SCHEMA_V6 = (
+    """CREATE TABLE host_message_item (
+        host_message_id INTEGER NOT NULL REFERENCES host_message(id),
+        position INTEGER NOT NULL,
+        evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(id),
+        PRIMARY KEY (host_message_id, position))""",
+    "ALTER TABLE host_message ADD COLUMN cancelled_at REAL",
+    "ALTER TABLE host_message ADD COLUMN interim_key TEXT",
+    "ALTER TABLE host_message ADD COLUMN interim_state TEXT",
+    "CREATE INDEX host_message_reading ON host_message(id) WHERE kind = 'attachment' AND answered_at IS NULL",
+    "CREATE INDEX host_message_interim ON host_message(id) WHERE interim_state = 'shown'",
+)
+
+
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     conn = sqlite3.connect(path, isolation_level=None)
@@ -247,6 +265,12 @@ def migrate(conn: sqlite3.Connection) -> int:
                 conn.execute(statement)
             conn.execute("INSERT INTO schema_version(version) VALUES (5)")
         current = 5
+    if current < 6:
+        with transaction(conn):
+            for statement in SCHEMA_V6:
+                conn.execute(statement)
+            conn.execute("INSERT INTO schema_version(version) VALUES (6)")
+        current = 6
     return current
 
 
