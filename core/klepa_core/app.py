@@ -22,6 +22,7 @@ from .config import Config, ConfigError, bot_id, read_service_token, read_token
 from .documents import DocumentsFolder
 from .events import EventLog
 from .evidence import EvidenceStore
+from .gatekeeper.attachments import Attachments
 from .gatekeeper.outbox import Outbox, tell_failed_original
 from .gatekeeper.receipts import ReceiptBatcher
 from .gatekeeper.service import Gatekeeper
@@ -327,6 +328,40 @@ def _processing(cfg: Config, conn: sqlite3.Connection, alerts: Alerts, events: E
     return ProcessingParts(jobs, workers, [("recordings", workers[0].run), ("documents", workers[1].run)])
 
 
+def _attachments(
+    conn: sqlite3.Connection,
+    host: HostParts | None,
+    processing: ProcessingParts | None,
+    outbox: Outbox,
+    api: BotApi,
+    cfg: Config,
+    events: EventLog,
+) -> Attachments | None:
+    """With a host: Core's interim answer while a file is read, and the person's cancel (spec 6.1 items 4-6)."""
+    if host is None:
+        return None
+    workers = () if processing is None else processing.workers
+    attachments = Attachments(
+        conn,
+        host.queue,
+        outbox,
+        api,
+        cfg.locale,
+        events,
+        jobs=None if processing is None else processing.jobs,
+        stop_reading=None if processing is None or not workers else processing.stop_reading,
+    )
+    queue = host.queue
+
+    def ended() -> None:  # a job ended: its batch may go to the host, and its interim answer be edited
+        queue.wake()
+        attachments.wake.set()
+
+    for worker in workers:
+        worker.on_end = ended
+    return attachments
+
+
 def _daily_jobs(cfg: Config, backups: Backups, service_bot: ServiceBot | None) -> list[DailyJob]:
     jobs: list[DailyJob] = []
     if cfg.snapshot_at is not None:
@@ -399,6 +434,7 @@ async def run_service(
                 batcher = ReceiptBatcher(
                     outbox, journal, cfg.batch_window_seconds, cfg.locale, host=None if host is None else host.queue
                 )
+                attachments = _attachments(conn, host, processing, outbox, api, cfg, events)
                 gatekeeper = Gatekeeper(
                     cfg,
                     api,
@@ -412,6 +448,7 @@ async def run_service(
                     alerts=alerts,
                     host=None if host is None else host.queue,
                     jobs=None if processing is None else processing.jobs,
+                    attachments=attachments,
                 )
                 scheduler = Scheduler(conn, cfg.timezone, _daily_jobs(cfg, backups, service_bot), events)
                 side_loops: list[tuple[str, Loop]] = [
@@ -425,6 +462,8 @@ async def run_service(
                     side_loops += host.loops
                 if processing is not None:
                     side_loops += processing.loops
+                if attachments is not None:
+                    side_loops.append(("attachments", attachments.run))
                 events.log("core_started")
                 if crashed:
                     alerts.raise_("restarted")

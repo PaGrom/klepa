@@ -31,6 +31,7 @@ from ..telegram.client import (
     TooManyRequests,
     Unauthorized,
 )
+from .attachments import Attachments
 from .intake import Classified, classify
 from .outbox import Outbox
 from .receipts import ReceiptBatcher
@@ -54,6 +55,7 @@ class Gatekeeper:
         alerts: Alerts | None = None,
         host: HostQueue | None = None,
         jobs: Jobs | None = None,
+        attachments: Attachments | None = None,
     ) -> None:
         self.cfg = cfg
         self.api = api
@@ -67,6 +69,7 @@ class Gatekeeper:
         self.alerts = alerts
         self.host = host
         self.jobs = jobs  # None: the installation reads no attachment (no [processing])
+        self.attachments = attachments  # with a host: interim answers and cancel (spec 6.1 items 4-6)
         self._album_alerted: set[tuple[int, str]] = set()
         self.members: dict[int, Member] = cfg.members_by_telegram_id()
         self._retry_at: dict[int, float] = {}
@@ -96,7 +99,7 @@ class Gatekeeper:
         elif c.action == "press":
             await self._press(update_id, c)
         elif c.action == "text" and self.host is not None:
-            self._to_host(update_id, c)
+            self._text_for_host(update_id, c)
         elif c.action == "text":
             self._reply(update_id, c, "stage1")
         elif c.action == "unsupported":
@@ -123,12 +126,29 @@ class Gatekeeper:
         self.journal.mark(update_id, "done")
 
     async def _press(self, update_id: int, c: Classified) -> None:
-        """A press of Core's button: handled at once, past the chat's queue (spec 6.1 item 6). Core shows no button
-        in this bot yet, so a press is old or forged: the person hears that the button no longer works."""
-        assert c.callback_id is not None
-        with contextlib.suppress(TelegramError, NotSent, Ambiguous):
-            await self.api.answer_callback_query(c.callback_id, self.cfg.locale.text("button_expired"))
+        """A press of Core's button: handled at once, past the chat's queue (spec 6.1 item 6)."""
+        if self.attachments is not None:
+            await self.attachments.press(c)
+        else:  # without a host Core shows no buttons in this bot
+            assert c.callback_id is not None
+            with contextlib.suppress(TelegramError, NotSent, Ambiguous):
+                await self.api.answer_callback_query(c.callback_id, self.cfg.locale.text("button_expired"))
         self.journal.mark(update_id, "done")
+
+    def _text_for_host(self, update_id: int, c: Classified) -> None:
+        assert c.chat_id is not None
+        assert c.message_id is not None
+        self.batcher.flush(c.chat_id)  # a voice note sent just before is one the word may cancel
+        word = self.attachments is not None and not c.forwarded  # a forwarded "stop" is someone else's word
+        if (
+            word
+            and self.attachments is not None
+            and self.attachments.cancel_word(c.chat_id, c.message_id, c.text or "")
+        ):
+            self.events.log("cancel_word", {"update_id": update_id})
+            self.journal.mark(update_id, "done", "cancel")
+            return
+        self._to_host(update_id, c)
 
     def _to_host(self, update_id: int, c: Classified) -> None:
         assert self.host is not None
