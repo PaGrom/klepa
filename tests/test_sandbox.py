@@ -403,6 +403,14 @@ def test_a_flood_of_output_stays_in_the_jobs_folder(tmp_path):
     assert result.stdout.endswith("the end\n")
 
 
+def test_a_reader_may_not_ask_launchd_to_start_a_program(tmp_path):
+    """A program a reader may not run, launchd could start for it, outside the sandbox: Apple's own profiles deny that
+    (final review, I-B). Checked in the profile, since a test that tried would leave a launchd job behind were the
+    rule to fail."""
+    profile = Sandbox(hidden=(tmp_path / "home",)).profile(tmp_path / "jobs" / "1")
+    assert "(deny job-creation)" in profile.splitlines()
+
+
 def test_a_reader_reaches_no_service_that_opens_shares_or_unlocks(sandbox):
     """LaunchServices would open an address in a browser, past the sandbox's network rule; the pasteboard, Apple events
     and the keychain hold or move the user's data."""

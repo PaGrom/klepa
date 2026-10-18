@@ -197,6 +197,7 @@ class Sandbox:
             "(allow default)",
             "(deny network*)",
             "(deny signal (target others))",
+            "(deny job-creation)",  # launchd starts nothing for a reader, outside the sandbox (final review, I-B)
             "(deny mach-lookup " + " ".join(f'(global-name "{name}")' for name in DENIED_SERVICES) + ")",
             f"(deny file-write* (require-not (require-any {writes})))",
             f"(deny file-read* {_subpaths(self.hidden)})",
