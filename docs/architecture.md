@@ -159,7 +159,7 @@ Archives and other files are not read. macOS's `sips` cannot work in the sandbox
 - it reads nothing in the hidden folders but its job's folder and what the readers need. Hidden: the home folder, every home (`/Users`), the other disks (`/Volumes`), the shared temporary folders (`/private/tmp`, `/private/var/tmp`), the logs, the user's own temporary folders in `/private/var/folders/`, and Core's data and documents folders wherever they are. What the readers need: the programs and the speech model (the files, not their folders), the OCR languages, and Core's interpreter and environment. Of the folders above these it sees each folder's own entry, never a listing: a framework build of Python, Homebrew's, resolves its environment's folder when it starts;
 - Core's data and documents folders are hidden again after what readers may read, so no readable folder reopens them, and the job's folder is allowed last. Core refuses to read anything, and tells the owner, when a readable folder is or holds a hidden one, or when the speech model or the OCR languages are kept inside Core's own folders;
 - it may start only the readers: Homebrew's programs, the configured ones, macOS's `textutil` and Core's interpreter. It may signal no process but its own;
-- it reaches none of macOS's services that open files, apps or addresses (LaunchServices), nor the pasteboard, Apple events, the keychain, the window server or the Dock;
+- it reaches none of macOS's services that open files, apps or addresses (LaunchServices), nor the pasteboard, Apple events, the keychain, the window server or the Dock, and launchd starts no job for it;
 - only whisper's step, on the GPU, may also use Metal's shader cache, which every app of the user shares: whisper starts in under a second with it and compiles its shaders for twenty seconds without, and it reads only the WAV that ffmpeg made. The parsers of what people send (ffmpeg, pdftotext, Ghostscript under ocrmypdf, tesseract) never get it;
 - its job's folder is its home, its working directory and its temporary directory, and its environment is those three, `PATH` and the locale, with what its step adds (tesseract's languages): never Core's own;
 - it gets a copy of the original, never the incoming folder: a reader broken by a planted file must not reach the other originals. The copy keeps the original's suffix only when it is letters and digits;
@@ -170,7 +170,9 @@ Archives and other files are not read. macOS's `sips` cannot work in the sandbox
 
 The profile names real paths: `/var` is `/private/var` on macOS, and a rule for `/var` matches nothing. macOS enforces no memory limit; the limits on pages, pixels, minutes and seconds bound memory instead. Without `sandbox-exec` (anywhere but macOS) nothing is read, and the owner is told.
 
-What the sandbox does not close: a reader can see other processes' command lines and environments (`sysctl`). macOS has no rule that closes it without breaking the readers. Klepa's own processes keep no secret in either.
+What the sandbox does not close:
+- a reader can see other processes' command lines and environments (`sysctl`). macOS has no rule that closes it without breaking the readers. Klepa's own processes keep no secret in either;
+- reads are hidden by folder, so what is not hidden stays readable: the system's own folders (`/System`, `/usr`, `/private/etc`), the applications, `/Library`, and all of Homebrew's folder, with what services installed by Homebrew keep in `/opt/homebrew/var` and `/opt/homebrew/etc`. Keep no secret there on a Mac that reads attachments.
 
 Smaller points:
 - A program's version is read when Core starts: after an upgrade, texts name the old version until Core restarts.
@@ -381,7 +383,7 @@ Receipts use the matching form ("1 file", "2 files"). Loading a locale checks th
   - no program but the readers, no signal to another process, and no LaunchServices, pasteboard, Apple events or keychain;
   - a copy of the original rather than the incoming folder, no core dumps, time and size limits.
 
-  A reader broken by a planted file could still put what it may read into the text it returns. What it may read holds no secret, except other processes' command lines and environments, which macOS shows every process.
+  A reader broken by a planted file could still put what it may read into the text it returns. That is not the family's data, the keys or anyone's home, but it is the system's and Homebrew's folders (with what Homebrew's services keep in `/opt/homebrew/var` and `/opt/homebrew/etc`) and other processes' command lines and environments (see [Processing](#processing)).
 - **Per-call signatures.** Every call of a Core tool is signed by the adapter for exactly its parameters, its run and its call, and the model never sees the key (see [Core's tools](#cores-tools)).
 - **The model's replies.** They leave as text only, with every address inactive; the gatekeeper takes no file from the host, and the adapter drops media before OpenClaw would fetch them.
 - **What the model provider sees.** Besides the conversation, OpenClaw adds a runtime line to every turn's system prompt: the session key, which holds the person's Telegram id; the Mac's computer name (`host=`); the workspace path (`repo=`), which holds the macOS account name; the system, Node and model. No setting removes it. Name the Mac neutrally if that matters.
