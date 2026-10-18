@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from helpers import MEMBER, OWNER, STRANGER, wait_until
+from helpers import MEMBER, OWNER, STRANGER, host_peers, wait_until
 from klepa_core import db
 from klepa_core.events import EventLog
 from klepa_core.gatekeeper.outbox import Outbox
@@ -173,7 +173,9 @@ async def test_an_update_that_fails_is_skipped_and_the_bot_goes_on(running, serv
 async def test_pause_and_resume_buttons_hold_and_restart_the_host(running, setup, service_tg, service_api, tmp_path):
     bot, outbox, events, _ = running
     cfg, conn = setup
-    queue = HostQueue(conn, InboundJournal(tmp_path / "host-inbound.db"), cfg.members_by_telegram_id(), 2**51 + 7)
+    queue = HostQueue(
+        conn, InboundJournal(tmp_path / "host-inbound.db"), cfg.members_by_telegram_id(), host_peers(cfg, 2**51 + 7)
+    )
     bot.supervisor = Supervisor(conn, queue, events)
     bot.health.host_state = bot.supervisor.describe
     assert await bot.send_status("status:1")
@@ -199,7 +201,9 @@ async def test_pause_and_resume_buttons_hold_and_restart_the_host(running, setup
 
 def with_host(bot, setup, events, tmp_path):
     cfg, conn = setup
-    queue = HostQueue(conn, InboundJournal(tmp_path / "host-inbound.db"), cfg.members_by_telegram_id(), 2**51 + 7)
+    queue = HostQueue(
+        conn, InboundJournal(tmp_path / "host-inbound.db"), cfg.members_by_telegram_id(), host_peers(cfg, 2**51 + 7)
+    )
     bot.supervisor = Supervisor(conn, queue, events)
     bot.health.host_state = bot.supervisor.describe
     return bot.supervisor

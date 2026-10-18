@@ -83,7 +83,7 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("uninstall", "restart", "status"):
         service.add_parser(name)
     gateway = commands.add_parser("host").add_subparsers(dest="action", required=True)
-    for name in ("install", "login", "status", "uninstall"):
+    for name in ("install", "login", "status", "allowed", "uninstall"):
         gateway.add_parser(name).add_argument("--config", required=True, type=Path)
     keys = commands.add_parser("keys").add_subparsers(dest="action", required=True)
     for name in ("paper-backup", "restore"):
@@ -186,6 +186,12 @@ def _host(cfg: Config, action: str) -> int:
     if action == "status":
         for line in host.status(cfg):
             print(line)
+        return 0
+    if action == "allowed":
+        print("klepa-core: the ids the gateway admits (channels.telegram.allowFrom), and whose each is:")
+        for peer, whose in host.allowed(cfg):
+            print(f"  {peer}  {whose}")
+        print("Core puts them in its own gateway's config; a gateway you run yourself needs exactly these.")
         return 0
     host.uninstall(cfg)
     print("klepa-core: the gateway is unloaded; its runtime and folder stay")

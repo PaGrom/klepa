@@ -195,7 +195,7 @@ async def test_the_model_has_only_cores_tools(stand_args):
         cfg = live.cfg
         runtime, layout = rt.Runtime(cfg.host.runtime_dir), reference.layout_of(cfg)
         key = cfg.adapter_key_path.read_bytes()
-        from klepa_core.host.adapter import probe_peer
+        from klepa_core.host.peers import probe_peer
 
         session = f"agent:main:telegram:direct:{probe_peer(key)}"  # the probe's session exists after the gate
         params = json.dumps({"sessionKey": session})

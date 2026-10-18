@@ -27,12 +27,13 @@ from .gatekeeper.receipts import ReceiptBatcher
 from .gatekeeper.service import Gatekeeper
 from .health import Health, check_documents
 from .host import reference
-from .host.adapter import AdapterServer, probe_peer
+from .host.adapter import AdapterServer
 from .host.api import HostApi
 from .host.egress import EgressProxy
 from .host.gateway import LaunchdGateway
 from .host.instruction import instruction
 from .host.outbox import HostOutbox
+from .host.peers import Peers, probe_peer
 from .host.queue import HostQueue
 from .host.runtime import OPENCLAW_VERSION, Runtime, adapter_sha256
 from .host.supervisor import Expectations, GatewayControl, HostTiming, Supervisor
@@ -208,10 +209,10 @@ def _host(
     key = load_or_create_key(cfg.adapter_key_path)
     members = cfg.members_by_telegram_id()
     probe = probe_peer(key)
-    queue = HostQueue(conn, journal, members, probe)
+    queue = HostQueue(conn, journal, members, Peers(key, members, probe))
     turns = TurnRegistry(conn, queue)
     hold_text = cfg.locale.text("hold")
-    expect, control = _gateway(cfg, probe)
+    expect, control = _gateway(cfg, key)
     supervisor = Supervisor(
         conn,
         queue,
@@ -225,9 +226,7 @@ def _host(
     host_outbox = HostOutbox(
         conn, api, supervisor, queue, turns, outbox, events, cfg.locale, timing=timing, alerts=alerts
     )
-    host_api = HostApi(
-        host_token, cfg.host.api_port, members, queue, supervisor, host_outbox, api, events, alerts=alerts
-    )
+    host_api = HostApi(host_token, cfg.host.api_port, queue, supervisor, host_outbox, api, events, alerts=alerts)
     persons = {member.telegram_id: member.person_id for member in cfg.members}
     names = {member.person_id: member.name for member in cfg.members}
     tools = ToolBox(conn, key, persons, names, outbox, cfg.incoming_dir, readable=readable)
@@ -257,14 +256,14 @@ def _host(
     return HostParts(queue, supervisor, tools, loops)
 
 
-def _gateway(cfg: Config, probe: int) -> tuple[Expectations | None, GatewayControl | None]:
+def _gateway(cfg: Config, key: bytes) -> tuple[Expectations | None, GatewayControl | None]:
     """Core's own gateway under launchd, held to the reference table (spec 4.6, 7.1); or one somebody else runs,
     which only the heartbeat and the live probe gate."""
     assert cfg.host is not None
     if cfg.host.gateway != "launchd":
         return None, None
     layout = reference.layout_of(cfg)
-    table = reference.table(reference.settings_of(cfg, probe), layout)
+    table = reference.table(reference.settings_of(cfg, key), layout)
     control = LaunchdGateway(Runtime(cfg.host.runtime_dir), layout, table, cfg.host.gateway_port)
     return reference.expectations(table, adapter_sha256(), OPENCLAW_VERSION), control
 

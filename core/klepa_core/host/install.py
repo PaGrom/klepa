@@ -20,7 +20,6 @@ from ..config import Config, bot_id, read_token
 from ..keys import ensure_host_token, ensure_private_dir, load_or_create_key
 from . import gateway, reference
 from . import runtime as rt
-from .adapter import probe_peer
 from .supervisor import GatewayUnknown
 
 PROFILE_ID = reference.MODEL_PROFILE
@@ -52,7 +51,7 @@ def install(
     runtime.root.mkdir(mode=0o700, parents=True, exist_ok=True)
     rt.ensure_node(runtime, fetch=fetch, run=run, say=say)
     rt.ensure_openclaw(runtime, run=run, say=say)
-    table = reference.table(reference.settings_of(cfg, probe_peer(key)), layout)
+    table = reference.table(reference.settings_of(cfg, key), layout)
     gateway.prepare_host(runtime, layout, table, exclude=exclude, warn=lambda line: say(f"warning: {line}"))
     rt.validate_config(runtime, layout, run=run)
     rt.write_wrapper(runtime, layout)
@@ -60,6 +59,19 @@ def install(
     if MODEL_API not in cfg.host.egress_allow:
         say('warning: host.egress_allow lacks "api.anthropic.com:443"; the gateway cannot reach the model')
     return runtime
+
+
+def allowed(cfg: Config) -> list[tuple[int, str]]:
+    """The ids the gateway admits (`channels.telegram.allowFrom`), with whose each is: the members' stand-ins in their
+    config order, then the live probe's peer (spec 4.6). Core writes them into its own gateway's config at each start;
+    a gateway somebody else runs (gateway = "external") needs them by hand, and again after the adapter key changes,
+    which changes every stand-in."""
+    if cfg.host is None:
+        raise rt.HostRuntimeError("the config needs a [host] section")
+    ensure_private_dir(cfg.data_dir)
+    key = load_or_create_key(cfg.adapter_key_path)
+    whose = [*(member.person_id for member in cfg.members), "the live probe"]
+    return list(zip(reference.settings_of(cfg, key).allowed, whose, strict=True))
 
 
 _FRAME = re.compile(r"[\s\u2500-\u257f]")  # whitespace, and the box a terminal display may draw around the token

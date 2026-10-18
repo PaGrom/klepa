@@ -1,6 +1,6 @@
 import pytest
 
-from helpers import MEMBER, OWNER, Clock
+from helpers import HOST_OWNER, MEMBER, OWNER, Clock, host_peers
 from klepa_core.events import EventLog
 from klepa_core.gatekeeper.outbox import Outbox
 from klepa_core.host.queue import FORWARDED_MARK, MODEL_PROBE_TEXT, PROBE_TEXT, HostQueue
@@ -20,7 +20,7 @@ def nothing(host_message_id, kind):
 def setup(core_db):
     cfg, conn, journal = core_db
     clock = Clock()
-    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), PEER, clock=clock)
+    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), host_peers(cfg, PEER), clock=clock)
     return queue, journal, conn, clock
 
 
@@ -52,8 +52,8 @@ def test_serves_a_fixed_set_of_fields(setup):
     assert update["update_id"] >= int(clock())
     assert update["message"] == {
         "message_id": 10,
-        "from": {"id": OWNER, "is_bot": False, "first_name": "Owner"},
-        "chat": {"id": OWNER, "type": "private", "first_name": "Owner"},
+        "from": {"id": HOST_OWNER, "is_bot": False, "first_name": "Owner"},  # the host never learns a Telegram id
+        "chat": {"id": HOST_OWNER, "type": "private", "first_name": "Owner"},
         "date": 1_700_000_000,
         "text": "hello",
     }

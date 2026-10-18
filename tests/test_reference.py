@@ -4,6 +4,7 @@ import pytest
 
 from helpers import BASE_CONFIG
 from klepa_core.host import reference as ref
+from klepa_core.host.peers import probe_peer, stand_in
 from klepa_core.host.supervisor import REQUIRED_HOOKS, check_heartbeat
 
 LAYOUT = ref.HostLayout(runtime_dir=Path("/runtime"), host_dir=Path("/data/host"))
@@ -128,8 +129,10 @@ def test_settings_follow_the_config(make_config, short_dir):
         f'socket = "{short_dir / "run" / "adapter.sock"}"\ngateway_port = 19400\nmodel = "anthropic/claude-opus-5-5"\n'
     )
     cfg = make_config(text=BASE_CONFIG + text)
-    settings = ref.settings_of(cfg, 2**51 + 9)
-    assert settings.allowed == (111111, 222222, 2**51 + 9)
+    key = b"k" * 32
+    settings = ref.settings_of(cfg, key)
+    # The gateway admits the members by their stand-ins, never by their Telegram ids, and the probe peer.
+    assert settings.allowed == (stand_in(key, "owner"), stand_in(key, "member"), probe_peer(key))
     assert (settings.gateway_port, settings.model) == (19400, "anthropic/claude-opus-5-5")
     assert ref.layout_of(cfg).host_dir == cfg.data_dir / "host"
     assert ref.layout_of(cfg).home == cfg.data_dir / "host" / "home"

@@ -1,6 +1,6 @@
 import pytest
 
-from helpers import MEMBER, OWNER, Clock
+from helpers import HOST_MEMBER, HOST_OWNER, MEMBER, OWNER, Clock, host_peers
 from klepa_core.host.queue import HostQueue
 from klepa_core.host.turns import TURN_TTL_SECONDS, TurnRegistry, session_of
 
@@ -16,7 +16,7 @@ def everything(host_message_id, kind):
 def setup(core_db):
     cfg, conn, journal = core_db
     clock = Clock()
-    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), PEER, clock=clock)
+    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), host_peers(cfg, PEER), clock=clock)
     return TurnRegistry(conn, queue, clock=clock), queue, journal, clock
 
 
@@ -28,7 +28,8 @@ def issue(queue, journal, update_id, sender, message_id):
 
 
 def key(peer):
-    return f"agent:main:telegram:direct:{peer}"
+    """The host's session of a member is under the member's stand-in."""
+    return f"agent:main:telegram:direct:{ {OWNER: HOST_OWNER, MEMBER: HOST_MEMBER}.get(peer, peer) }"
 
 
 def start(turns, run_id, peer=OWNER, *, prompt=True):
@@ -43,6 +44,14 @@ def test_a_turn_that_answers_an_issued_message_registers(setup):
     turn = start(turns, "run-1")
     assert (turn.registered, turn.reason, turn.probe) == (True, "registered", False)
     assert turns.active_message(OWNER) == turn.host_message_id
+
+
+def test_a_session_under_a_telegram_id_is_refused(setup):
+    """The host knows members by stand-ins only: a session under a member's Telegram id is not one Core gave it."""
+    turns, queue, journal, _ = setup
+    issue(queue, journal, 1, OWNER, 10)
+    turns.prompt_built("run-1", BOOT, OWNER, OWNER)
+    assert turns.start("run-1", BOOT, OWNER, OWNER, f"agent:main:telegram:direct:{OWNER}").reason == "session"
 
 
 def test_without_before_prompt_build_the_turn_is_refused(setup):
@@ -117,10 +126,17 @@ def test_the_probe_turn_is_marked(setup):
 
 @pytest.mark.parametrize(
     ("session_key", "ok"),
-    [(key(OWNER), True), (f"agent:other:telegram:direct:{OWNER}", True), (key(MEMBER), False), (None, False)],
+    [
+        (key(OWNER), True),
+        (f"agent:other:telegram:direct:{HOST_OWNER}", True),
+        (key(MEMBER), False),
+        (f"agent:main:telegram:direct:{OWNER}", False),
+        (None, False),
+    ],
 )
 def test_session_of(session_key, ok):
-    assert session_of(session_key, OWNER) is ok
+    assert session_of(session_key, HOST_OWNER) is ok
+    assert session_of(session_key, None) is False
 
 
 def test_a_probe_left_by_a_stopped_core_never_takes_the_next_probes_turn(setup):

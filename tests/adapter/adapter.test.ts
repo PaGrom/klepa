@@ -220,7 +220,7 @@ test("the turn hooks report the run and pass on Core's decision", async () => {
   try {
     const hooks = hookHandlers(one, () => {});
     const ctx = { runId: "run-1", chatId: "222222", senderId: "222222", sessionKey: "agent:main:telegram:direct:222222" };
-    assert.deepEqual(await hooks.before_prompt_build({}, ctx), { appendSystemContext: "I", toolsAllow: [] });
+    assert.deepEqual(await hooks.before_prompt_build({}, ctx), { systemPrompt: "I", toolsAllow: [] });
     assert.deepEqual(await hooks.before_agent_run({}, ctx), { outcome: "block", reason: "klepa", message: "not now" });
     assert.deepEqual(await hooks.before_agent_run({}, ctx), { outcome: "pass" });
     assert.deepEqual(await hooks.before_agent_run({}, ctx), { outcome: "block", reason: "klepa", message: UNREACHABLE });
@@ -500,7 +500,7 @@ test("before_prompt_build hands over Core's instruction and only its tool names"
     const hooks = hookHandlers(one, () => {});
     const ctx = { runId: "run-1", chatId: "1", senderId: "1", sessionKey: "agent:main:telegram:direct:1" };
     assert.deepEqual(await hooks.before_prompt_build({}, ctx), {
-      appendSystemContext: "INSTRUCTION",
+      systemPrompt: "INSTRUCTION",
       toolsAllow: ["klepa__search"],
     });
   } finally {

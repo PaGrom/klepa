@@ -5,7 +5,7 @@ import json
 import aiohttp
 import pytest
 
-from helpers import MEMBER, OWNER, STRANGER, wait_until
+from helpers import HOST_MEMBER, HOST_OWNER, MEMBER, OWNER, STRANGER, host_peers, wait_until
 from klepa_core.events import EventLog
 from klepa_core.gatekeeper.outbox import Outbox
 from klepa_core.host import api as host_api_module
@@ -54,14 +54,14 @@ class FakeAlerts:
 @pytest.fixture
 async def gatekeeper(core_db, api):
     cfg, conn, journal = core_db
-    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), PEER)
+    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), host_peers(cfg, PEER))
     gate = Gate()
     events = EventLog(conn)
     outbox = HostOutbox(
         conn, api, gate, queue, TurnRegistry(conn, queue), Outbox(conn, api, events), events, cfg.locale
     )
     alerts = FakeAlerts()
-    host_api = HostApi(TOKEN, 0, [OWNER, MEMBER], queue, gate, outbox, api, events, alerts=alerts)
+    host_api = HostApi(TOKEN, 0, queue, gate, outbox, api, events, alerts=alerts)
     await host_api.start()
     yield host_api, queue, journal, outbox, gate, alerts, conn
     await host_api.stop()
@@ -131,7 +131,7 @@ async def test_the_headers_of_nodes_fetch_pass(gatekeeper):
 )
 async def test_methods_outside_the_allow_list_are_refused_and_logged(gatekeeper, fake_tg, method):
     host_api, *_, conn = gatekeeper
-    status, body = await call(host_api, method, {"chat_id": OWNER, "message_id": 1, "text": "x"})
+    status, body = await call(host_api, method, {"chat_id": HOST_OWNER, "message_id": 1, "text": "x"})
     assert (status, body["ok"]) == (400, False)
     assert fake_tg.calls == []
     row = conn.execute("SELECT data FROM event_log WHERE kind='host_call'").fetchone()
@@ -212,7 +212,7 @@ async def test_send_message_keeps_only_the_allowed_fields(gatekeeper, fake_tg):
         host_api,
         "sendMessage",
         {
-            "chat_id": OWNER,
+            "chat_id": HOST_OWNER,
             "text": "<b>answer</b>",
             "parse_mode": "HTML",
             "reply_markup": {"inline_keyboard": [[{"text": "x", "callback_data": "y"}]]},
@@ -241,8 +241,9 @@ async def test_send_message_keeps_only_the_allowed_fields(gatekeeper, fake_tg):
     ("chat_id", "issued", "description"),
     [
         (STRANGER, True, "chat not found"),
+        (MEMBER, True, "chat not found"),  # a member's Telegram id: the host knows members by stand-ins only
         (-100123, True, "chat not found"),
-        (MEMBER, False, "no open conversation"),
+        (HOST_MEMBER, False, "no open conversation"),
     ],
 )
 async def test_send_message_needs_a_members_chat_with_an_open_conversation(gatekeeper, chat_id, issued, description):
@@ -261,20 +262,22 @@ async def test_replies_point_only_into_the_same_chat(gatekeeper):
     issue(queue, journal, 2, MEMBER, 20)
     await call(host_api, "getUpdates", {"timeout": 0})
     ok, body = await call(
-        host_api, "sendMessage", {"chat_id": OWNER, "text": "a", "reply_parameters": {"message_id": 10}}
+        host_api, "sendMessage", {"chat_id": HOST_OWNER, "text": "a", "reply_parameters": {"message_id": 10}}
     )
     own = body["result"]["message_id"]
     cases = [
         {"reply_parameters": {"message_id": 20}},  # a message of the other chat
-        {"reply_parameters": {"message_id": 10, "chat_id": MEMBER}},  # a quote from the other chat
+        {"reply_parameters": {"message_id": 10, "chat_id": HOST_MEMBER}},  # a quote from the other chat
         {"reply_parameters": {"message_id": 999}},
         {"reply_to_message_id": 20},
     ]
-    results = [await call(host_api, "sendMessage", {"chat_id": OWNER, "text": "b", **case}) for case in cases]
+    results = [await call(host_api, "sendMessage", {"chat_id": HOST_OWNER, "text": "b", **case}) for case in cases]
     assert ok == 200
     assert [status for status, _ in results] == [400, 400, 400, 400]
-    assert (await call(host_api, "sendMessage", {"chat_id": OWNER, "text": "c", "reply_to_message_id": own}))[0] == 200
-    status, _ = await call(host_api, "sendMessage", {"chat_id": MEMBER, "text": "d", "reply_to_message_id": own})
+    assert (await call(host_api, "sendMessage", {"chat_id": HOST_OWNER, "text": "c", "reply_to_message_id": own}))[
+        0
+    ] == 200
+    status, _ = await call(host_api, "sendMessage", {"chat_id": HOST_MEMBER, "text": "d", "reply_to_message_id": own})
     assert status == 400
 
 
@@ -291,7 +294,7 @@ async def test_bad_texts_are_refused(gatekeeper, params, description):
     host_api, queue, journal, *_ = gatekeeper
     issue(queue, journal, 1, OWNER, 10)
     await call(host_api, "getUpdates", {"timeout": 0})
-    status, body = await call(host_api, "sendMessage", {"chat_id": OWNER, **params})
+    status, body = await call(host_api, "sendMessage", {"chat_id": HOST_OWNER, **params})
     assert status == 400
     assert description in body["description"]
 
@@ -300,7 +303,7 @@ async def test_plain_text_is_escaped_before_it_is_sent_as_html(gatekeeper, fake_
     host_api, queue, journal, outbox, *_ = gatekeeper
     issue(queue, journal, 1, OWNER, 10)
     await call(host_api, "getUpdates", {"timeout": 0})
-    await call(host_api, "sendMessage", {"chat_id": OWNER, "text": "1 < 2 & <b>x</b>"})
+    await call(host_api, "sendMessage", {"chat_id": HOST_OWNER, "text": "1 < 2 & <b>x</b>"})
     await outbox.release_due()
     assert fake_tg.sent[0]["params"]["text"] == "1 &lt; 2 &amp; &lt;b&gt;x&lt;/b&gt;"
 
@@ -310,11 +313,13 @@ async def test_form_and_query_parameters_work_and_files_are_refused(gatekeeper):
     issue(queue, journal, 1, OWNER, 10)
     await call(host_api, "getUpdates", {"timeout": 0})
     status, _ = await call(
-        host_api, "sendMessage", data={"chat_id": str(OWNER), "text": "x", "reply_parameters": '{"message_id": 10}'}
+        host_api,
+        "sendMessage",
+        data={"chat_id": str(HOST_OWNER), "text": "x", "reply_parameters": '{"message_id": 10}'},
     )
     assert status == 200
     form = aiohttp.FormData()
-    form.add_field("chat_id", str(OWNER))
+    form.add_field("chat_id", str(HOST_OWNER))
     form.add_field("photo", b"\x89PNG", filename="x.png")
     assert (await call(host_api, "sendMessage", data=form))[0] == 400
 
@@ -337,14 +342,14 @@ async def test_the_probe_chat_is_answered_but_never_reaches_telegram(gatekeeper,
 
 async def test_typing_reaches_telegram_only_in_an_open_conversation(gatekeeper, fake_tg):
     host_api, queue, journal, _, gate, *_ = gatekeeper
-    assert (await call(host_api, "sendChatAction", {"chat_id": OWNER, "action": "typing"}))[0] == 200
+    assert (await call(host_api, "sendChatAction", {"chat_id": HOST_OWNER, "action": "typing"}))[0] == 200
     issue(queue, journal, 1, OWNER, 10)
     await call(host_api, "getUpdates", {"timeout": 0})
     gate.releasing = False
-    await call(host_api, "sendChatAction", {"chat_id": OWNER, "action": "typing"})
+    await call(host_api, "sendChatAction", {"chat_id": HOST_OWNER, "action": "typing"})
     assert "sendChatAction" not in fake_tg.calls
     gate.releasing = True
-    await call(host_api, "sendChatAction", {"chat_id": OWNER, "action": "typing"})
+    await call(host_api, "sendChatAction", {"chat_id": HOST_OWNER, "action": "typing"})
     assert fake_tg.calls.count("sendChatAction") == 1
 
 
@@ -377,7 +382,7 @@ async def test_a_huge_text_is_refused_before_it_is_parsed(gatekeeper):
     host_api, queue, journal, *_ = gatekeeper
     issue(queue, journal, 1, OWNER, 10)
     await call(host_api, "getUpdates", {"timeout": 0})
-    status, body = await call(host_api, "sendMessage", {"chat_id": OWNER, "text": "a-" * MAX_SOURCE_CHARS})
+    status, body = await call(host_api, "sendMessage", {"chat_id": HOST_OWNER, "text": "a-" * MAX_SOURCE_CHARS})
     assert (status, "too long" in body["description"]) == (400, True)
 
 
@@ -386,7 +391,7 @@ async def test_typing_goes_to_telegram_at_most_every_few_seconds(gatekeeper, fak
     issue(queue, journal, 1, OWNER, 10)
     await call(host_api, "getUpdates", {"timeout": 0})
     for _ in range(3):
-        await call(host_api, "sendChatAction", {"chat_id": OWNER, "action": "typing"})
+        await call(host_api, "sendChatAction", {"chat_id": HOST_OWNER, "action": "typing"})
     assert fake_tg.calls.count("sendChatAction") == 1
 
 
@@ -396,14 +401,14 @@ async def test_a_chat_with_too_many_waiting_messages_refuses_more(gatekeeper, mo
     issue(queue, journal, 1, OWNER, 10)
     await call(host_api, "getUpdates", {"timeout": 0})
     gate.releasing = False
-    statuses = [(await call(host_api, "sendMessage", {"chat_id": OWNER, "text": "x"}))[0] for _ in range(3)]
+    statuses = [(await call(host_api, "sendMessage", {"chat_id": HOST_OWNER, "text": "x"}))[0] for _ in range(3)]
     assert statuses == [200, 200, 400]
 
 
 async def test_a_refusal_is_logged_once_a_minute(gatekeeper):
     host_api, *_, conn = gatekeeper
     for _ in range(3):
-        await call(host_api, "editMessageText", {"chat_id": OWNER, "message_id": 1, "text": "x"})
+        await call(host_api, "editMessageText", {"chat_id": HOST_OWNER, "message_id": 1, "text": "x"})
     assert conn.execute("SELECT COUNT(*) FROM event_log WHERE kind='host_call'").fetchone()[0] == 1
 
 
@@ -416,7 +421,7 @@ async def test_an_answer_refused_before_it_is_taken_raises_an_alert(gatekeeper, 
     if issued:
         issue(queue, journal, 1, OWNER, 10)
         await call(host_api, "getUpdates", {"timeout": 0})
-    status, body = await call(host_api, "sendMessage", {"chat_id": OWNER, "text": text})
+    status, body = await call(host_api, "sendMessage", {"chat_id": HOST_OWNER, "text": text})
     assert status == 400
     assert reason in body["description"]
     assert alerts.raised == ["host_send_refused"]  # the person may be left without an answer

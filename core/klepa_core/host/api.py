@@ -21,7 +21,7 @@ import hmac
 import json
 import re
 import time
-from collections.abc import Callable, Collection
+from collections.abc import Callable
 from html import escape
 from typing import Any
 
@@ -108,7 +108,6 @@ class HostApi:
         self,
         token: str,
         port: int,
-        members: Collection[int],
         queue: HostQueue,
         supervisor: Supervisor,
         outbox: HostOutbox,
@@ -121,7 +120,6 @@ class HostApi:
     ) -> None:
         self.token = token
         self.port = port
-        self.members = frozenset(members)
         self.queue = queue
         self.supervisor = supervisor
         self.outbox = outbox
@@ -284,14 +282,17 @@ class HostApi:
             if self._poll is request:
                 self._poll = None
 
-    def _chat(self, params: dict[str, Any]) -> int:
-        chat_id = _int(params.get("chat_id"), "chat_id")
-        if chat_id not in self.members and chat_id != self.queue.probe_peer:
-            raise BadParams("chat not found")  # only a member's private chat, whose id is the member's id
-        return chat_id
+    def _chat(self, params: dict[str, Any]) -> tuple[int, int]:
+        """The member's Telegram chat behind the stand-in the host names, and that stand-in. Only a member's private
+        chat, whose id is the member's, or the probe's: a Telegram id is refused like any stranger's."""
+        host_id = _int(params.get("chat_id"), "chat_id")
+        chat_id = self.queue.peers.telegram_id(host_id)
+        if chat_id is None:
+            raise BadParams("chat not found")
+        return chat_id, host_id
 
     async def _send_chat_action(self, params: dict[str, Any]) -> web.Response:
-        chat_id = self._chat(params)
+        chat_id, _ = self._chat(params)
         if not isinstance(params.get("action"), str):
             raise BadParams("action is required")
         now = self.mono()
@@ -307,9 +308,9 @@ class HostApi:
                 await self.api.send_chat_action(chat_id, "typing")
         return _ok(True)
 
-    def _reply_to(self, chat_id: int, params: dict[str, Any]) -> int | None:
+    def _reply_to(self, chat_id: int, host_id: int, params: dict[str, Any]) -> int | None:
         """reply_parameters.message_id may name only an issued message or the host's own, in the same chat
-        (spec 4.2). A quote and the rest of reply_parameters are dropped."""
+        (spec 4.2), which the host names by its stand-in. A quote and the rest of reply_parameters are dropped."""
         reply = params.get("reply_parameters")
         if isinstance(reply, str):
             try:
@@ -318,7 +319,7 @@ class HostApi:
                 raise BadParams("reply_parameters must be JSON") from None
         message_id: object = params.get("reply_to_message_id")
         if isinstance(reply, dict):
-            if "chat_id" in reply and _int(reply["chat_id"], "reply_parameters.chat_id") != chat_id:
+            if "chat_id" in reply and _int(reply["chat_id"], "reply_parameters.chat_id") != host_id:
                 raise BadParams("the replied message must be in the same chat")
             message_id = reply.get("message_id", message_id)
         elif reply is not None:
@@ -338,7 +339,7 @@ class HostApi:
         return BadParams(description)
 
     def _send_message(self, params: dict[str, Any]) -> web.Response:
-        chat_id = self._chat(params)
+        chat_id, host_id = self._chat(params)
         text = params.get("text")
         if not isinstance(text, str):
             raise BadParams("message text is empty")
@@ -352,7 +353,7 @@ class HostApi:
             raise BadParams("message text is empty")
         if clean.units > MAX_TEXT_UNITS:
             raise self._not_taken(chat_id, "too_long", "message is too long")
-        reply_to = self._reply_to(chat_id, params)
+        reply_to = self._reply_to(chat_id, host_id, params)
         if chat_id == self.queue.probe_peer:
             # The host's "Your message could not be sent: …" for the probe: nobody reads it, and it proves the
             # turn ended at the block (spec 4.6).
@@ -369,5 +370,5 @@ class HostApi:
             raise self._not_taken(chat_id, "too_many_waiting", "too many messages wait in this chat")
         else:
             message_id = self.outbox.accept(chat_id, clean.html, reply_to)
-        message = {"message_id": message_id, "date": int(self.clock()), "chat": {"id": chat_id, "type": "private"}}
+        message = {"message_id": message_id, "date": int(self.clock()), "chat": {"id": host_id, "type": "private"}}
         return _ok(message | {"text": clean.plain})

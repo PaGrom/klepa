@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Config
+from .peers import probe_peer, stand_in
 from .supervisor import REQUIRED_HOOKS, Expectations
 
 PLUGIN_ID = "klepa-adapter"
@@ -176,7 +177,7 @@ class HostSettings:
     socket_path: Path
     adapter_key_path: Path
     host_token_path: Path
-    allowed: tuple[int, ...]  # the members and the probe peer
+    allowed: tuple[int, ...]  # the members' stand-ins and the probe peer
     model: str
 
 
@@ -185,8 +186,9 @@ def layout_of(cfg: Config) -> HostLayout:
     return HostLayout(runtime_dir=cfg.host.runtime_dir, host_dir=cfg.host_dir)
 
 
-def settings_of(cfg: Config, probe: int) -> HostSettings:
-    """The installation's values: the members in their config order, then the probe peer (spec 4.6)."""
+def settings_of(cfg: Config, key: bytes) -> HostSettings:
+    """The installation's values: the members' stand-ins in their config order, then the probe peer (spec 4.6). The
+    gateway admits people by the ids Core gives it, never by their Telegram ids."""
     assert cfg.host is not None
     return HostSettings(
         gateway_port=cfg.host.gateway_port,
@@ -195,7 +197,7 @@ def settings_of(cfg: Config, probe: int) -> HostSettings:
         socket_path=cfg.host.socket_path,
         adapter_key_path=cfg.adapter_key_path,
         host_token_path=cfg.host_token_path,
-        allowed=(*(member.telegram_id for member in cfg.members), probe),
+        allowed=(*(stand_in(key, member.person_id) for member in cfg.members), probe_peer(key)),
         model=cfg.host.model,
     )
 

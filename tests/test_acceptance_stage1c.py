@@ -29,6 +29,7 @@ from klepa_core import db
 from klepa_core.app import init_layout, run_service
 from klepa_core.host.adapter import sign_body
 from klepa_core.host.outbox import HELD_ID_BASE
+from klepa_core.host.peers import stand_in
 from klepa_core.host.supervisor import HostTiming
 
 # Seconds instead of minutes, with room for a slow CI runner: the adapter beats every 0.1 s.
@@ -49,6 +50,10 @@ class Stand:
     proxy_url: str
     core: asyncio.Task
     stop: asyncio.Event
+
+    def peer(self, telegram_id):
+        """The stand-in the host knows a member by: it never learns a Telegram id."""
+        return stand_in(self.adapter.key, {OWNER: "owner", MEMBER: "member"}[telegram_id])
 
 
 @pytest.fixture
@@ -136,7 +141,7 @@ async def test_text_reaches_the_host_only_after_the_live_probe_and_the_answer_co
     assert model_probe["chat"]["id"] == probe["chat"]["id"]
     assert model_probe["text"].startswith("Klepa start check")  # the second probe goes to the model
     assert set(served) == {"message_id", "from", "chat", "date", "text"}
-    assert (served["from"]["id"], served["text"]) == (OWNER, "hello")
+    assert (served["from"]["id"], served["text"]) == (s.peer(OWNER), "hello")
     assert [item["params"]["chat_id"] for item in fake_tg.sent] == [OWNER]  # the probe's block message never left
 
 
@@ -169,9 +174,9 @@ async def test_unsigned_adapter_messages_change_nothing(host_cfg):
             "boot_id": s.adapter.boot_id,
             "seq": 1_000_000,
             "run_id": "forged",
-            "sender_id": str(OWNER),
-            "chat_id": str(OWNER),
-            "session_key": session_key(OWNER),
+            "sender_id": str(s.peer(OWNER)),
+            "chat_id": str(s.peer(OWNER)),
+            "session_key": session_key(s.peer(OWNER)),
         }
         body = json.dumps(forged).encode()
         assert (await s.adapter.post(body, None))[0] == 401
@@ -214,11 +219,13 @@ async def test_the_host_interface_is_narrow(host_cfg, fake_tg, service_tg):
                 break
         assert conflicts[-1] == 409
         for method in ("editMessageText", "deleteMessage", "pinChatMessage", "setMessageReaction", "sendPhoto"):
-            assert (await s.host.call(method, {"chat_id": OWNER, "message_id": message_id, "text": "x"}))[0] == 400
+            assert (await s.host.call(method, {"chat_id": s.peer(OWNER), "message_id": message_id, "text": "x"}))[
+                0
+            ] == 400
         keyboard = {"inline_keyboard": [[{"text": "Pay", "url": "https://evil.example"}]]}
-        assert (await s.host.send(OWNER, "answer", reply_markup=keyboard))[0] == 200
-        quote = {"message_id": message_id, "chat_id": MEMBER}
-        assert (await s.host.send(OWNER, "quoted", reply_parameters=quote))[0] == 400
+        assert (await s.host.send(s.peer(OWNER), "answer", reply_markup=keyboard))[0] == 200
+        quote = {"message_id": message_id, "chat_id": s.peer(MEMBER)}
+        assert (await s.host.send(s.peer(OWNER), "quoted", reply_parameters=quote))[0] == 400
         await wait_until(lambda: "answer" in sent_texts(fake_tg))
         await wait_until(lambda: any("Two clients poll" in text for text in alerts(service_tg)))
     [sent] = [item["params"] for item in fake_tg.sent if item["params"]["text"] == "answer"]
@@ -239,8 +246,8 @@ async def test_sends_wait_while_the_adapter_is_silent_and_leave_in_order_when_it
         await wait_until(lambda: "hello" in s.host.texts(), timeout=10)
         s.adapter.beating = False
         await asyncio.sleep(SILENT)
-        first = await s.host.send(OWNER, "part one")
-        second = await s.host.send(OWNER, "part two")
+        first = await s.host.send(s.peer(OWNER), "part one")
+        second = await s.host.send(s.peer(OWNER), "part two")
         assert first[1]["result"]["message_id"] > HELD_ID_BASE
         assert second[1]["result"]["message_id"] > first[1]["result"]["message_id"]
         await asyncio.sleep(0.3)
@@ -258,7 +265,7 @@ async def test_sends_held_too_long_are_dropped_and_the_person_is_asked_to_repeat
         await wait_until(lambda: "hello" in s.host.texts(), timeout=10)
         s.adapter.beating = False
         await asyncio.sleep(SILENT)
-        assert (await s.host.send(OWNER, "late answer"))[0] == 200
+        assert (await s.host.send(s.peer(OWNER), "late answer"))[0] == 200
         await wait_until(lambda: DROPPED in sent_texts(fake_tg), timeout=5)
         s.adapter.beating = True
         await asyncio.sleep(0.5)
@@ -291,8 +298,8 @@ async def test_a_gateway_restart_is_quiet_and_the_waiting_turn_registers(host_cf
         s.adapter.restart()
         s.host.answering = True
         await wait_until(lambda: [state["state"] for state in host_states(host_cfg)][-2:] == ["STARTING", "RUNNING"])
-        await s.adapter.prompt_built("recovered-run", OWNER)
-        _, turn = await s.adapter.turn_start("recovered-run", OWNER)
+        await s.adapter.prompt_built("recovered-run", s.peer(OWNER))
+        _, turn = await s.adapter.turn_start("recovered-run", s.peer(OWNER))
     assert turn["outcome"] == "pass"  # the repeated turn reaches the model
     [row] = query(host_cfg, "SELECT host_message_id FROM host_run WHERE run_id='recovered-run'")
     assert row["host_message_id"] is not None
@@ -308,7 +315,7 @@ async def test_a_held_send_survives_a_core_restart_and_leaves_once(host_cfg, fak
         await wait_until(lambda: "hello" in s.host.texts(), timeout=10)
         s.adapter.beating = False
         await asyncio.sleep(SILENT)
-        assert (await s.host.send(OWNER, "kept"))[0] == 200
+        assert (await s.host.send(s.peer(OWNER), "kept"))[0] == 200
     assert "kept" not in sent_texts(fake_tg)
     async with stand(host_cfg):
         await wait_until(lambda: "kept" in sent_texts(fake_tg), timeout=10)
@@ -404,6 +411,6 @@ async def test_an_answer_telegram_refuses_gets_an_apology_and_the_owner_hears_of
         fake_tg.add_text(OWNER, "hello")
         await wait_until(lambda: "hello" in s.host.texts(), timeout=10)
         fake_tg.fail("sendMessage", status=403, description="Forbidden: bot was blocked by the user")
-        assert (await s.host.send(OWNER, "answer"))[0] == 200  # the host heard "sent"
+        assert (await s.host.send(s.peer(OWNER), "answer"))[0] == 200  # the host heard "sent"
         await wait_until(lambda: DROPPED in sent_texts(fake_tg), timeout=5)
         await wait_until(lambda: any("Telegram refused an answer" in text for text in alerts(service_tg)), timeout=5)

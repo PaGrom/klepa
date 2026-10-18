@@ -52,13 +52,6 @@ def sign_body(key: bytes, body: bytes) -> str:
     return hmac.new(key, body, hashlib.sha256).hexdigest()
 
 
-def probe_peer(key: bytes) -> int:
-    """A Telegram-shaped user id no member has: the sender and chat of the live probe (spec 4.6). It lies in
-    [2**51, 2**52), inside the 52 bits Telegram ids use and far above real ones, and it is the same on every start."""
-    digest = hmac.new(key, b"klepa probe peer", hashlib.sha256).digest()
-    return 2**51 + int.from_bytes(digest[:8], "big") % 2**51
-
-
 def as_id(value: object) -> int | None:
     """A Telegram id as the host's hook context gives it: a number or a string of digits."""
     if isinstance(value, bool):
@@ -216,6 +209,10 @@ class AdapterServer:
         text = json.dumps(result, ensure_ascii=False)
         return web.json_response({"isError": False, "content": [{"type": "text", "text": text}]})
 
+    def _member(self, value: object) -> int | None:
+        """The Telegram id behind a stand-in the host's hook context gives; None for any other id (spec 4.5)."""
+        return self.queue.peers.telegram_id(as_id(value))
+
     def _heartbeat(self, boot_id: str, message: dict[str, Any]) -> dict[str, Any]:
         problems = self.supervisor.on_heartbeat(boot_id, message)
         return {"ok": not problems, "problems": problems}
@@ -228,8 +225,8 @@ class AdapterServer:
         run_id = message.get("run_id")
         if not isinstance(run_id, str) or not _RUN_ID.match(run_id):
             return {"ok": False}
-        sender_id = as_id(message.get("sender_id"))
-        self.turns.prompt_built(run_id, boot_id, as_id(message.get("chat_id")), sender_id)
+        sender_id, chat_id = self._member(message.get("sender_id")), self._member(message.get("chat_id"))
+        self.turns.prompt_built(run_id, boot_id, chat_id, sender_id)
         return {
             "ok": True,
             "instruction": self.instruction,
@@ -257,7 +254,7 @@ class AdapterServer:
 
     def _turn_start(self, boot_id: str, message: dict[str, Any]) -> dict[str, Any]:
         run_id = message.get("run_id")
-        chat_id, sender_id = as_id(message.get("chat_id")), as_id(message.get("sender_id"))
+        chat_id, sender_id = self._member(message.get("chat_id")), self._member(message.get("sender_id"))
         if not isinstance(run_id, str) or not _RUN_ID.match(run_id):
             turn = Turn(False, "no_run_id")
         else:

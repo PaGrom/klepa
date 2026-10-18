@@ -17,6 +17,7 @@ from ..config import Member
 from ..db import transaction
 from ..gatekeeper.outbox import Outbox
 from ..journal import InboundJournal
+from .peers import Peers
 
 MAX_UPDATES = 100
 ANSWER_WINDOW_SECONDS = 600.0  # the host may go on writing to a chat this long after an answer (spec 4.2)
@@ -36,14 +37,15 @@ class HostQueue:
         conn: sqlite3.Connection,
         journal: InboundJournal,
         members: dict[int, Member],
-        probe_peer: int,
+        peers: Peers,
         *,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.conn = conn
         self.journal = journal
         self.members = members
-        self.probe_peer = probe_peer
+        self.peers = peers  # the host knows people by stand-ins, never by their Telegram ids
+        self.probe_peer = peers.probe
         self.clock = clock
         self.changed = asyncio.Event()
 
@@ -147,8 +149,12 @@ class HostQueue:
         return max(int(last) + 1, int(now))
 
     def _message(self, row: sqlite3.Row) -> dict[str, Any] | None:
-        """The served message: message_id, from, chat, date and text, nothing else (spec 4.5)."""
+        """The served message: message_id, from, chat, date and text, nothing else (spec 4.5), from and to the
+        sender's stand-in."""
         sender_id = int(row["sender_id"])
+        host_id = self.peers.host_id(sender_id)
+        if host_id is None:
+            return None
         if row["kind"] in PROBE_KINDS:
             name, text = PROBE_NAME, PROBE_TEXT if row["kind"] == "probe" else MODEL_PROBE_TEXT
         else:
@@ -159,11 +165,11 @@ class HostQueue:
                 return None
             name = member.name
             text = f"{FORWARDED_MARK}\n{original}" if row["forwarded"] else original
-        person = {"id": sender_id, "is_bot": False, "first_name": name}
+        person = {"id": host_id, "is_bot": False, "first_name": name}
         return {
             "message_id": int(row["message_id"]),
             "from": person,
-            "chat": {"id": int(row["chat_id"]), "type": "private", "first_name": name},
+            "chat": {"id": host_id, "type": "private", "first_name": name},  # a private chat's id is its person's
             "date": int(row["date"]),
             "text": text,
         }

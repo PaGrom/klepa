@@ -145,3 +145,24 @@ async def wait_until(condition, *, timeout=5.0):
         if loop.time() > deadline:
             raise AssertionError("condition not reached in time")
         await asyncio.sleep(0.01)
+
+
+HOST_KEY = b"h" * 32  # the adapter key of tests that build the host's parts by hand
+
+
+def stand_in_of(person_id, key=HOST_KEY):
+    """The id the host knows a member by."""
+    from klepa_core.host.peers import stand_in
+
+    return stand_in(key, person_id)
+
+
+HOST_OWNER = stand_in_of("owner")  # the stand-ins of OWNER and MEMBER under HOST_KEY
+HOST_MEMBER = stand_in_of("member")
+
+
+def host_peers(cfg, probe, key=HOST_KEY):
+    """Who the host knows by which stand-in, as Core builds it."""
+    from klepa_core.host.peers import Peers
+
+    return Peers(key, cfg.members_by_telegram_id(), probe)

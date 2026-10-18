@@ -28,11 +28,15 @@ class Turn:
     model_probe: bool = False  # the model probe: goes to the model
 
 
-def session_of(session_key: object, sender_id: int) -> bool:
-    """agent:<agent>:telegram:direct:<peer> (spike report, point 14), where the peer is the sender."""
+def session_of(session_key: object, peer: int | None) -> bool:
+    """agent:<agent>:telegram:direct:<peer> (spike report, point 14), where the peer is the sender's stand-in."""
     parts = session_key.split(":") if isinstance(session_key, str) else []
     return (
-        len(parts) == 5 and parts[0] == "agent" and parts[2:4] == ["telegram", "direct"] and parts[4] == str(sender_id)
+        peer is not None
+        and len(parts) == 5
+        and parts[0] == "agent"
+        and parts[2:4] == ["telegram", "direct"]
+        and parts[4] == str(peer)
     )
 
 
@@ -58,7 +62,7 @@ class TurnRegistry:
             return Turn(False, "no_sender")
         if chat_id != sender_id:
             return Turn(False, "not_private")
-        if not session_of(session_key, sender_id):
+        if not session_of(session_key, self.queue.peers.host_id(sender_id)):
             return Turn(False, "session")
         now = self.clock()
         with transaction(self.conn):

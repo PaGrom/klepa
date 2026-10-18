@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from helpers import MEMBER, OWNER, Clock
+from helpers import MEMBER, OWNER, Clock, host_peers
 from klepa_core.events import EventLog
 from klepa_core.gatekeeper.outbox import Outbox
 from klepa_core.host.outbox import HELD_ID_BASE, HostOutbox
@@ -40,7 +40,7 @@ def everything(host_message_id, kind):
 def setup(core_db, api):
     cfg, conn, journal = core_db
     clock = Clock()
-    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), PEER, clock=clock)
+    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), host_peers(cfg, PEER), clock=clock)
     turns = TurnRegistry(conn, queue, clock=clock)
     gate = Gate()
     notices = Outbox(conn, api, EventLog(conn))

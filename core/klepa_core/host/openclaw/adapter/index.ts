@@ -390,7 +390,7 @@ export function hookHandlers(link: CoreLink, warn: (reason: string) => void) {
         if (typeof answer.failure === "string") failureStore()[FAILURE] = answer.failure;
         const tools = Array.isArray(answer.tools_allow) ? answer.tools_allow.filter((t) => typeof t === "string") : [];
         if (typeof facts.run_id === "string") remember(instructedRuns(), facts.run_id);
-        return { appendSystemContext: answer.instruction, toolsAllow: tools };
+        return { systemPrompt: answer.instruction, toolsAllow: tools };
       } catch (error) {
         warn(`prompt_built: ${why(error)}`);
         return undefined; // without Core's instruction before_agent_run blocks the turn

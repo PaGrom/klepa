@@ -3,7 +3,7 @@ import contextlib
 
 import pytest
 
-from helpers import Clock, wait_until
+from helpers import Clock, host_peers, wait_until
 from klepa_core.events import EventLog
 from klepa_core.host import supervisor as module
 from klepa_core.host.queue import HostQueue
@@ -74,7 +74,7 @@ def make(core_db):
     cfg, conn, journal = core_db
 
     def build(*, mono=None, control=None, timing=None, on_hold=None):
-        queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), PEER)
+        queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), host_peers(cfg, PEER))
         alerts = FakeAlerts()
         supervisor = Supervisor(
             conn,

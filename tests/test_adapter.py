@@ -7,16 +7,18 @@ import stat
 import pytest
 
 from fakeadapter import FakeAdapter
-from helpers import MEMBER, OWNER, wait_until
+from helpers import MEMBER, OWNER, host_peers, stand_in_of, wait_until
 from klepa_core.events import EventLog
-from klepa_core.host.adapter import AdapterServer, BootSequence, probe_peer, sign_body
+from klepa_core.host.adapter import AdapterServer, BootSequence, sign_body
 from klepa_core.host.instruction import TOOLS, instruction
+from klepa_core.host.peers import probe_peer
 from klepa_core.host.queue import HostQueue
 from klepa_core.host.supervisor import PROBE_BLOCK, HostTiming, Supervisor
 from klepa_core.host.tools import ToolBox, signature
 from klepa_core.host.turns import TurnRegistry
 
 KEY = b"k" * 32
+H_OWNER, H_MEMBER = stand_in_of("owner", KEY), stand_in_of("member", KEY)  # whom the host knows
 
 
 class FakeAlerts:
@@ -44,7 +46,7 @@ def everything(host_message_id, kind):
 @pytest.fixture
 async def server(core_db, short_dir):
     cfg, conn, journal = core_db
-    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), probe_peer(KEY))
+    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), host_peers(cfg, probe_peer(KEY), KEY))
     turns = TurnRegistry(conn, queue)
     events = EventLog(conn)
     supervisor = Supervisor(conn, queue, events, timing=HostTiming(first_heartbeat=60, probe=60, tick=0.01))
@@ -128,7 +130,7 @@ async def test_before_dispatch_lets_every_issued_message_go_on_to_a_turn(server)
 
 async def test_a_built_prompt_gets_cores_instruction_its_tools_and_the_failure_text(server):
     adapter_server, adapter, _, _ = server
-    _, answer = await adapter.prompt_built("run-1", MEMBER)
+    _, answer = await adapter.prompt_built("run-1", H_MEMBER)
     assert answer["instruction"] == instruction("en")
     assert answer["tools_allow"] == list(TOOLS)
     assert answer["failure"].startswith("I couldn't answer just now")
@@ -139,8 +141,8 @@ async def test_a_built_prompt_gets_cores_instruction_its_tools_and_the_failure_t
 async def test_a_registered_turn_reaches_the_model(server):
     adapter_server, adapter, conn, journal = server
     issue(adapter_server, journal, 1, MEMBER, 10)
-    await adapter.prompt_built("run-1", MEMBER)
-    status, turn = await adapter.turn_start("run-1", MEMBER)
+    await adapter.prompt_built("run-1", H_MEMBER)
+    status, turn = await adapter.turn_start("run-1", H_MEMBER)
     assert (status, turn["outcome"]) == (200, "pass")
     assert conn.execute("SELECT host_message_id FROM host_run WHERE run_id='run-1'").fetchone()[0] is not None
     assert "turn_registered" in EventLog(conn).kinds()
@@ -150,16 +152,16 @@ async def test_a_turn_on_hold_is_blocked_with_the_hold_text(server):
     adapter_server, adapter, _, journal = server
     issue(adapter_server, journal, 1, MEMBER, 10)
     adapter_server.supervisor.pause()
-    await adapter.prompt_built("run-1", MEMBER)
-    _, turn = await adapter.turn_start("run-1", MEMBER)
+    await adapter.prompt_built("run-1", H_MEMBER)
+    _, turn = await adapter.turn_start("run-1", H_MEMBER)
     assert (turn["outcome"], turn["message"]) == ("block", adapter_server.locale.text("hold"))
 
 
 async def test_a_failed_turn_of_a_person_alerts_the_owner_and_a_blocked_one_does_not(server):
     adapter_server, adapter, conn, journal = server
     issue(adapter_server, journal, 1, MEMBER, 10)
-    await adapter.prompt_built("run-1", MEMBER)
-    await adapter.turn_start("run-1", MEMBER)
+    await adapter.prompt_built("run-1", H_MEMBER)
+    await adapter.turn_start("run-1", H_MEMBER)
     await adapter.turn_reply("run-1", error=True, error_kind="auth")
     await adapter.turn_reply("run-unknown", error=True, error_kind="auth")  # a run Core never registered
     # A refused token also raises its own alert: an hourly host_turn_failed of another reason must not hide it.
@@ -173,8 +175,8 @@ async def test_a_failed_turn_of_a_person_alerts_the_owner_and_a_blocked_one_does
 async def test_a_busy_provider_in_a_persons_turn_is_no_token_alert(server):
     adapter_server, adapter, _, journal = server
     issue(adapter_server, journal, 1, MEMBER, 10)
-    await adapter.prompt_built("run-1", MEMBER)
-    await adapter.turn_start("run-1", MEMBER)
+    await adapter.prompt_built("run-1", H_MEMBER)
+    await adapter.turn_start("run-1", H_MEMBER)
     await adapter.turn_reply("run-1", error=True, error_kind="rate_limit")
     assert adapter_server.alerts.raised == [("host_turn_failed", {"reason": "rate_limit"})]
 
@@ -230,8 +232,8 @@ async def test_cores_tools_are_listed_and_a_signed_call_runs(server, short_dir):
 
     adapter_server, adapter, conn, journal = server
     issue(adapter_server, journal, 1, MEMBER, 10)
-    await adapter.prompt_built("run-1", MEMBER)
-    await adapter.turn_start("run-1", MEMBER)
+    await adapter.prompt_built("run-1", H_MEMBER)
+    await adapter.turn_start("run-1", H_MEMBER)
     connector = aiohttp.UnixConnector(path=str(short_dir / "run" / "adapter.sock"))
     async with aiohttp.ClientSession(connector=connector) as session:
         async with session.get("http://core/v1/tools") as response:
@@ -254,8 +256,8 @@ async def test_cores_tools_are_listed_and_a_signed_call_runs(server, short_dir):
 
 async def test_a_turn_without_an_issued_message_is_refused_and_logged(server):
     _, adapter, conn, _ = server
-    await adapter.prompt_built("run-1", OWNER)
-    _, turn = await adapter.turn_start("run-1", OWNER)
+    await adapter.prompt_built("run-1", H_OWNER)
+    _, turn = await adapter.turn_start("run-1", H_OWNER)
     assert turn["outcome"] == "block"
     row = conn.execute("SELECT data FROM event_log WHERE kind='turn_refused'").fetchone()
     assert json.loads(row[0])["reason"] == "no_issued_message"
@@ -280,7 +282,7 @@ async def test_the_socket_is_private(server, short_dir):
 
 async def test_a_file_in_the_sockets_place_is_never_removed(core_db, short_dir):
     cfg, conn, journal = core_db
-    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), probe_peer(KEY))
+    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), host_peers(cfg, probe_peer(KEY), KEY))
     events = EventLog(conn)
     supervisor = Supervisor(conn, queue, events)
     (short_dir / "run").mkdir(mode=0o700)
@@ -299,7 +301,7 @@ async def test_a_socket_left_by_a_stopped_core_is_replaced(core_db, short_dir):
     leftover.bind(str(path))
     leftover.close()
     cfg, conn, journal = core_db
-    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), probe_peer(KEY))
+    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), host_peers(cfg, probe_peer(KEY), KEY))
     events = EventLog(conn)
     adapter_server = server_for(
         path, cfg, conn, queue, TurnRegistry(conn, queue), events, Supervisor(conn, queue, events)
@@ -342,8 +344,8 @@ async def test_a_refusal_is_logged_without_what_the_model_wrote(server, short_di
 
     adapter_server, adapter, conn, journal = server
     issue(adapter_server, journal, 1, MEMBER, 10)
-    await adapter.prompt_built("run-1", MEMBER)
-    await adapter.turn_start("run-1", MEMBER)
+    await adapter.prompt_built("run-1", H_MEMBER)
+    await adapter.turn_start("run-1", H_MEMBER)
     params = {"query": "x", "passport 4509 123456": "1"}
     sig = signature(KEY, "run-1", "call-1", "search", params)
     call = {

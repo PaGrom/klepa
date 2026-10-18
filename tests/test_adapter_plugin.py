@@ -12,10 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from helpers import MEMBER, wait_until
+from helpers import MEMBER, host_peers, stand_in_of, wait_until
 from klepa_core.events import EventLog
-from klepa_core.host.adapter import AdapterServer, probe_peer
+from klepa_core.host.adapter import AdapterServer
 from klepa_core.host.instruction import TOOLS, instruction
+from klepa_core.host.peers import probe_peer
 from klepa_core.host.queue import HostQueue
 from klepa_core.host.supervisor import PROBE_BLOCK, Expectations, HostTiming, Supervisor
 from klepa_core.host.tools import ToolBox, signature
@@ -42,7 +43,7 @@ pytestmark = pytest.mark.skipif(node() is None, reason="needs Node 22.18 or late
 async def test_the_plugin_speaks_cores_language(core_db, short_dir):
     cfg, conn, journal = core_db
     probe = probe_peer(KEY)
-    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), probe)
+    queue = HostQueue(conn, journal, cfg.members_by_telegram_id(), host_peers(cfg, probe, KEY))
     turns = TurnRegistry(conn, queue)
     events = EventLog(conn)
     expect = Expectations(
@@ -74,7 +75,7 @@ async def test_the_plugin_speaks_cores_language(core_db, short_dir):
             str(DRIVER),
             str(socket_path),
             str(key_file),
-            str(MEMBER),
+            str(stand_in_of("member", KEY)),  # the plugin knows the member by the stand-in, as the gateway does
             str(probe),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -95,10 +96,11 @@ async def test_the_plugin_speaks_cores_language(core_db, short_dir):
     ]
     assert steps["member_dispatch"] is None  # every issued message goes on to a turn
     assert steps["probe_dispatch"] is None
-    assert steps["probe_prompt_built"] == {"appendSystemContext": instruction("en"), "toolsAllow": []}
+    # Core's instruction is the whole system prompt: none of OpenClaw's own, with its paths and runtime line.
+    assert steps["probe_prompt_built"] == {"systemPrompt": instruction("en"), "toolsAllow": []}
     assert steps["probe_turn"] == {"outcome": "block", "reason": "klepa", "message": PROBE_BLOCK}
     assert steps["probe_reply"] == {"payload": {"text": "the block", "isError": True}}  # without OpenClaw's wrapper
-    assert steps["member_prompt_built"] == {"appendSystemContext": instruction("en"), "toolsAllow": list(TOOLS)}
+    assert steps["member_prompt_built"] == {"systemPrompt": instruction("en"), "toolsAllow": list(TOOLS)}
     assert steps["member_turn"] == {"outcome": "pass"}
     signed = steps["member_tool"]["params"]
     klepa = signed.pop("_klepa")

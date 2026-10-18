@@ -1,6 +1,7 @@
 """Core's instruction for the model (spec 10): in English, at most 4,000 characters. Core hands it to the adapter in
-its answer to prompt_built, the adapter adds it to the system prompt through before_prompt_build, and a turn reaches
-the model only when Core registered it for a run whose prompt Core answered so."""
+its answer to prompt_built, the adapter gives it to the gateway as the whole system prompt through before_prompt_build
+(none of OpenClaw's own prompt reaches the model), and a turn reaches the model only when Core registered it for a run
+whose prompt Core answered so."""
 
 from __future__ import annotations
 

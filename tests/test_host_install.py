@@ -15,6 +15,7 @@ from klepa_core.app import acquire_lock
 from klepa_core.host import install as host
 from klepa_core.host import reference
 from klepa_core.host import runtime as rt
+from klepa_core.host.peers import probe_peer, stand_in
 
 TOKEN = "sk-ant-oat01-" + "x" * 80
 
@@ -306,3 +307,15 @@ def test_uninstall_unloads_the_gateway_but_not_while_core_runs(cfg):
     assert fake.calls[-1][0] == ["launchctl", "bootout", f"gui/{os.getuid()}/klepa.gateway"]
     assert not (cfg.host_dir / "klepa.gateway.plist").exists()
     assert not (cfg.host_dir / "applied.sha256").exists()
+
+
+def test_allowed_lists_the_ids_a_gateway_admits_and_whose_each_is(cfg, capsys, tmp_path):
+    """Review 1's M11: a gateway somebody else runs admits people by stand-ins, which only Core can work out."""
+    assert cli.main(["host", "allowed", "--config", str(tmp_path / "config.toml")]) == 0
+    out = capsys.readouterr().out
+    key = cfg.adapter_key_path.read_bytes()
+    listed = [line.split(maxsplit=1) for line in out.splitlines() if line.startswith("  ")]
+    expected = [*(stand_in(key, member.person_id) for member in cfg.members), probe_peer(key)]
+    assert [int(peer) for peer, _ in listed] == expected
+    assert [whose for _, whose in listed] == [*(member.person_id for member in cfg.members), "the live probe"]
+    assert not [member for member in cfg.members if str(member.telegram_id) in out]  # never a Telegram id

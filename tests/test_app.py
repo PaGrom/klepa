@@ -1,6 +1,7 @@
 from helpers import BASE_CONFIG
 from klepa_core import app
 from klepa_core.host.gateway import LaunchdGateway
+from klepa_core.host.peers import probe_peer, stand_in
 from klepa_core.host.runtime import adapter_sha256
 
 
@@ -25,13 +26,16 @@ def test_the_open_file_limit_is_raised_from_launchds_256(monkeypatch):
 def test_a_launchd_host_gets_cores_own_gateway_held_to_the_reference(make_config, short_dir, tmp_path):
     section = f'\n[host]\nsocket = "{short_dir / "run" / "adapter.sock"}"\nruntime_dir = "{tmp_path / "runtime"}"\n'
     cfg = make_config(text=BASE_CONFIG + section)
-    expect, control = app._gateway(cfg, 2**51 + 3)
+    key = b"k" * 32
+    expect, control = app._gateway(cfg, key)
     assert isinstance(control, LaunchdGateway)
     assert control.port == 19300
     assert expect is not None
     assert expect.plugin_sha256 == adapter_sha256()
     assert expect.policy["gateway.reload.mode"] == "off"
-    assert expect.policy["channels.telegram.allowFrom"] == ["111111", "222222", str(2**51 + 3)]
+    # The gateway admits the members' stand-ins and the probe peer: never a Telegram id.
+    allowed = [str(stand_in(key, "owner")), str(stand_in(key, "member")), str(probe_peer(key))]
+    assert expect.policy["channels.telegram.allowFrom"] == allowed
     assert (expect.model, expect.runtime, expect.version) == ("anthropic/claude-sonnet-5", "openclaw", "2026.9.4")
 
 
