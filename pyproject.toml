@@ -15,6 +15,10 @@ classifiers = [
 ]
 dependencies = ["aiohttp>=3.10"]
 
+[project.optional-dependencies]
+# Attachments read in a sandbox (stage 2b): ocrmypdf reads scanned PDFs. The other readers come from Homebrew.
+processing = ["ocrmypdf>=17.13"]
+
 [project.urls]
 Homepage = "https://github.com/PaGrom/klepa"
 Issues = "https://github.com/PaGrom/klepa/issues"
@@ -49,7 +53,7 @@ src = ["core", "tests"]
 select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "PT", "RUF"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["klepa_core", "helpers", "faketg", "fakeadapter", "fakehost"]
+known-first-party = ["klepa_core", "helpers", "faketg", "fakeadapter", "fakehost", "fakereaders"]
 
 [tool.ruff.lint.per-file-ignores]
 # Letters that look Latin but are Cyrillic are the point of this module.
