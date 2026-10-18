@@ -131,7 +131,7 @@ With a `[processing]` section ([configuration](configuration.md#processing)), Co
 
 | Original | Reader |
 |---|---|
-| Voice message, audio | ffmpeg makes a 16 kHz mono WAV of the first 30 minutes; whisper.cpp transcribes it, detects the language and writes nothing for silence or noise (`--suppress-nst`). |
+| Voice message, audio | ffmpeg makes a 16 kHz mono WAV of the first 30 minutes. A recording whose loudest sound stays under −45 dBFS is silent and gets no text: whisper makes words up for silence ("Thank you."). whisper.cpp transcribes the rest, detects the language and leaves out sounds that are not speech (`--suppress-nst`). |
 | Video, video note, animation | ffprobe looks for sound; ffmpeg takes it, and it is read as a voice message's. A video without sound has no text, and its job says so. |
 | PDF | pdftotext reads the text layer page by page. A page with fewer than 100 letters may be a scan: a page number, a stamp or a scanner app's mark is text too. ocrmypdf reads such pages, forced, the first 50 of them, in the installation's OCR languages, and a page keeps whichever text has more letters, its layer's or OCR's. |
 | Photo, image | ffprobe reads the size first, 100 megapixels at most; an iPhone's HEIC photo is a grid of tiles, and its size is the grid's. ffmpeg turns HEIC into PNG, joining the tiles; tesseract reads the text. |

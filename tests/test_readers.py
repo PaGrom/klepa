@@ -368,6 +368,20 @@ def test_a_recording_past_the_limit_is_transcribed_in_part_and_says_so(setup, mo
     assert pages.note == "only the first 1 minutes were transcribed"
 
 
+@pytest.mark.parametrize("kind", ["voice", "video"])
+def test_a_silent_recording_has_no_text_and_says_so(setup, kind):
+    """whisper makes words up for silence ("Thank you." for a silent video note, found in the live run of 2b-1): a
+    recording whose loudest sound stays under -45 dBFS gets no text, and whisper is not run."""
+    pages = read(setup, kind, b"SILENT", "circle.mp4")
+    assert (pages.texts, pages.note) == ([], "the recording is silent")
+    assert not (setup[2] / "jobs" / kind / "whisper-cli.args").exists()
+
+
+def test_a_quiet_recording_is_still_transcribed(setup):
+    read(setup, "voice", b"AUDIBLE", "voice.ogg")
+    assert (setup[2] / "jobs" / "voice" / "whisper-cli.args").exists()
+
+
 def test_whisper_is_told_not_to_make_up_words_for_silence(setup):
     read(setup, "voice", b"hello", "voice.ogg")
     _, _, tmp_path = setup

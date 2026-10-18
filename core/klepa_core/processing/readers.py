@@ -8,12 +8,14 @@ first 30 minutes of a recording, the first 50 scanned pages, 2 MB of text), the 
 
 from __future__ import annotations
 
+import array
 import contextlib
 import importlib.metadata
 import os
 import re
 import shutil
 import sys
+import wave
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +28,9 @@ MAX_AUDIO_SECONDS = 30 * 60  # a longer recording is transcribed up to here
 MAX_OCR_PAGES = 50  # scanned pages of one document read with OCR
 MAX_IMAGE_PIXELS = 100_000_000  # a photo or a scanned page larger than this is not unpacked (spec 8)
 MAX_TEXT_BYTES = 2_000_000  # what is kept of one original's text
+# whisper makes words up for silence ("Thank you.", "you"): a recording whose loudest sound stays under -45 dBFS is
+# silent and gets no text (found in the live run of 2b-1, a video note nobody spoke in)
+SILENT_PEAK = round(32768 * 10 ** (-45 / 20))
 MIN_PAGE_LETTERS = 100  # a PDF page with fewer letters in its text layer may be a scan: OCR reads it too
 FRAGMENT_CHARS = 4000  # a transcript or a text file is kept in pieces of this size, a page each (spec 5.4)
 OCR_JOBS = 2  # ocrmypdf's workers: one per core would hold several large pages in memory at once
@@ -177,6 +182,23 @@ def _launcher(program: Path) -> list[str]:
     return [match[2].decode(), str(program)] if match else [str(program)]
 
 
+def _peak(file: BinaryIO) -> int | None:
+    """The loudest sample of a 16-bit WAV; None when it is not one."""
+    try:
+        with wave.open(file) as audio:
+            if audio.getsampwidth() != 2:
+                return None
+            loudest = 0
+            while frames := audio.readframes(1 << 20):
+                samples = array.array("h", frames)
+                if sys.byteorder == "big":
+                    samples.byteswap()
+                loudest = max(loudest, max(samples), -min(samples))
+            return loudest
+    except (wave.Error, EOFError):
+        return None
+
+
 def fragments(text: str, size: int = FRAGMENT_CHARS) -> list[str]:
     """A text without pages in pieces of at most `size` characters, cut after a paragraph, a line, a sentence or a
     word where one ends in the second half of the piece."""
@@ -207,6 +229,7 @@ class Readers:
         self.seconds = seconds  # tests: one time limit for every step
         # A text names the program, the model and the version that read it (spec 5.4).
         self.whisper = _named("whisper.cpp", program_version(processing.whisper))
+        self.ffmpeg = _named("ffmpeg", program_version(processing.ffmpeg))
         self.pdftotext = _named("pdftotext", program_version(processing.pdftotext))
         self.ocrmypdf = _named("ocrmypdf", program_version(processing.ocrmypdf))
         self.tesseract = _named("tesseract", program_version(processing.tesseract))
@@ -280,6 +303,9 @@ class Readers:
         await self._step([self.processing.ffmpeg, *convert, "-ar", 16000, "-ac", 1, "-y", audio], job, 300)
         with _output(audio) as file:
             seconds = max(0.0, (os.fstat(file.fileno()).st_size - 44) / 32_000)  # 16 kHz, 16-bit, mono
+            peak = _peak(file)
+        if peak is not None and peak < SILENT_PEAK:
+            return Pages([], self.ffmpeg, "the recording is silent")
         # --suppress-nst: no "you" or "so" made up for silence and noise
         transcribe = [
             "-m",

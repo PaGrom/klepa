@@ -208,7 +208,7 @@ def test_a_heic_photo_is_read(readers, tmp_path):
     assert "4512-778" in pages.texts[0]
 
 
-def test_a_videos_sound_is_transcribed_and_a_muted_video_has_no_text(readers, tmp_path):
+def test_a_videos_sound_is_transcribed_and_a_silent_or_muted_video_has_no_text(readers, tmp_path):
     voice = tmp_path / "voice.aiff"
     words = "Happy birthday, see you at the lake on Sunday."
     subprocess.run(["say", "-v", "Samantha", "-o", str(voice), words], check=True)
@@ -219,6 +219,12 @@ def test_a_videos_sound_is_transcribed_and_a_muted_video_has_no_text(readers, tm
     pages = asyncio.run(readers.read("video", clip, job(tmp_path, "clip")))
     assert "birthday" in pages.texts[0].lower()
     assert "sunday" in pages.texts[0].lower()
+
+    silent = tmp_path / "silent.mp4"  # a sound track with nothing on it, as in a video note nobody spoke in
+    quiet = ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "3", "-c:a", "aac"]
+    subprocess.run([*FFMPEG, *black, *quiet, "-c:v", "mpeg4", str(silent)], check=True)
+    hushed = asyncio.run(readers.read("video", silent, job(tmp_path, "silent")))
+    assert (hushed.texts, hushed.note) == ([], "the recording is silent")
 
     muted = tmp_path / "muted.mp4"
     subprocess.run([*FFMPEG, *black, "-t", "2", "-c:v", "mpeg4", str(muted)], check=True)

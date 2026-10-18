@@ -27,7 +27,18 @@ FFMPEG = r"""
 args = sys.argv[1:]
 source, target = args[args.index("-i") + 1], args[-1]
 inside(source)
-open(target, "wb").write(open(source, "rb").read())
+data = open(source, "rb").read()
+if data.startswith((b"SILENT", b"AUDIBLE")):  # a real WAV: two seconds near silence (-50 dBFS) or quiet (-30 dBFS)
+    import array, wave
+    loudest = 103 if data.startswith(b"SILENT") else 1036
+    samples = array.array("h", [loudest if n % 50 == 0 else 0 for n in range(32000)])
+    with wave.open(target, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(samples.tobytes())
+else:
+    open(target, "wb").write(data)
 """
 
 FFPROBE = r"""
