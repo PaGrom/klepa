@@ -51,7 +51,8 @@ def clean(text: str) -> str:
 
 def _name(name: str) -> str:
     """A file's name as a mark may hold it: one line, no control or format character, no quote of a mark's own."""
-    one = clean(sanitize_original_name(name)).replace("«", '"').replace("»", '"')
+    one = " ".join(clean(sanitize_original_name(name)).split())  # Unicode's line separators too
+    one = one.replace("«", '"').replace("»", '"')
     return one if len(one) <= NAME_CHARS else one[: NAME_CHARS - 1] + "…"
 
 
