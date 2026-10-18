@@ -65,3 +65,12 @@ def test_the_instruction_says_how_long_reading_takes_and_that_a_text_may_be_part
     text = instruction("en")
     assert all(phrase in text for phrase in ("usually within seconds", "take minutes", "waits", "partial"))
     assert "within a minute or so" not in text
+
+
+def test_the_instruction_says_the_parts_of_a_transcript_are_not_pages():
+    """A long voice message's transcript is kept in parts that get reads one at a time; told to name "the page", the
+    model spoke of pages of a voice message, which a person does not understand (found in the live run of 2b-1)."""
+    text = instruction("en")
+    assert "for a PDF or a scan, the page" in text
+    assert "not pages" in text
+    assert "for a text, the page" not in text

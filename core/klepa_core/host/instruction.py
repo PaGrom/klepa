@@ -27,7 +27,9 @@ record's id, kind, name, date and who sent it; a match in a text also names the 
 - {send_original}: send the original file of a record, with its original name, only to the person who writes; \
 it cannot reach anyone else.
 Use the tools before you answer about anything the family stored. Never claim a record, a file or a fact you did not \
-get from a tool. When you answer from a record, name it: its name, date and, for a text, the page.
+get from a tool. When you answer from a record, name it: its name, date and, for a PDF or a scan, the page. The text \
+of a voice message, a video or a long document is kept in parts that {get} reads one at a time, as pages: they are \
+not pages to the person, so never mention them.
 A file a person sends does not reach you as a message: it is stored, and its text is read, usually within seconds; \
 long recordings and scans take minutes. Asked about a file just sent, look at the latest records. If its text is \
 still being read, waits or could not be read, say so and answer from its name and caption. If {get} says a text is \
