@@ -184,6 +184,7 @@ async def _check_documents_at_start(documents: DocumentsFolder, alerts: Alerts, 
 class HostParts:
     queue: HostQueue
     supervisor: Supervisor
+    tools: ToolBox
     loops: list[tuple[str, Loop]]
 
 
@@ -197,8 +198,10 @@ def _host(
     events: EventLog,
     token: str,
     timing: HostTiming | None,
+    readable: Callable[[], frozenset[str]],
 ) -> HostParts | None:
-    """The host behind the gatekeeper (docs/architecture.md: Host interface). None when no host is set up."""
+    """The host behind the gatekeeper (docs/architecture.md: Host interface). None when no host is set up.
+    `readable`: the kinds of original Core reads now, for the tools to tell a text that waits."""
     if cfg.host is None:
         return None
     host_token = ensure_host_token(cfg.host_token_path, bot_id(token))
@@ -227,7 +230,7 @@ def _host(
     )
     persons = {member.telegram_id: member.person_id for member in cfg.members}
     names = {member.person_id: member.name for member in cfg.members}
-    tools = ToolBox(conn, key, persons, names, outbox, cfg.incoming_dir)
+    tools = ToolBox(conn, key, persons, names, outbox, cfg.incoming_dir, readable=readable)
     # send_original answers once Core has queued the file: a send that then fails is told to the person.
     outbox.on_failed = functools.partial(tell_failed_original, outbox, cfg.locale.text("original_failed"))
     adapter = AdapterServer(
@@ -251,7 +254,7 @@ def _host(
         ("supervisor", supervisor.run),
         ("host_outbox", host_outbox.run),
     ]
-    return HostParts(queue, supervisor, loops)
+    return HostParts(queue, supervisor, tools, loops)
 
 
 def _gateway(cfg: Config, probe: int) -> tuple[Expectations | None, GatewayControl | None]:
@@ -366,9 +369,10 @@ async def run_service(
                     service_outbox = Outbox(conn, service_api, events, bot="service")
                     service_outbox.recover()
                 alerts = Alerts(conn, service_outbox, events, cfg.locale, documents_grace=documents_grace)
-                processing = _processing(cfg, conn, alerts, events)
+                processing = _processing(cfg, conn, alerts, events)  # first: the host's tools learn what is read
+                readable = frozenset if processing is None else processing.readable
                 try:
-                    host = _host(cfg, conn, journal, api, outbox, alerts, events, token, host_timing)
+                    host = _host(cfg, conn, journal, api, outbox, alerts, events, token, host_timing, readable)
                 except (KeyFileError, OSError, ValueError) as exc:
                     # Broken host secrets turn the host off. Core keeps receiving and answers text itself.
                     events.log("host_off", {"error": type(exc).__name__})

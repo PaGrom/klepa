@@ -60,7 +60,8 @@ def test_a_person_hears_in_the_installs_language_when_an_original_did_not_go(mak
     outbox = Outbox(conn, None, events)
     journal = InboundJournal(tmp_path / "journal.db")
     try:
-        app._host(cfg, conn, journal, None, outbox, Alerts(conn, None, events, cfg.locale), events, "123:abc", None)
+        alerts = Alerts(conn, None, events, cfg.locale)
+        app._host(cfg, conn, journal, None, outbox, alerts, events, "123:abc", None, frozenset)
         assert outbox.on_failed is not None
         outbox.on_failed("original:run-1:ev-1", MEMBER, {"name": "scan.pdf"})
         row = conn.execute("SELECT chat_id, payload FROM outbound WHERE idempotency_key='failed:original:run-1:ev-1'")
@@ -143,3 +144,29 @@ def test_a_program_gone_since_start_takes_its_kind_from_what_get_says_is_read_an
     parts.worker.on_missing("voice", "whisper-cli")
     assert "voice" not in parts.readable()
     assert alerts_logged(conn) == ["processing_unavailable"]
+
+
+def test_the_tools_learn_what_core_reads_now(make_config, short_dir, tmp_path):
+    """get tells "waiting" for a kind the worker does not read (finding I8): the host is built after processing."""
+    from klepa_core import db
+    from klepa_core.alerts import Alerts
+    from klepa_core.events import EventLog
+    from klepa_core.gatekeeper.outbox import Outbox
+    from klepa_core.journal import InboundJournal
+
+    section = f'\n[host]\nsocket = "{short_dir / "run" / "adapter.sock"}"\nruntime_dir = "{tmp_path / "runtime"}"\n'
+    cfg = make_config(text=BASE_CONFIG + section)
+    app.init_layout(cfg)
+    conn = db.connect(cfg.core_db_path)
+    events = EventLog(conn)
+    journal = InboundJournal(tmp_path / "journal.db")
+    try:
+        alerts = Alerts(conn, None, events, cfg.locale)
+        outbox = Outbox(conn, None, events)
+        readable = lambda: frozenset({"pdf"})  # noqa: E731
+        host = app._host(cfg, conn, journal, None, outbox, alerts, events, "123:abc", None, readable)
+        assert host is not None
+        assert host.tools.readable() == frozenset({"pdf"})
+    finally:
+        journal.close()
+        conn.close()

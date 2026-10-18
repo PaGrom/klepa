@@ -14,7 +14,7 @@ import json
 import re
 import sqlite3
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,12 +22,15 @@ from typing import Any
 from ..db import transaction
 from ..gatekeeper.outbox import Outbox
 from ..names import sanitize_original_name
+from ..processing.jobs import KINDS
+from ..search import find
 from ..signing import canonical_json
 
 TOOL_DOMAIN = b"klepa-tool-call-v1"
 MAX_CALL_BYTES = 16 * 1024
 SEARCH_LIMIT = 10
 SEARCH_MAX = 50
+GET_CHARS = 10_000  # what get returns of one page: a dense page fits, a longer one is cut and says so
 _ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 _SIG = re.compile(r"[0-9a-f]{64}")
 _MIME = re.compile(r"[\w.+-]{1,64}/[\w.+-]{1,128}")
@@ -129,9 +132,11 @@ class ToolBox:
         outbox: Outbox | None = None,
         incoming_dir: Path | None = None,
         *,
+        readable: Callable[[], Collection[str]] = lambda: KINDS,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.outbox = outbox  # the family bot's: Core sends originals itself (spec 6.5)
+        self.readable = readable  # the kinds of original Core reads now: a queued job of another kind waits
         self.incoming_dir = incoming_dir  # where the originals are; evidence keeps paths relative to it
         self.conn = conn
         self.key = key
@@ -203,20 +208,31 @@ def _search(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
     stems = _stems(params.get("query", ""))
     limit = min(max(params.get("limit", SEARCH_LIMIT), 1), SEARCH_MAX)
     marks = ",".join("?" * len(caller.spaces))
-    rows = box.conn.execute(
-        f"SELECT id, kind, original_name, caption, received_at, authenticated_subject FROM evidence "
-        f"WHERE space_id IN ({marks}) AND state IN ({','.join('?' * len(_READABLE))}) ORDER BY received_at DESC",
-        (*caller.spaces, *_READABLE),
-    ).fetchall()
-    scored = []
-    for row in rows:
-        text = " ".join(filter(None, (row["original_name"], row["caption"]))).casefold()
-        score = sum(len(stem) for stem in stems if stem in text)  # a longer word that matches weighs more
-        if score or not stems:  # without words: the latest records
-            scored.append((score, row))
-    scored.sort(key=lambda pair: pair[0], reverse=True)  # stable: equal scores keep the newest first
-    found = [
-        {
+    states = ",".join("?" * len(_READABLE))
+    if stems:
+        hits = find(box.conn, caller.spaces, _READABLE, stems, limit)
+        ids = [hit.evidence_id for hit in hits]
+    else:  # without words: the latest records
+        latest = box.conn.execute(
+            f"SELECT id FROM evidence WHERE space_id IN ({marks}) AND state IN ({states}) "
+            "ORDER BY received_at DESC LIMIT ?",
+            (*caller.spaces, *_READABLE, limit),
+        ).fetchall()
+        hits = []
+        ids = [row["id"] for row in latest]
+    rows = {
+        row["id"]: row
+        for row in box.conn.execute(
+            f"SELECT id, kind, original_name, caption, received_at, authenticated_subject FROM evidence "
+            f"WHERE id IN ({','.join('?' * len(ids))})",
+            ids,
+        )
+    }
+    pages = {hit.evidence_id: hit for hit in hits if hit.page > 0}
+    found = []
+    for record_id in ids:
+        row = rows[record_id]
+        result = {
             "id": row["id"],
             "kind": row["kind"],
             "name": row["original_name"],
@@ -224,12 +240,13 @@ def _search(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
             "date": row["received_at"][:10],
             "from": box.names.get(row["authenticated_subject"], row["authenticated_subject"]),
         }
-        for _, row in scored[:limit]
-    ]
+        if record_id in pages:  # found by its text: which page, and the words around
+            result |= {"page": pages[record_id].page, "snippet": pages[record_id].snippet}
+        found.append(result)
     return {"results": found}
 
 
-_SENDABLE = ("stored", "processing", "processed")
+_SENDABLE = ("stored", "processing", "processed", "failed")  # failed: its text, never its file
 
 
 def _record(box: ToolBox, caller: Caller, record_id: str) -> sqlite3.Row:
@@ -243,9 +260,20 @@ def _record(box: ToolBox, caller: Caller, record_id: str) -> sqlite3.Row:
     return row
 
 
+_TEXT_STATUS = {"done": "read", "queued": "reading", "running": "reading", "failed": "failed", "cancelled": "none"}
+
+
+def _text_status(box: ToolBox, job: sqlite3.Row | None) -> str:
+    if job is None:
+        return "none"
+    if job["state"] == "queued" and job["kind"] not in box.readable():
+        return "waiting"  # for what reading it needs: a program, the speech model (finding I8)
+    return _TEXT_STATUS[job["state"]]
+
+
 def _get(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
     row = _record(box, caller, params["id"])
-    return {
+    record: dict[str, Any] = {
         "id": row["id"],
         "kind": row["kind"],
         "name": row["original_name"],
@@ -257,6 +285,29 @@ def _get(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
         "state": row["state"],
         "space": "shared" if row["space_id"] == "shared" else "personal",
     }
+    job = box.conn.execute("SELECT kind, state, pages, note FROM job WHERE evidence_id=?", (row["id"],)).fetchone()
+    record["text_status"] = _text_status(box, job)
+    if record["text_status"] != "read":
+        if "page" in params:
+            raise ToolRefused("the record has no text to read")
+        return record
+    pages = int(job["pages"] or 0)
+    record["pages"] = pages
+    if job["note"]:
+        record["partial"] = job["note"]  # what a limit left out of the text (finding I6)
+    page = params.get("page", 1)
+    if pages == 0 and "page" not in params:
+        return record  # read, and nothing was found in it: a silent recording, a blank scan
+    if not 1 <= page <= pages:
+        raise ToolRefused(f"no page {page}: the record has {pages}")
+    text_row = box.conn.execute(
+        "SELECT text FROM evidence_text WHERE evidence_id=? AND page=?", (row["id"], page)
+    ).fetchone()
+    text = "" if text_row is None else str(text_row["text"])  # a page without text has no row
+    record |= {"page": page, "text": text[:GET_CHARS]}
+    if len(text) > GET_CHARS:
+        record["cut"] = True
+    return record
 
 
 def _send_original(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
@@ -280,9 +331,10 @@ def _send_original(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
 TOOLS = (
     Tool(
         "search",
-        "Find the family's stored records (files, photos, voice messages) by words in their names and captions. "
-        "A word matches by its beginning, so other forms of it are found; records that match more words come first. "
-        "Without words: the latest records.",
+        "Find the family's stored records (files, photos, voice messages) by words in their names, captions and "
+        "texts: what a document says, what was said in a voice message, what is written on a photo. A word matches "
+        "by its beginning, so other forms of it are found; the best matches come first. A record found by its text "
+        "names the page and quotes the words around. Without words: the latest records.",
         {
             "query": {"type": "string", "description": "A few key words, or nothing for the latest records."},
             "limit": {"type": "integer", "description": "How many records, 1 to 50; 10 when not given."},
@@ -290,7 +342,21 @@ TOOLS = (
         (),
         _search,
     ),
-    Tool("get", "Read one stored record by its id.", {"id": {"type": "string"}}, ("id",), _get),
+    Tool(
+        "get",
+        "Read one stored record by its id: what it is, and its text page by page. text_status says whether the text "
+        "is there: read (pages says how many; the first is returned unless you ask for another; partial, when given, "
+        "says what part of the original the text leaves out), reading (it is being read: usually seconds, long "
+        "recordings and scans take minutes), waiting (it is not read until the owner installs what reading it "
+        "needs), failed (it could not be read; the original is kept and can be sent), none (a file of this kind is "
+        "not read).",
+        {
+            "id": {"type": "string"},
+            "page": {"type": "integer", "description": "Which page of the text, from 1; 1 when not given."},
+        },
+        ("id",),
+        _get,
+    ),
     Tool(
         "send_original",
         "Send the person the original file of a record, with the name it came with.",

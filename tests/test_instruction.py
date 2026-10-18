@@ -36,7 +36,15 @@ def test_the_instruction_says_what_klepa_cannot_do_yet():
     """Told nothing, a model promises what it cannot keep: "remind me on Friday", "sure"."""
     text = instruction("en")
     assert "cannot yet" in text
-    assert all(word in text for word in ("reminders", "remember", "inside files", "never promise"))
+    assert all(word in text for word in ("reminders", "remember", "never promise"))
+
+
+def test_the_instruction_says_how_to_answer_about_what_a_file_says():
+    """Stage 2b: records have texts. A file a person sends does not reach the model as a message yet, so asked about
+    "the document I just sent", the model must look at the latest records, and say so when a text is not there."""
+    text = instruction("en")
+    assert all(phrase in text for phrase in ("voice messages", "page by page", "latest records", "could not be read"))
+    assert "inside files" not in text  # no longer something Klepa cannot do
 
 
 def test_klepa_speaks_of_herself_as_her_own_messages_do():
@@ -49,3 +57,11 @@ def test_the_instruction_says_whom_an_original_reaches_and_what_records_cannot_u
     assert "only to the person who writes" in text
     assert all(word in text for word in ("change", "rename", "move", "share", "delete"))
     assert "Klepa removes them" not in text  # links reach the person as plain text, not removed
+
+
+def test_the_instruction_says_how_long_reading_takes_and_that_a_text_may_be_partial():
+    """A 50-page scan takes many minutes, and a kind the owner has not set up waits (finding I8); a text a limit cut
+    covers part of its original (finding I6)."""
+    text = instruction("en")
+    assert all(phrase in text for phrase in ("usually within seconds", "take minutes", "waits", "partial"))
+    assert "within a minute or so" not in text

@@ -5,7 +5,8 @@ import pytest
 from helpers import MEMBER, OWNER
 from klepa_core.events import EventLog
 from klepa_core.gatekeeper.outbox import Outbox
-from klepa_core.host.tools import ToolBox, ToolRefused, parse_call, signature
+from klepa_core.host.tools import GET_CHARS, ToolBox, ToolRefused, parse_call, signature
+from klepa_core.search import index_names, index_pages
 
 KEY = b"k" * 32
 NOW = 1_800_000_000.0
@@ -68,6 +69,21 @@ def store(
             caption,
         ),
     )
+    index_names(conn, record_id, name, caption)  # as the evidence store does when it stores a file
+
+
+def read_as(conn, record_id, *pages, job="done", kind="pdf", note=None):
+    """The record's job, in this state; when done, its text, a page per argument."""
+    conn.execute(
+        "INSERT INTO job(evidence_id, kind, state, pages, note, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (record_id, kind, job, len(pages) if job == "done" else None, note, NOW),
+    )
+    if job == "done":
+        conn.executemany(
+            "INSERT INTO evidence_text(evidence_id, page, text, extractor, created_at) VALUES (?, ?, ?, 'test', ?)",
+            [(record_id, n, text, NOW) for n, text in enumerate(pages, 1) if text],
+        )
+        index_pages(conn, record_id, pages)
 
 
 def signed(tool, params, run_id="run-1", call_id="call-1", key=KEY):
@@ -233,3 +249,108 @@ def test_a_malformed_signature_is_refused_not_an_error(box, klepa):
     issue(box.conn, MEMBER, "run-1\n")
     with pytest.raises(ToolRefused, match="not signed"):
         box.call("search", {"query": "insurance", "_klepa": klepa})
+
+
+def test_search_finds_a_record_by_what_its_text_says(box):
+    issue(box.conn, MEMBER, "run-1")
+    store(box.conn, "ev-scan", "member", "scan.pdf", caption=None)
+    store(box.conn, "ev-other", "member", "other.pdf", caption="the car")
+    read_as(box.conn, "ev-scan", "page one of the scan", "the policy number 4512-778 for the Skoda is valid until May")
+    found = box.call("search", signed("search", {"query": "policy 4512"}))["results"]
+    assert [(record["name"], record["page"]) for record in found] == [("scan.pdf", 2)]
+    assert "4512" in found[0]["snippet"]
+
+
+def test_a_letter_with_a_mark_finds_the_plain_one_and_back(box):
+    issue(box.conn, MEMBER, "run-1")
+    store(box.conn, "ev-car", "member", "car.pdf", caption=None)
+    read_as(box.conn, "ev-car", "insured vehicle: Škoda Octavia")
+    for call_id, query in (("c1", "skoda"), ("c2", "Škodu")):
+        found = box.call("search", signed("search", {"query": query}, call_id=call_id))["results"]
+        assert [record["name"] for record in found] == ["car.pdf"], query
+
+
+def test_a_record_is_listed_once_however_many_of_its_pages_match(box):
+    issue(box.conn, MEMBER, "run-1")
+    store(box.conn, "ev-contract", "member", "contract.pdf", caption="lease")
+    read_as(box.conn, "ev-contract", "the lease starts", "the lease ends", "lease terms")
+    found = box.call("search", signed("search", {"query": "lease"}))["results"]
+    assert [record["name"] for record in found] == ["contract.pdf"]
+
+
+def test_search_by_text_never_reaches_another_members_personal_record(box):
+    issue(box.conn, MEMBER, "run-1")
+    store(box.conn, "ev-owner", "owner", "owner.pdf", private=True, caption=None)
+    read_as(box.conn, "ev-owner", "the diagnosis and the clinic")
+    store(box.conn, "ev-shared", "member", "shared.pdf", caption=None)
+    read_as(box.conn, "ev-shared", "the clinic opens at nine")
+    found = box.call("search", signed("search", {"query": "diagnosis clinic"}))["results"]
+    assert [record["name"] for record in found] == ["shared.pdf"]
+
+
+def test_get_reads_a_record_page_by_page(box):
+    issue(box.conn, MEMBER, "run-1")
+    store(box.conn, "ev-doc", "member", "doc.pdf")
+    read_as(box.conn, "ev-doc", "first page", "", "third page")
+    first = box.call("get", signed("get", {"id": "ev-doc"}, call_id="c1"))
+    assert (first["text_status"], first["pages"], first["page"], first["text"]) == ("read", 3, 1, "first page")
+    blank = box.call("get", signed("get", {"id": "ev-doc", "page": 2}, call_id="c2"))
+    assert (blank["page"], blank["text"]) == (2, "")
+    with pytest.raises(ToolRefused, match="no page 4: the record has 3"):
+        box.call("get", signed("get", {"id": "ev-doc", "page": 4}, call_id="c3"))
+
+
+@pytest.mark.parametrize(("job", "status"), [("queued", "reading"), ("running", "reading"), ("failed", "failed")])
+def test_get_says_when_a_text_is_not_there_yet_or_will_not_be(box, job, status):
+    issue(box.conn, MEMBER, "run-1")
+    store(box.conn, "ev-doc", "member", "doc.pdf")
+    read_as(box.conn, "ev-doc", job=job)
+    record = box.call("get", signed("get", {"id": "ev-doc"}))
+    assert record["text_status"] == status
+    assert "text" not in record
+
+
+def test_get_says_a_text_waits_when_its_kind_cannot_be_read_now(box):
+    """A voice note's text waits for the speech model the owner has not installed: "reading" would be told for days
+    (finding I8)."""
+    box.readable = lambda: frozenset({"pdf"})
+    issue(box.conn, MEMBER, "run-1")
+    store(box.conn, "ev-voice", "member", "voice.ogg", mime="audio/ogg")
+    store(box.conn, "ev-doc", "member", "doc.pdf")
+    read_as(box.conn, "ev-voice", job="queued", kind="voice")
+    read_as(box.conn, "ev-doc", job="queued")
+    assert box.call("get", signed("get", {"id": "ev-voice"}, call_id="c1"))["text_status"] == "waiting"
+    assert box.call("get", signed("get", {"id": "ev-doc"}, call_id="c2"))["text_status"] == "reading"
+
+
+def test_get_says_what_part_of_the_original_a_text_leaves_out(box):
+    """A limit cut what was read (finding I6): the model must not take the text for the whole document."""
+    issue(box.conn, MEMBER, "run-1")
+    store(box.conn, "ev-scan", "member", "lease.pdf")
+    read_as(box.conn, "ev-scan", "first page", note="OCR read the first 50 of 70 scanned pages")
+    record = box.call("get", signed("get", {"id": "ev-scan"}))
+    assert (record["text_status"], record["partial"]) == ("read", "OCR read the first 50 of 70 scanned pages")
+    issue(box.conn, MEMBER, "run-2")
+    store(box.conn, "ev-whole", "member", "whole.pdf")
+    read_as(box.conn, "ev-whole", "all of it")
+    assert "partial" not in box.call("get", signed("get", {"id": "ev-whole"}, run_id="run-2"))
+
+
+def test_get_says_a_record_without_a_reader_has_no_text(box):
+    issue(box.conn, MEMBER, "run-1")
+    store(box.conn, "ev-zip", "member", "archive.zip", mime="application/zip")
+    assert box.call("get", signed("get", {"id": "ev-zip"}))["text_status"] == "none"
+
+
+def test_a_page_longer_than_get_returns_is_cut_and_says_so(box):
+    issue(box.conn, MEMBER, "run-1")
+    store(box.conn, "ev-long", "member", "long.pdf")
+    read_as(box.conn, "ev-long", "x" * (GET_CHARS + 500))
+    record = box.call("get", signed("get", {"id": "ev-long"}))
+    assert (len(record["text"]), record["cut"]) == (GET_CHARS, True)
+
+
+def test_the_original_of_a_record_that_could_not_be_read_can_still_be_sent(box):
+    issue(box.conn, OWNER, "run-1")
+    store(box.conn, "ev-1", "owner", "scan.pdf", private=True, state="failed")
+    assert box.call("send_original", signed("send_original", {"id": "ev-1"}))["sent"] is True
