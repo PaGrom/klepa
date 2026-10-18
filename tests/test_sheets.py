@@ -75,6 +75,22 @@ def test_an_open_document_spreadsheet_is_read_without_its_empty_repeats(tmp_path
     assert (code, text) == (0, "Trips\nMuseum\tMay\n")
 
 
+def test_an_open_document_cell_keeps_every_word_of_its_paragraphs_and_runs(tmp_path):
+    """A cell's words may sit in several paragraphs, in formatted runs, after a run of spaces or a tab: each stays a
+    word of its own (final review, M-B)."""
+    cell = (
+        '<table:table-cell><text:p>Water <text:span text:style-name="T1">bill</text:span> paid</text:p>'
+        '<text:p>second<text:s text:c="2"/>line<text:tab/>end</text:p></table:table-cell>'
+    )
+    source = tmp_path / "bills.ods"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr(
+            "content.xml", CONTENT.replace("<table:table-cell><text:p>Museum</text:p></table:table-cell>", cell)
+        )
+    code, text = read(source, tmp_path)
+    assert (code, text) == (0, "Trips\nWater bill paid second line end\tMay\n")
+
+
 def test_a_member_that_unpacks_past_its_limit_is_not_read(tmp_path, monkeypatch):
     monkeypatch.setattr(sheets, "MAX_MEMBER_BYTES", 1000)
     code, text = read(xlsx(tmp_path / "bomb.xlsx", **{"xl/media/big.bin": b"0" * 5000}), tmp_path)

@@ -26,6 +26,7 @@ _MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _RELATION = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
 _TABLE = "{urn:oasis:names:tc:opendocument:xmlns:table:1.0}"
 _TEXT = "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}"
+_SPACES = frozenset({_TEXT + "s", _TEXT + "tab", _TEXT + "line-break"})  # a run of spaces, a tab, a line break
 
 Event = tuple[str, str | list[str]]  # ("sheet", its name) or ("row", its cells)
 
@@ -91,13 +92,30 @@ def _xlsx(archive: zipfile.ZipFile) -> Iterator[Event]:
                     element.clear()
 
 
+def _ods_cell(cell: ElementTree.Element) -> str:
+    """A cell's text: every paragraph and every formatted run in it, with a space wherever the document breaks a
+    paragraph or writes a run of spaces, a tab or a line break."""
+    parts: list[str] = []
+
+    def walk(node: ElementTree.Element) -> None:
+        parts.append(" " if node.tag in _SPACES else node.text or "")
+        for child in node:
+            walk(child)
+            parts.append(child.tail or "")
+        if node.tag == _TEXT + "p":
+            parts.append(" ")
+
+    walk(cell)
+    return " ".join("".join(parts).split())
+
+
 def _ods(archive: zipfile.ZipFile) -> Iterator[Event]:
     with archive.open("content.xml") as stream:
         for event, element in ElementTree.iterparse(stream, events=("start", "end")):
             if event == "start" and element.tag == _TABLE + "table":
                 yield "sheet", element.get(_TABLE + "name") or ""
             elif event == "end" and element.tag == _TABLE + "table-row":
-                cells = [" ".join(_texts(p, _TEXT + "p").split()) for p in element if p.tag == _TABLE + "table-cell"]
+                cells = [_ods_cell(cell) for cell in element if cell.tag == _TABLE + "table-cell"]
                 if any(cells):
                     yield "row", [cell for cell in cells if cell]
                 element.clear()
