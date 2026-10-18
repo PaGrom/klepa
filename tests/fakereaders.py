@@ -66,6 +66,9 @@ data = open(source, "rb").read().decode("utf-8", "replace")
 if "SLOW" in data:
     import time
     time.sleep(30)
+if "PAUSE" in data:  # longer than the two seconds after which Core says it is listening
+    import time
+    time.sleep(3)
 if "BROKEN" in data:
     sys.exit(3)
 if data.startswith("LINK "):  # a reader a planted file broke: a link where its text goes
