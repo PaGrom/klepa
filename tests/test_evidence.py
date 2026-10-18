@@ -181,3 +181,19 @@ async def test_a_copy_conflict_is_tried_again_after_a_restart(store):
     (target_dir / row["disk_name"]).unlink()  # the owner clears the conflict
     assert store.retry_failed_copies() == 1
     assert await store.copy_pending() == 1
+
+
+def indexed(store, record_id):
+    rows = store.conn.execute("SELECT page, body, name, caption FROM evidence_fts WHERE evidence_id=?", (record_id,))
+    return [tuple(row) for row in rows]
+
+
+async def test_a_stored_original_is_found_by_its_name_and_caption(store):
+    """Search reads one index: an original is in it from the moment it is stored, by its name and caption (page 0);
+    its text joins later, page by page, once a reader has read it."""
+    row = await store.ingest(dataclasses.replace(incoming(), caption="policy for the car"))
+    assert indexed(store, row["id"]) == [(0, "", "Contract.pdf", "policy for the car")]
+    big = store.record_too_large(incoming(message_id=8, name="Scan.pdf"), 30_000_000)
+    assert indexed(store, big["id"]) == [(0, "", "Scan.pdf", "")]
+    await store.ingest(incoming())  # the same message again: still one row
+    assert len(indexed(store, row["id"])) == 1

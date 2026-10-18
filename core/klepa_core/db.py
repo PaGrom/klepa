@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .config import Config
 from .names import sanitize_original_name
+from .search import fold_sql
 
 SCHEMA_V1 = (
     """CREATE TABLE member (
@@ -157,6 +158,38 @@ SCHEMA_V4 = (
     "ALTER TABLE host_run ADD COLUMN succeeded INTEGER",
 )
 
+# Stage 2b: attachments read in a sandbox (spec 5.4, 5.6, 6.1 item 4). A job per original, with a note when a limit
+# left part of the original unread; the texts it yields, a page each; and the search index over the names, captions
+# and texts of every record (page 0: name and caption). The texts are records of their originals, kept here like them
+# (spec 5.3).
+SCHEMA_V5 = (
+    """CREATE TABLE job (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(id),
+        kind TEXT NOT NULL CHECK (kind IN ('voice', 'video', 'pdf', 'image', 'document', 'sheet', 'text')),
+        state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        pages INTEGER,
+        note TEXT,
+        created_at REAL NOT NULL,
+        started_at REAL,
+        ended_at REAL)""",
+    "CREATE INDEX job_state ON job(state, id)",
+    """CREATE TABLE evidence_text (
+        evidence_id TEXT NOT NULL REFERENCES evidence(id),
+        page INTEGER NOT NULL CHECK (page >= 1),
+        text TEXT NOT NULL,
+        extractor TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (evidence_id, page))""",
+    """CREATE VIRTUAL TABLE evidence_fts USING fts5(
+        body, name, caption, evidence_id UNINDEXED, page UNINDEXED,
+        tokenize = 'unicode61 remove_diacritics 2')""",
+    "INSERT INTO evidence_fts(body, name, caption, evidence_id, page) "
+    f"SELECT '', {fold_sql("COALESCE(original_name, '')")}, {fold_sql("COALESCE(caption, '')")}, id, 0 FROM evidence",
+)
+
 
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -208,6 +241,12 @@ def migrate(conn: sqlite3.Connection) -> int:
                 conn.execute(statement)
             conn.execute("INSERT INTO schema_version(version) VALUES (4)")
         current = 4
+    if current < 5:
+        with transaction(conn):
+            for statement in SCHEMA_V5:
+                conn.execute(statement)
+            conn.execute("INSERT INTO schema_version(version) VALUES (5)")
+        current = 5
     return current
 
 

@@ -28,6 +28,7 @@ from .documents import DocumentsFolder
 from .durable import make_dirs_durably, write_new_atomically
 from .events import EventLog, utc_now_iso
 from .names import disk_name
+from .search import index_names
 
 
 @dataclass(frozen=True)
@@ -151,6 +152,7 @@ class EvidenceStore:
                     json.dumps(list(f.tags)),
                 ),
             )
+            index_names(self.conn, evidence_id, f.original_name, f.caption)
         self.events.log("evidence_stored", {"evidence_id": evidence_id, "kind": f.kind, "space_id": f.space_id})
         row = self.by_ingest_key(key)
         assert row is not None
@@ -189,6 +191,7 @@ class EvidenceStore:
                     f.caption,
                 ),
             )
+            index_names(self.conn, evidence_id, f.original_name, f.caption)
         self.events.log("evidence_too_large", {"evidence_id": evidence_id, "size": size})
         row = self.by_ingest_key(key)
         assert row is not None

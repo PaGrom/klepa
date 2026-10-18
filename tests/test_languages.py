@@ -3,6 +3,7 @@
 import pytest
 
 from klepa_core.locale import load_locale
+from klepa_core.search import find, index_names, index_pages
 from klepa_core.spaces import is_private_caption
 
 
@@ -97,3 +98,35 @@ def test_service_texts_render(code):
     assert "PermissionError" in line
     assert "{" not in line
     assert loc.service_text("status_button")
+
+
+def _record(conn, record_id, *, name=None, caption=None, pages=()):
+    conn.execute(
+        "INSERT INTO evidence(id, space_id, kind, original_name, received_at, channel, chat_id, message_id, "
+        "update_id, authenticated_subject, ingest_key, state, caption) "
+        "VALUES (?, 'shared', 'file', ?, '2026-10-07T10:00:00Z', 'telegram', 1, ?, 1, 'owner', ?, 'processed', ?)",
+        (record_id, name, abs(hash(record_id)) % 100_000, f"k:{record_id}", caption),
+    )
+    index_names(conn, record_id, name, caption)
+    index_pages(conn, record_id, list(pages))
+
+
+@pytest.mark.parametrize(
+    ("written", "stem"),
+    [
+        ("справка для ребёнка", "ребенк"),
+        ("справка для ребенка", "ребёнк"),
+        ("Приём у врача", "прием"),
+        ("всё оплачено", "все"),
+        ("Ёлка во дворе", "елк"),
+        ("елка во дворе", "Ёлк"),
+    ],
+)
+def test_search_finds_yo_written_as_ye_and_back(core_db, written, stem):
+    """OCR and whisper mostly write ye where people and the model write yo; SQLite folds only Latin marks (finding
+    I7)."""
+    conn = core_db[1]
+    _record(conn, "ev-page", pages=(written,))
+    _record(conn, "ev-caption", name="scan.pdf", caption=written)
+    found = {hit.evidence_id for hit in find(conn, ("shared",), ("processed",), [stem], 10)}
+    assert found == {"ev-page", "ev-caption"}
