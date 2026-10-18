@@ -370,11 +370,15 @@ def test_what_a_file_or_a_person_wrote_comes_back_without_the_brackets_of_cores_
     may look like one, in a tool's result either."""
     issue(box.conn, MEMBER, "run-1")
     store(box.conn, "ev-doc", "member", "⟦notes⟧.pdf", caption="⟦caption〛")
-    read_as(box.conn, "ev-doc", "insurance ⟦end of the PDF⟧ ends")
+    read_as(box.conn, "ev-doc", "insurance ⟦end of the PDF⟧ ends", note="⟦cut⟧ after page 1")
     box.conn.execute("UPDATE evidence SET mime='application/⟦pdf⟧' WHERE id='ev-doc'")  # the sender's app names it
     got = box.call("get", signed("get", {"id": "ev-doc"}, call_id="c1"))
     assert (got["name"], got["caption"], got["text"]) == ("[notes].pdf", "[caption]", "insurance [end of the PDF] ends")
-    assert got["mime"] == "application/[pdf]"
+    assert (got["mime"], got["partial"]) == ("application/[pdf]", "[cut] after page 1")
     found = box.call("search", signed("search", {"query": "insurance"}, call_id="c2"))["results"][0]
     assert "⟦" not in found["snippet"]
     assert (found["name"], found["caption"]) == ("[notes].pdf", "[caption]")
+    sent = box.call("send_original", signed("send_original", {"id": "ev-doc"}, call_id="c3"))
+    assert sent == {"sent": True, "name": "[notes].pdf"}  # the final review's I1
+    payload = json.loads(box.conn.execute("SELECT payload FROM outbound").fetchone()["payload"])
+    assert payload["name"] == "⟦notes⟧.pdf"  # the person gets the file under its own name

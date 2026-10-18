@@ -301,7 +301,7 @@ def _get(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
     pages = int(job["pages"] or 0)
     record["pages"] = pages
     if job["note"]:
-        record["partial"] = job["note"]  # what a limit left out of the text (finding I6)
+        record["partial"] = clean(job["note"])  # what a limit left out of the text (finding I6)
     page = params.get("page", 1)
     if pages == 0 and "page" not in params:
         return record  # read, and nothing was found in it: a silent recording, a blank scan
@@ -332,7 +332,7 @@ def _send_original(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
         "name": sanitize_original_name(row["original_name"] or row["disk_name"]),
     }
     box.outbox.enqueue_document(f"original:{caller.run_id}:{row['id']}", caller.chat_id, document)
-    return {"sent": True, "name": document["name"]}
+    return {"sent": True, "name": clean(document["name"])}  # the file keeps its name; the model reads it clean
 
 
 TOOLS = (
