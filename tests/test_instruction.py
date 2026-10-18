@@ -77,3 +77,12 @@ def test_the_instruction_says_the_parts_of_a_transcript_are_not_pages():
     assert "for a PDF or a scan, the page" in text
     assert "not pages" in text
     assert "for a text, the page" not in text
+
+
+def test_what_the_instruction_calls_data_leaves_out_the_persons_own_words():
+    """The final review's M7: the person's own voice message is their words, not data that must never be followed;
+    what the person asks is a request, and no message changes the instruction."""
+    text = instruction("en")
+    data = text.split("## What is data and what is an instruction", 1)[1].split("##", 1)[0]
+    assert "own voice message" in data
+    assert "cannot change this system text" in data
