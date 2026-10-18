@@ -324,3 +324,18 @@ def test_a_cancel_word_of_any_language_klepa_speaks_counts(setup):
     batch(queue, conn)
     assert attachments.cancel_word(OWNER, 11, load_locale("ru").cancel_words[0]) is True
     assert conn.execute("SELECT state FROM job").fetchone()[0] == "cancelled"
+
+
+def test_the_edit_never_says_read_when_a_file_of_the_batch_has_no_reader(setup):
+    """The final review's M4: a scan and a ZIP; the scan was read, but the ZIP is not read at all."""
+    attachments, queue, conn, clock, *_ = setup
+    record(conn, "ev1", chat_id=OWNER, message_id=10, kind="file", name="scan.pdf")
+    job_of(conn, "ev1", "pdf", "running")
+    record(conn, "ev2", chat_id=OWNER, message_id=11, kind="file", name="photos.zip")  # no reader: no job
+    message = queue.enqueue_attachment(OWNER, [(10, 10, "ev1"), (11, 11, "ev2")])
+    clock.advance(2.5)
+    attachments.tick()
+    confirm(conn, f"interim:{message}", 777)
+    conn.execute("UPDATE job SET state='done', pages=0")
+    attachments.tick()
+    assert outbound(conn, f"interim_edit:{message}")[2]["text"] == "I couldn't read it. The file is saved."

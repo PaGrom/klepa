@@ -267,7 +267,7 @@ class Attachments:
         if not self.queue.ready(row):
             return None
         states = [record["state"] for record in self._records(int(row["id"]))]
-        if any(state in ("failed", "cancelled") for state in states):
+        if any(state in (None, "failed", "cancelled") for state in states):  # None: a kind no reader reads
             return "interim_unread"
         if any(state in ("queued", "running") for state in states):  # ready, yet waiting for what the owner installs
             return "interim_later"
