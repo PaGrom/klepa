@@ -175,3 +175,40 @@ async def test_the_person_hears_when_their_original_could_not_be_sent(fake_tg, a
     assert [(row["idempotency_key"], row["chat_id"], json.loads(row["payload"])["text"]) for row in notices] == [
         ("failed:original:r:1", OWNER, "could not send Διαβατήριο scan.pdf")
     ]
+
+
+# ---- edits of Core's own messages (stage 2b-2) ---------------------------------------------------------------------
+
+
+async def test_an_edit_rewrites_cores_message_and_drops_its_buttons(fake_tg, api, outbox_factory):
+    outbox = outbox_factory(api)
+    assert outbox.enqueue_edit("edit:1", OWNER, 777, "🎧 listened") is True
+    assert outbox.enqueue_edit("edit:1", OWNER, 777, "🎧 listened") is False  # the same key twice is one edit
+    await outbox.send_due()
+    assert fake_tg.edited == [
+        {"chat_id": OWNER, "message_id": 777, "text": "🎧 listened", "link_preview_options": {"is_disabled": True}}
+    ]  # no reply_markup: Telegram drops the buttons
+    assert tuple(state(outbox, "edit:1")) == ("CONFIRMED", 1, 777)
+
+
+async def test_an_edit_that_changes_nothing_is_done_and_one_telegram_refuses_fails(fake_tg, api, outbox_factory):
+    outbox = outbox_factory(api)
+    fake_tg.fail("editMessageText", status=400, description="Bad Request: message is not modified")
+    fake_tg.fail("editMessageText", status=400, description="Bad Request: message can't be edited")
+    outbox.enqueue_edit("edit:same", OWNER, 777, "x")
+    outbox.enqueue_edit("edit:old", OWNER, 778, "x")
+    await outbox.send_due()
+    assert state(outbox, "edit:same")["state"] == "CONFIRMED"
+    assert state(outbox, "edit:old")["state"] == "FAILED"  # never retried, never blocks what comes after
+
+
+async def test_a_send_that_has_not_left_may_be_withdrawn(fake_tg, api, outbox_factory):
+    outbox = outbox_factory(api)
+    outbox.enqueue_text("interim", OWNER, "🎧 listening…")
+    assert outbox.state("interim") == "PENDING"
+    assert outbox.withdraw("interim") is True
+    await outbox.send_due()
+    assert fake_tg.sent == []
+    assert outbox.state("interim") == "FAILED"
+    assert outbox.withdraw("interim") is False  # only what has not left
+    assert outbox.state("missing") is None

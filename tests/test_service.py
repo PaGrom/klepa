@@ -80,3 +80,11 @@ def test_cli_init_creates_the_documents_folder(make_config, install):
     finally:
         os.umask(umask)
     assert install["documents_dir"].is_dir()
+
+
+async def test_a_press_without_a_host_says_the_button_no_longer_works(fake_tg, make_config):
+    """Without a host Core shows no buttons in the family bot: a press there is old or forged."""
+    cfg = make_config(api_root=fake_tg.url)
+    fake_tg.press(OWNER, {"message_id": 900001, "chat": {"id": OWNER, "type": "private"}}, "f" * 32)
+    await run_until(cfg, lambda: fake_tg.answered)
+    assert fake_tg.answered == [{"callback_query_id": "cb1", "text": "This button no longer works."}]

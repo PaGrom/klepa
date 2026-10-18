@@ -16,12 +16,30 @@ hold = "g"
 held_dropped = "h"
 turn_failed = "t"
 original_failed = "not sent: {name}"
+interim_listening = "interim_listening text"
+interim_reading = "interim_reading text"
+interim_listened = "interim_listened text"
+interim_read = "interim_read text"
+interim_unread = "interim_unread text"
+interim_later = "interim_later text"
+interim_cancelled = "interim_cancelled text"
+cancel_button = "cancel_button text"
+cancel_which = "cancel_which text"
+cancel_all = "cancel_all text"
+button_expired = "button_expired text"
+label_voice = "label_voice text"
+label_photo = "label_photo text"
+label_video = "label_video text"
+label_file = "label_file text"
 
 [receipts]
 one_file = "got it"
 one_voice = "got the voice message"
 voices = "got {n} voice messages"
 files = { one = "got {n} file", other = "got {n} files" }
+
+[cancel]
+words = ["Cancel", "stop"]
 
 [spaces]
 shared_folder = "Shared"
@@ -124,6 +142,13 @@ def test_unknown_locale_is_refused():
 def test_complete_locale_from_a_directory_loads(tmp_path):
     (tmp_path / "xx.toml").write_text(COMPLETE, encoding="utf-8")
     assert load_locale("xx", directory=tmp_path).receipt(["file"] * 2) == "got 2 files"
+    assert load_locale("xx", directory=tmp_path).cancel_words == ("cancel", "stop")  # compared case-blind
+
+
+def test_a_locale_without_cancel_words_is_refused(tmp_path):
+    (tmp_path / "xx.toml").write_text(COMPLETE.replace('words = ["Cancel", "stop"]', "words = []"), encoding="utf-8")
+    with pytest.raises(LocaleError, match=r"cancel\.words"):
+        load_locale("xx", directory=tmp_path)
 
 
 @pytest.mark.parametrize(

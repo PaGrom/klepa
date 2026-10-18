@@ -125,3 +125,10 @@ async def test_a_document_is_uploaded_under_its_name_as_utf8(fake_tg, api):
     assert (sent["name"], sent["data"]) == ("Διαβατήριο '1'.pdf", b"%PDF x")
     assert json.loads(sent["params"]["reply_parameters"])["message_id"] == 5
     assert message["document"]["file_name"] == sent["name"]
+
+
+async def test_an_edit_keeps_previews_off_and_names_the_message(fake_tg, api):
+    await api.edit_message_text(OWNER, 42, "edited")
+    assert fake_tg.edited == [
+        {"chat_id": OWNER, "message_id": 42, "text": "edited", "link_preview_options": {"is_disabled": True}}
+    ]

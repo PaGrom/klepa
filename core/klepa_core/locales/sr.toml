@@ -12,6 +12,21 @@ hold = "Trenutno sam na održavanju. Sačuvala sam tvoju poruku i odgovoriću ka
 held_dropped = "Nisam stigla da odgovorim na vreme. Pošalji, molim te, poruku ponovo."
 turn_failed = "Nisam uspela da odgovorim: nešto se pokvarilo kod mene, i vlasnik to već zna. Pitaj ponovo malo kasnije, molim te."
 original_failed = "Nisam uspela da pošaljem fajl {name}. Zamoli me ponovo malo kasnije, molim te."
+interim_listening = "🎧 slušam…"
+interim_reading = "📄 čitam…"
+interim_listened = "🎧 preslušala sam"
+interim_read = "📄 pročitala sam"
+interim_unread = "Nisam uspela da pročitam. Fajl je sačuvan."
+interim_later = "Pročitaću kasnije. Fajl je sačuvan."
+interim_cancelled = "Otkazala sam. Fajl je sačuvan."
+cancel_button = "Otkaži"
+cancel_which = "Šta da otkažem?"
+cancel_all = "Sve"
+button_expired = "Ovo dugme više ne radi."
+label_voice = "glasovna poruka"
+label_photo = "fotografija"
+label_video = "video"
+label_file = "fajl"
 
 [receipts]
 one_file = "📄 primila sam"
@@ -63,3 +78,6 @@ alert_host_model_auth = "⚠️ Model nije prihvatio token: dok ponovo ne prorad
 alert_host_model_unavailable = "⚠️ Model nije odgovorio na početnu proveru ({reason}). Host ipak radi: na svaku poruku ljudi dobijaju izvinjenje dok model ponovo ne odgovori."
 alert_egress_failed = "⚠️ Proksi za odlazni saobraćaj ne može da se pokrene ({error}). Host ne može da dođe do modela."
 alert_processing_unavailable = "⚠️ Prilozi se čuvaju, ali se ne čitaju ({missing}). Čekaju: kada se instalira ono što nedostaje i jezgro ponovo pokrene, biće pročitani."
+
+[cancel]
+words = ["otkaži", "otkazi", "откажи", "stop", "стоп", "cancel"]

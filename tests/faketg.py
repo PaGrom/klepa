@@ -16,6 +16,7 @@ class FakeTelegram:
     def __init__(self, token: str, username: str = "test_bot") -> None:
         self.token = token
         self.username = username
+        self.bot_id = 1  # what getMe says; the canary test sets one no other number in a request contains
         self.answered: list[dict[str, Any]] = []
         self._next_callback_id = 0
         self.token_valid = True
@@ -24,6 +25,7 @@ class FakeTelegram:
         self.offsets_seen: list[int | None] = []
         self.files: dict[str, dict[str, Any]] = {}
         self.sent: list[dict[str, Any]] = []
+        self.edited: list[dict[str, Any]] = []
         self.documents: list[dict[str, Any]] = []
         self.calls: list[str] = []
         self.failures: dict[str, list[dict[str, Any]]] = {}
@@ -196,6 +198,7 @@ class FakeTelegram:
             "sendMessage": self._send_message,
             "sendDocument": self._send_document,
             "answerCallbackQuery": self._answer_callback,
+            "editMessageText": self._edit_message,
             "getMe": self._get_me,
         }.get(method)
         result = await handler(params) if handler else True
@@ -244,7 +247,7 @@ class FakeTelegram:
         return True
 
     async def _get_me(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"id": 1, "is_bot": True, "first_name": "Test bot", "username": self.username}
+        return {"id": self.bot_id, "is_bot": True, "first_name": "Test bot", "username": self.username}
 
     async def _send_message(self, params: dict[str, Any]) -> dict[str, Any]:
         self._next_sent_id += 1
@@ -256,6 +259,11 @@ class FakeTelegram:
         }
         self.sent.append({"params": params, "message": message})
         return message
+
+    async def _edit_message(self, params: dict[str, Any]) -> dict[str, Any]:
+        self.edited.append(params)
+        message = {"message_id": params["message_id"], "date": int(time.time()), "text": params.get("text", "")}
+        return message | {"chat": {"id": params["chat_id"], "type": "private"}}
 
     async def _send_document(self, params: dict[str, Any]) -> dict[str, Any]:
         self._next_sent_id += 1

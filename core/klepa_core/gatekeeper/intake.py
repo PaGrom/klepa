@@ -1,7 +1,8 @@
 """Classify a raw Telegram update (docs/architecture.md: Intake). Pure function, no I/O.
 
-Only `message` updates from a private chat where chat.id == from.id == a member are accepted.
-Everything else is rejected (strangers, groups, bots) or ignored (other update types).
+Only `message` updates and presses of Core's buttons (`callback_query`) from a private chat where chat.id == from.id
+== a member are accepted (spec 6.1 item 2). Everything else is rejected (strangers, groups, bots) or ignored (other
+update types).
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ class Classified:
     attachment: Attachment | None = None
     forwarded: bool = False
     command: str | None = None
+    callback_id: str | None = None  # a press: Telegram's id for it, and the button's data
+    data: str | None = None
 
 
 def _attachment(msg: dict[str, Any]) -> Attachment | None:
@@ -74,8 +77,32 @@ def _attachment(msg: dict[str, Any]) -> Attachment | None:
     return None
 
 
+def _press(callback: dict[str, Any], members: dict[int, Member]) -> Classified:
+    """A press of one of Core's buttons, on a message of the bot in a member's private chat."""
+    sender = callback.get("from") or {}
+    message = callback.get("message") or {}
+    chat = message.get("chat") or {}
+    if sender.get("is_bot") or chat.get("type") != "private" or chat.get("id") != sender.get("id"):
+        return Classified("reject", reason="press_chat", from_id=sender.get("id"))
+    sender_id = sender.get("id")
+    member = members.get(sender_id) if isinstance(sender_id, int) else None
+    if member is None or not isinstance(callback.get("id"), str):
+        return Classified("reject", reason="not_member", from_id=sender.get("id"))
+    return Classified(
+        "press",
+        from_id=sender["id"],
+        chat_id=chat["id"],
+        message_id=message.get("message_id"),
+        person_id=member.person_id,
+        callback_id=callback["id"],
+        data=str(callback.get("data") or ""),
+    )
+
+
 def classify(update: dict[str, Any], members: dict[int, Member]) -> Classified:
     kinds = sorted(k for k in update if k != "update_id")
+    if kinds == ["callback_query"]:
+        return _press(update["callback_query"], members)
     if kinds != ["message"]:
         return Classified("ignore", reason="update_type:" + (",".join(kinds) or "empty"))
     msg = update["message"]

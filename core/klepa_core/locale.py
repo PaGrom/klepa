@@ -26,6 +26,21 @@ TEXT_KEYS = (
     "held_dropped",
     "turn_failed",
     "original_failed",
+    "interim_listening",
+    "interim_reading",
+    "interim_listened",
+    "interim_read",
+    "interim_unread",
+    "interim_later",
+    "interim_cancelled",
+    "cancel_button",
+    "cancel_which",
+    "cancel_all",
+    "button_expired",
+    "label_voice",
+    "label_photo",
+    "label_video",
+    "label_file",
 )
 TEXT_FIELDS: dict[str, tuple[str, ...]] = {"original_failed": ("name",)}
 SERVICE_FIELDS: dict[str, tuple[str, ...]] = {
@@ -123,6 +138,7 @@ class Locale:
     service: Mapping[str, str]
     shared_folder: str
     private_keywords: tuple[str, ...]
+    cancel_words: tuple[str, ...] = ()  # a message of only one of these cancels the reading of a file (spec 6.1)
 
     def text(self, key: str) -> str:
         return self.texts[key]
@@ -198,6 +214,10 @@ def _checked(code: str, raw: dict[str, Any]) -> Locale:
     keywords = spaces.get("private_keywords")
     if not isinstance(keywords, list) or not keywords or not all(is_text(k) for k in keywords):
         raise fail("spaces.private_keywords must be a non-empty list of words")
+    cancel = raw.get("cancel") or {}
+    words = cancel.get("words")
+    if not isinstance(words, list) or not words or not all(is_text(w) for w in words):
+        raise fail("cancel.words must be a non-empty list of words")
     service = raw.get("service") or {}
     for key, fields in SERVICE_FIELDS.items():
         template = service.get(key)
@@ -221,4 +241,5 @@ def _checked(code: str, raw: dict[str, Any]) -> Locale:
         service={key: service[key] for key in SERVICE_FIELDS},
         shared_folder=spaces["shared_folder"],
         private_keywords=tuple(keywords),
+        cancel_words=tuple(word.casefold() for word in words),
     )

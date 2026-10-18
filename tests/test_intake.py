@@ -1,5 +1,6 @@
 import pytest
 
+from helpers import MEMBER, OWNER, STRANGER
 from klepa_core.config import Member
 from klepa_core.gatekeeper.intake import classify
 
@@ -75,12 +76,33 @@ def test_no_sender_is_rejected():
     assert classify(update, MEMBERS).reason == "no_sender"
 
 
-@pytest.mark.parametrize(
-    "kind", ["edited_message", "channel_post", "business_message", "callback_query", "my_chat_member"]
-)
+@pytest.mark.parametrize("kind", ["edited_message", "channel_post", "business_message", "my_chat_member"])
 def test_other_update_types_are_ignored(kind):
     c = classify({"update_id": 1, kind: {}}, MEMBERS)
     assert (c.action, c.reason) == ("ignore", f"update_type:{kind}")
+
+
+def press(from_id, chat_id, chat_type="private", data="abc"):
+    message = {"message_id": 900, "chat": {"id": chat_id, "type": chat_type}}
+    return {"update_id": 1, "callback_query": {"id": "cb1", "from": {"id": from_id}, "message": message, "data": data}}
+
+
+def test_a_members_press_in_their_own_chat_is_taken():
+    c = classify(press(MEMBER, MEMBER), MEMBERS)
+    assert (c.action, c.chat_id, c.message_id, c.callback_id, c.data) == ("press", MEMBER, 900, "cb1", "abc")
+
+
+@pytest.mark.parametrize(
+    ("update", "reason"),
+    [
+        (press(STRANGER, STRANGER), "not_member"),
+        (press(MEMBER, OWNER), "press_chat"),  # a press can come only from the chat's own person
+        (press(MEMBER, -100123, "supergroup"), "press_chat"),
+    ],
+)
+def test_other_presses_are_rejected(update, reason):
+    c = classify(update, MEMBERS)
+    assert (c.action, c.reason) == ("reject", reason)
 
 
 def test_sticker_is_unsupported():

@@ -153,6 +153,16 @@ class BotApi:
             raise Ambiguous("sendDocument: unexpected result")
         return result
 
+    async def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
+        """Rewrite one of Core's own messages. Without reply_markup Telegram drops its buttons."""
+        params = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "link_preview_options": {"is_disabled": True},
+        }
+        await self.call("editMessageText", params, timeout=30)
+
     async def send_chat_action(self, chat_id: int, action: str) -> None:
         await self.call("sendChatAction", {"chat_id": chat_id, "action": action}, timeout=10)
 

@@ -1,4 +1,4 @@
-"""Core's own outbound messages: receipts and fixed replies (stage 1).
+"""Core's own outbound messages: receipts, fixed replies, and edits of its own messages (stage 2b-2).
 
 Simplified delivery: PENDING → SENDING → CONFIRMED | RETRY_WAIT | UNKNOWN | FAILED.
 UNKNOWN is never retried automatically. The fenced state machine arrives in stage 4 (docs/architecture.md: Delivery).
@@ -80,6 +80,34 @@ class Outbox:
         self._wake.set()
         return cursor.rowcount == 1
 
+    def enqueue_edit(self, key: str, chat_id: int, message_id: int, text: str) -> bool:
+        """Rewrite a message Core sent, by Telegram's id for it; its buttons go."""
+        now = utc_now_iso()
+        payload = {"text": text, "message_id": message_id}
+        cursor = self.conn.execute(
+            """INSERT OR IGNORE INTO outbound(idempotency_key, origin, bot, method, chat_id, payload, state,
+                   created_at, updated_at)
+               VALUES (?, 'core', ?, 'editMessageText', ?, ?, 'PENDING', ?, ?)""",
+            (key, self.bot, chat_id, json.dumps(payload, ensure_ascii=False), now, now),
+        )
+        self._wake.set()
+        return cursor.rowcount == 1
+
+    def state(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT state FROM outbound WHERE idempotency_key=?", (key,)).fetchone()
+        return None if row is None else str(row[0])
+
+    def withdraw(self, key: str) -> bool:
+        """A send that has not left yet and is no longer wanted never leaves."""
+        return (
+            self.conn.execute(
+                "UPDATE outbound SET state='FAILED', last_error='withdrawn', updated_at=? "
+                "WHERE idempotency_key=? AND state IN ('PENDING','RETRY_WAIT')",
+                (utc_now_iso(), key),
+            ).rowcount
+            == 1
+        )
+
     def message_id(self, key: str) -> int | None:
         """Telegram's message id of a confirmed send, by idempotency key."""
         row = self.conn.execute("SELECT telegram_message_id FROM outbound WHERE idempotency_key=?", (key,)).fetchone()
@@ -121,6 +149,8 @@ class Outbox:
             try:
                 if row["method"] == "sendDocument":
                     result = await self._send_document(row["chat_id"], payload)
+                elif row["method"] == "editMessageText":
+                    result = await self._edit(row["chat_id"], payload)
                 else:
                     result = await self.api.send_message(
                         row["chat_id"], payload["text"], payload.get("reply_to"), payload.get("reply_markup")
@@ -159,6 +189,15 @@ class Outbox:
                     self.events.log("service_sent", {"outbound_id": row["id"], "key": row["idempotency_key"]})
                 confirmed += 1
         return confirmed
+
+    async def _edit(self, chat_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        assert self.api is not None
+        try:
+            await self.api.edit_message_text(chat_id, payload["message_id"], payload["text"])
+        except BadRequest as exc:
+            if "not modified" not in exc.description.lower():  # already says so: the edit is done
+                raise
+        return {"message_id": payload["message_id"]}
 
     def _told(self, row: sqlite3.Row, payload: dict[str, Any]) -> None:
         if row["method"] == "sendDocument" and self.on_failed is not None:

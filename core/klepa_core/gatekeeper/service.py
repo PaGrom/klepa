@@ -7,6 +7,7 @@ answers it itself. Commands, attachments and everything else stay with Core.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import Any
 
@@ -26,6 +27,7 @@ from ..telegram.client import (
     Conflict,
     DownloadFailed,
     NotSent,
+    TelegramError,
     TooManyRequests,
     Unauthorized,
 )
@@ -81,7 +83,7 @@ class Gatekeeper:
 
     async def process(self, update_id: int, update: dict[str, Any]) -> None:
         c = classify(update, self.members)
-        if c.action not in ("ignore", "reject") and self._behind_a_retry(update_id, c.chat_id):
+        if c.action not in ("ignore", "reject", "press") and self._behind_a_retry(update_id, c.chat_id):
             return  # stays 'new': process_pending takes it after the chat's earlier file (spec 6.1 item 5)
         if c.action == "ignore":
             self.events.log("update_ignored", {"update_id": update_id, "reason": c.reason})
@@ -91,6 +93,8 @@ class Gatekeeper:
             self.journal.mark(update_id, "rejected", c.reason)
         elif c.action == "command":
             self._reply(update_id, c, "start" if c.command == "start" else "no_commands")
+        elif c.action == "press":
+            await self._press(update_id, c)
         elif c.action == "text" and self.host is not None:
             self._to_host(update_id, c)
         elif c.action == "text":
@@ -116,6 +120,14 @@ class Gatekeeper:
         self.outbox.enqueue_text(
             f"reply:{c.chat_id}:{c.message_id}", c.chat_id, self.cfg.locale.text(text_key), reply_to=c.message_id
         )
+        self.journal.mark(update_id, "done")
+
+    async def _press(self, update_id: int, c: Classified) -> None:
+        """A press of Core's button: handled at once, past the chat's queue (spec 6.1 item 6). Core shows no button
+        in this bot yet, so a press is old or forged: the person hears that the button no longer works."""
+        assert c.callback_id is not None
+        with contextlib.suppress(TelegramError, NotSent, Ambiguous):
+            await self.api.answer_callback_query(c.callback_id, self.cfg.locale.text("button_expired"))
         self.journal.mark(update_id, "done")
 
     def _to_host(self, update_id: int, c: Classified) -> None:

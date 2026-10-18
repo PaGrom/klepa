@@ -12,6 +12,21 @@ hold = "I'm under maintenance right now. I saved your message and will answer la
 held_dropped = "I couldn't answer in time. Please send your message again."
 turn_failed = "I couldn't answer just now: something broke on my side, and the owner knows. Please ask again a bit later."
 original_failed = "I couldn't send the file {name}. Please ask me again a bit later."
+interim_listening = "🎧 listening…"
+interim_reading = "📄 reading…"
+interim_listened = "🎧 listened"
+interim_read = "📄 read"
+interim_unread = "I couldn't read it. The file is saved."
+interim_later = "I'll read it later. The file is saved."
+interim_cancelled = "Cancelled. The file is saved."
+cancel_button = "Cancel"
+cancel_which = "What should I cancel?"
+cancel_all = "All"
+button_expired = "This button no longer works."
+label_voice = "voice message"
+label_photo = "photo"
+label_video = "video"
+label_file = "file"
 
 [receipts]
 one_file = "📄 got it"
@@ -62,3 +77,6 @@ alert_host_model_auth = "⚠️ The model refused its token: people get a fixed 
 alert_host_model_unavailable = "⚠️ The model did not answer the start check ({reason}). The host runs anyway: people get an apology for each message until the model answers again."
 alert_egress_failed = "⚠️ The egress proxy does not start ({error}). The host cannot reach the model."
 alert_processing_unavailable = "⚠️ Attachments are kept but not read ({missing}). They wait: once what is missing is installed and Core restarts, they are read."
+
+[cancel]
+words = ["cancel", "stop"]
