@@ -11,6 +11,7 @@ proxy lets no model call out; stage 1 blocks every turn before the model anyway.
 import asyncio
 import contextlib
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ from pathlib import Path
 import pytest
 
 import fakemodel
+from fakereaders import processing_config, processing_section
 from helpers import BASE_CONFIG, MEMBER, OWNER, free_port, query, wait_until, with_service_bot
 from klepa_core import app as core_app
 from klepa_core import db
@@ -30,6 +32,7 @@ from klepa_core.host import gateway as gw
 from klepa_core.host import install as host
 from klepa_core.host import reference
 from klepa_core.host import runtime as rt
+from klepa_core.host.peers import stand_in
 
 RUNTIME = os.environ.get("KLEPA_TEST_RUNTIME")
 pytestmark = pytest.mark.skipif(not RUNTIME, reason="needs KLEPA_TEST_RUNTIME: an installed host runtime")
@@ -84,6 +87,9 @@ async def live_stand(
     table_change=None,
     model=None,
     before_start=None,
+    extra="",
+    timing=None,
+    base=None,
 ):
     own_model = model is None  # stage 2: the gate's model probe needs a model, so every stand has one
     if own_model:
@@ -97,7 +103,7 @@ async def live_stand(
         f'\n[host]\nsocket = "{short_dir / "run" / "adapter.sock"}"\nruntime_dir = "{runtime.root}"\n'
         f"api_port = {free_port()}\nproxy_port = {free_port()}\ngateway_port = {free_port()}\n"
     )
-    text = with_service_bot(BASE_CONFIG, install["service_token_file"], service_tg.url) + section
+    text = with_service_bot(base or BASE_CONFIG, install["service_token_file"], service_tg.url) + section + extra
     cfg = make_config(api_root=fake_tg.url, text=text)
     if True:  # the scripted model, reached through the egress proxy like the real one
         cfg = dataclasses.replace(cfg, host=dataclasses.replace(cfg.host, model=fakemodel.MODEL))
@@ -119,7 +125,9 @@ async def live_stand(
     if before_start is not None:
         before_start(cfg)
     stop = asyncio.Event()
-    core = asyncio.create_task(run_service(cfg, stop, copy_interval=0.2, retry_seconds=1.0, documents_grace=0.0))
+    core = asyncio.create_task(
+        run_service(cfg, stop, copy_interval=0.2, retry_seconds=1.0, documents_grace=0.0, host_timing=timing)
+    )
     current = Live(cfg, fake_tg, service_tg, core, stop, label)
     try:
         yield current
@@ -527,3 +535,132 @@ async def test_a_persons_private_records_stay_theirs(stand_args, fake_model):
         by_chat = {chat: text for chat, text in plain.items() if text.startswith("FOUND:")}
         assert by_chat[MEMBER] == "FOUND: shared-insurance.pdf"
         assert by_chat[OWNER] == "FOUND: owner-insurance.pdf, shared-insurance.pdf"
+
+
+# ---- stage 2b-2: what reaches the model, the attachment as text, the plugin going silent -----------------------------
+
+CANARY_OWNER, CANARY_MEMBER = 7310000041, 7310000042
+CANARY_NAMES = {"owner": "Zorkaowner", "member": "Zorkamember"}
+CANARY_CONFIG = (
+    BASE_CONFIG.replace("111111", str(CANARY_OWNER))
+    .replace("222222", str(CANARY_MEMBER))
+    .replace('name = "Owner"', f'name = "{CANARY_NAMES["owner"]}"')
+    .replace('name = "Member"', f'name = "{CANARY_NAMES["member"]}"')
+)
+
+
+def _scutil(name):
+    result = subprocess.run(["scutil", "--get", name], capture_output=True, text=True)
+    return result.stdout.strip() or None
+
+
+CANARY_BOT = 7310000099
+CANARY_TOKEN = f"{CANARY_BOT}:CANARY-TOKEN-NOT-A-TOKEN"
+
+
+async def test_only_the_declared_set_reaches_the_model_provider(stand_args, fake_model, fake_tg, tmp_path):
+    """The canary test (forum #77239): the requests the real gateway sends the provider, as they leave after every
+    hook, carry what is declared and nothing else that names the family or this Mac: no Telegram id, no other member,
+    no token, no bot id, no account or computer name, no path. Declared: the speaker's configured name and stand-in,
+    the time with its zone, and with an attachment or a search, record ids and the names of the senders of records the
+    speaker may see (here the speaker's own). The run has a voice note, a text and a search. The report names what
+    leaked, never its value, and the fixture by its hash."""
+    stand_args[1]["token_file"].write_text(CANARY_TOKEN)
+    fake_tg.token, fake_tg.bot_id = CANARY_TOKEN, CANARY_BOT
+
+    def script(request):
+        if request.tool_results:
+            return fakemodel.Say(f"FOUND: {len(json.loads(request.tool_results[-1])['results'])}")
+        if "canary check" in request.human:
+            return fakemodel.Call("klepa__search", {"query": "canary"})
+        return fakemodel.Say(f"STUB: {request.human[:200]}")
+
+    fake_model.script = script
+    readers = processing_section(processing_config(tmp_path / "readers"))
+    async with live_stand(*stand_args, model=fake_model, base=CANARY_CONFIG, extra=readers) as live:
+        await wait_until(lambda: live.state() == "RUNNING", timeout=90)
+        live.telegram.add_voice(CANARY_MEMBER, b"canary voice")
+        await wait_until(lambda: any("STUB:" in text for text in live.sent()), timeout=60)
+        live.telegram.add_text(CANARY_MEMBER, "canary check")
+        await wait_until(lambda: any(text.startswith("FOUND:") for text in live.sent()), timeout=60)
+        assert "FOUND: 1" in live.sent()  # the search found the voice note
+        cfg = live.cfg
+        account, host_name = os.environ.get("USER", ""), os.uname().nodename.removesuffix(".local")
+        forbidden = {
+            "the member's Telegram id": str(CANARY_MEMBER),
+            "the owner's Telegram id": str(CANARY_OWNER),
+            "the owner's name": CANARY_NAMES["owner"],
+            "the bot's id": str(CANARY_BOT),
+            "the bot's token": cfg.token_file.read_text().strip(),
+            "the bot's username": live.telegram.username,
+            "the host's token": cfg.host_token_path.read_text().strip(),
+            "the gateway's token": reference.layout_of(cfg).gateway_token.read_text().strip(),
+            "the adapter's key": cfg.adapter_key_path.read_bytes().hex(),
+            "the computer name": _scutil("ComputerName"),
+            "the local host name": _scutil("LocalHostName"),
+            "the host name": host_name if len(host_name) >= 4 else None,
+            "the account name": account if len(account) >= 5 else None,  # a short one is a word; its paths are below
+            "the home folder": str(Path.home()),
+            "the data folder": str(cfg.data_dir),
+            "the documents folder": str(cfg.documents_dir),
+            "the runtime folder": str(cfg.host.runtime_dir),
+            "a path of a home": "/Users/",
+            "a temporary path": "/var/folders/",
+        }
+        forbidden = {name: value for name, value in forbidden.items() if value}
+        fixture = hashlib.sha256(json.dumps(sorted(forbidden.items())).encode()).hexdigest()[:16]
+        bodies = [raw.decode("utf-8", "replace") for raw in fake_model.raw]
+        turns = [body for body in bodies if "canary voice" in body or "canary check" in body]
+        declared = (str(stand_in(cfg.adapter_key_path.read_bytes(), "member")), CANARY_NAMES["member"])
+        assert turns
+        assert all(value in turns[0] for value in declared)  # the declared set does go: these are the member's turns
+        results = [body for body in turns if '\\"from\\"' in body]  # a tool's result is a string in the request
+        assert results  # a search result went too, with who sent what it found
+        leaked = sorted(name for name, value in forbidden.items() if any(value in body for body in bodies))
+        assert not leaked, f"canary {fixture}: {'; '.join(leaked)} reached the model provider"
+        print(f"canary {fixture}: clean in {len(bodies)} requests")
+
+
+async def test_a_voice_note_reaches_the_model_as_its_transcript(stand_args, fake_model, tmp_path):
+    """The attachment as text through the real gateway: the model gets the transcript between Core's marks, with Core's
+    instruction as its whole system prompt, and answers on it; no receipt came first."""
+    readers = processing_section(processing_config(tmp_path / "readers"))
+    async with live_stand(*stand_args, model=fake_model, extra=readers) as live:
+        await wait_until(lambda: live.state() == "RUNNING", timeout=90)
+        live.telegram.add_voice(MEMBER, b"renew the car insurance")
+        await wait_until(lambda: any("STUB:" in text for text in live.sent()), timeout=60)
+        answer = next(text for text in live.sent() if "STUB:" in text)
+        assert "transcript: renew the car insurance" in answer
+        request = next(request for request in fake_model.requests if "renew the car insurance" in request.human)
+        assert request.human.startswith("⟦voice message · record ev")
+        assert request.system.startswith("# Klepa")  # none of OpenClaw's own prompt
+        assert "Working directory" not in request.system
+        assert not [text for text in live.sent() if "got" in text]
+
+
+async def test_a_reply_after_the_plugin_went_silent_waits_and_is_dropped_with_cores_apology(
+    stand_args, fake_model, monkeypatch
+):
+    """Scenario 38, the other half: the plugin goes silent in the middle of a real turn. The model's reply is held and
+    never released while the heartbeat is stale; when it has waited too long it is dropped, and the person gets
+    Core's apology instead."""
+    from klepa_core.host.supervisor import HostTiming, Supervisor
+
+    silent = asyncio.Event()
+    fresh = Supervisor.heartbeat_fresh
+    monkeypatch.setattr(Supervisor, "heartbeat_fresh", lambda self: not silent.is_set() and fresh(self))
+    fake_model.script = lambda request: fakemodel.Say("the late answer", delay=8.0)
+    timing = dataclasses.replace(HostTiming(), drop_after=12.0)
+    async with live_stand(*stand_args, model=fake_model, timing=timing) as live:
+        await wait_until(lambda: live.state() == "RUNNING", timeout=90)
+        live.telegram.add_text(MEMBER, "tell me a story")
+        await wait_until(lambda: any("tell me a story" in r.human for r in fake_model.requests), timeout=60)
+        silent.set()  # the plugin vanishes while the model thinks
+        events = lambda: [row["kind"] for row in query(live.cfg, "SELECT kind FROM event_log")]  # noqa: E731
+        await wait_until(lambda: "host_send_held" in events(), timeout=30)
+        assert "the late answer" not in live.sent()
+        dropped = "I couldn't answer in time. Please send your message again."
+        await wait_until(lambda: dropped in live.sent(), timeout=40)
+        silent.clear()
+        await asyncio.sleep(3)
+        assert "the late answer" not in live.sent()  # dropped, not sent late

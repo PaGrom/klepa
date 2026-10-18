@@ -120,6 +120,7 @@ class FakeModel:
         self.script: Callable[[Request], Say | Call | Fail] = echo
         self.answer_probes = True  # the gate's model probe gets "OK" whatever the script says for people
         self.requests: list[Request] = []
+        self.raw: list[bytes] = []  # every request body exactly as it left the gateway
         self.url = ""
         self.port = 0
         self._calls = 0
@@ -145,7 +146,9 @@ class FakeModel:
         return web.json_response({"object": "list", "data": [{"id": "scripted", "object": "model", "owned_by": "t"}]})
 
     async def _complete(self, http: web.Request) -> web.StreamResponse:
-        body = await http.json()
+        raw = await http.read()
+        self.raw.append(raw)
+        body = json.loads(raw)
         tools = [t.get("function", {}).get("name") for t in body.get("tools") or [] if isinstance(t, dict)]
         request = Request(list(body.get("messages") or []), [name for name in tools if isinstance(name, str)])
         self.requests.append(request)
