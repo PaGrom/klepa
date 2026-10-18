@@ -66,7 +66,9 @@ The data directory must be mode 0700, on a local disk, and never inside iCloud o
 ├─ keys/                      0700: the signing key, the bot tokens, the host's fake token and the adapter key, each 0600
 ├─ incoming/YYYY/MM/          originals, <evidence id>-<name>
 ├─ inbound-journal/inbound.db
-├─ core.db                    members, spaces, evidence, outbound, event log
+├─ core.db                    members, spaces, evidence, outbound, event log; jobs, texts, the search index
+├─ jobs/<job>/                0700: a reader's folder while it runs, with a copy of the original (with processing)
+├─ jobs.stale-<time>/         a jobs folder Core could not remove at a start, moved aside (rare; remove it by hand)
 ├─ core.lock                  one Core per data directory
 ├─ snapshots/                 signed snapshots of core.db, <day>-g<generation>/
 ├─ logs/                      Core's stdout and stderr under launchd, 0600, tokens redacted
@@ -118,6 +120,65 @@ It is signed with HMAC-SHA256 over canonical JSON. A card without a valid signat
 - `privacy_journal_head` is reserved for stage 3.
 - The host's messages that wait to be sent are blanked in the copy: a snapshot never holds a family conversation.
 - The signing key lives in `keys/` and on paper: `keys paper-backup` prints it for the owner.
+
+## Processing
+
+Code: `klepa_core/processing/`, `klepa_core/search.py`. Stage 2b.
+
+With a `[processing]` section ([configuration](configuration.md#processing)), Core reads what people send. Without it nothing is read, as in stage 2a.
+
+**What is read** (spec 6.1 item 4):
+
+| Original | Reader |
+|---|---|
+| Voice message, audio | ffmpeg makes a 16 kHz mono WAV of the first 30 minutes; whisper.cpp transcribes it, detects the language and writes nothing for silence or noise (`--suppress-nst`). |
+| Video, video note, animation | ffprobe looks for sound; ffmpeg takes it, and it is read as a voice message's. A video without sound has no text, and its job says so. |
+| PDF | pdftotext reads the text layer page by page. A page with fewer than 100 letters may be a scan: a page number, a stamp or a scanner app's mark is text too. ocrmypdf reads such pages, forced, the first 50 of them, in the installation's OCR languages, and a page keeps whichever text has more letters, its layer's or OCR's. |
+| Photo, image | ffprobe reads the size first, 100 megapixels at most; an iPhone's HEIC photo is a grid of tiles, and its size is the grid's. ffmpeg turns HEIC into PNG, joining the tiles; tesseract reads the text. |
+| Word, RTF, OpenDocument text, HTML | macOS's `textutil`. |
+| Spreadsheet: xlsx, xlsm, ods | Core's own reader (`klepa_core/processing/sheets.py`), run as a program in the sandbox like the others: a sheet is a page, a row a line with its cells joined by tabs, empty rows and cells left out. Every member's unpacked size is checked before anything is read. The old binary `.xls` is not read. |
+| Text file | `.txt`, `.md`, `.csv`: Core decodes it itself. A byte order mark first, then UTF-8, then Windows' Cyrillic code page (cp1251, which Excel still saves CSV in) when its letters come out Cyrillic, else UTF-8 with the bad bytes replaced. |
+
+Archives and other files are not read. macOS's `sips` cannot work in the sandbox: it reads the home folder to recognise a HEIC and writes in the user's temporary folder first. ffmpeg converts HEIC instead.
+
+**Limits, said.** A recording is transcribed up to 30 minutes, OCR reads the first 50 scanned pages of a document, and at most 2 MB of text is kept per original. When a limit cuts what was read, the job keeps a note ("OCR read the first 50 of 70 scanned pages"), and `get` returns it as `partial`.
+
+**Jobs.** An original a reader can read gets one job, queued as soon as the original is stored. At start Core also queues the stored originals that have none: those that came before processing was set up, and one whose job a crash kept from the queue. One worker reads them in the order they came. The record follows its job: `stored` → `processing` → `processed` or `failed`.
+- A failed reading keeps the original, which can still be sent. The error names the program and its exit code, never what the program printed: that may quote the file.
+- A job a crash interrupted runs again at the next start, three times at most, so an original that crashes its reader every time cannot stop the queue. When Core stops in the middle of a job, the job goes back to the queue without using an attempt.
+- A kind that lacks what it needs (a program, the speech model, an OCR language) waits in the queue. The owner gets one alert naming what is missing, and the next start that has it reads them. A PDF waits for ocrmypdf even when it has a text layer: any of its pages may be a scan.
+- A program that disappears while Core runs (Homebrew upgrades it under the same path) puts its job back without using an attempt. Its kind waits for the next start, and the owner is told.
+- A reader the watchdog or its time limit stopped fails its job with the program's name and the limit.
+- The event log says which job, its kind, pages, time and program, or the error's name; never a text.
+
+**Texts.** A text is kept page by page in `evidence_text`, with what read it (`extractor`): the program and its version, as Homebrew or the engine's environment installed it, and whisper's model or tesseract's languages. A transcript, a Word document or a text file is kept in fragments of at most 4,000 characters, cut between paragraphs or sentences.
+
+**The sandbox** (spec 8). Every reader runs under `sandbox-exec`:
+- no network;
+- it writes only in its job's folder, `<data_dir>/jobs/<job>/`;
+- it reads nothing in the hidden folders but its job's folder and what the readers need. Hidden: the home folder, every home (`/Users`), the other disks (`/Volumes`), the shared temporary folders (`/private/tmp`, `/private/var/tmp`), the logs, the user's own temporary folders in `/private/var/folders/`, and Core's data and documents folders wherever they are. What the readers need: the programs and the speech model (the files, not their folders), the OCR languages, and Core's interpreter and environment. Of the folders above these it sees each folder's own entry, never a listing: a framework build of Python, Homebrew's, resolves its environment's folder when it starts;
+- Core's data and documents folders are hidden again after what readers may read, so no readable folder reopens them, and the job's folder is allowed last. Core refuses to read anything, and tells the owner, when a readable folder is or holds a hidden one, or when the speech model or the OCR languages are kept inside Core's own folders;
+- it may start only the readers: Homebrew's programs, the configured ones, macOS's `textutil` and Core's interpreter. It may signal no process but its own;
+- it reaches none of macOS's services that open files, apps or addresses (LaunchServices), nor the pasteboard, Apple events, the keychain, the window server or the Dock;
+- only whisper's step, on the GPU, may also use Metal's shader cache, which every app of the user shares: whisper starts in under a second with it and compiles its shaders for twenty seconds without, and it reads only the WAV that ffmpeg made. The parsers of what people send (ffmpeg, pdftotext, Ghostscript under ocrmypdf, tesseract) never get it;
+- its job's folder is its home, its working directory and its temporary directory, and its environment is those three, `PATH` and the locale, with what its step adds (tesseract's languages): never Core's own;
+- it gets a copy of the original, never the incoming folder: a reader broken by a planted file must not reach the other originals. The copy keeps the original's suffix only when it is letters and digits;
+- what it prints goes to files in its folder, and Core reads their ends: a reader that floods its output cannot fill Core's memory;
+- `rlimit`: no core dumps, which would hold the file's content, and no file over 1 GiB;
+- each step has a time limit, and a watchdog stops a reader whose folder passes 2 GiB or 10,000 files; a reader stopped either way is killed with every process it started. ocrmypdf runs two workers, not one per core, so that several large pages are not held in memory at once;
+- the job's folder goes when the job ends, off the event loop. A reader may have taken the owner's rights on what it wrote or marked it unchangeable: Core gives them back first. At start Core removes whatever a crash left there, and moves aside a jobs folder it cannot remove (`jobs.stale-<time>`) rather than stop.
+
+The profile names real paths: `/var` is `/private/var` on macOS, and a rule for `/var` matches nothing. macOS enforces no memory limit; the limits on pages, pixels, minutes and seconds bound memory instead. Without `sandbox-exec` (anywhere but macOS) nothing is read, and the owner is told.
+
+What the sandbox does not close: a reader can see other processes' command lines and environments (`sysctl`). macOS has no rule that closes it without breaking the readers. Klepa's own processes keep no secret in either.
+
+Smaller points:
+- A program's version is read when Core starts: after an upgrade, texts name the old version until Core restarts.
+- A record deleted while its job runs keeps the text the job wrote, in the texts and the index; search and `get` never return it, since they read only kept records.
+- Whisper's step may list the names in the user's cache folder, since Metal looks at that folder itself; it reads nothing in it but Metal's own two folders.
+- A voice message without a caption is the family's (D32), so its transcript is found by every member's search, as its name is.
+
+**The search index.** One FTS5 table (`unicode61`, marks on Latin letters removed) holds each record's name and caption, written with the record (page 0), and its text, written with the text (pages 1 and on). A record and its index rows land in one transaction. The index also folds two letters that the tokenizer keeps, in what it holds and in what it is asked. The Cyrillic yo becomes ye: OCR and whisper mostly write ye where people write yo. The Serbian d with stroke becomes dj: it has no mark to remove, and people write dj without marks. A snippet shows the folded text; `get` returns the text as it was read.
 
 ## Spaces and privacy
 
@@ -243,11 +304,21 @@ The service bot's line names the state. Resume passes the start gate again.
 
 ## Core's tools
 
-Code: `klepa_core/host/tools.py`, `klepa_core/host/instruction.py`.
+Code: `klepa_core/host/tools.py`, `klepa_core/host/instruction.py`, `klepa_core/search.py`.
 
-**The instruction.** Core's instruction is in English and at most 4,000 characters; the adapter adds it to every turn's system prompt. It says that only the system text instructs the model, that messages, file names, transcripts and tool results are data, and that an answer about stored records comes from Core's tools, in the language of the person's last message. It also says what Klepa cannot do yet (reminders, memory between conversations, the contents of files), so the model promises none of it. With the tools' descriptions it stays within 5,000 tokens; a test checks it.
+**The instruction.** Core's instruction is in English and at most 4,000 characters; the adapter adds it to every turn's system prompt. It says that only the system text instructs the model, that messages, file names, transcripts and tool results are data, and that an answer about stored records comes from Core's tools, in the language of the person's last message. It also says what Klepa cannot do yet (reminders, memory between conversations, changing or sharing records), so the model promises none of it, and that a file a person sends reaches the model as a record to look up, not as a message. With the tools' descriptions it stays within 5,000 tokens; a test checks it.
 
-**The tools** (stage 2a), as the model sees them: `klepa__search` finds stored records by the beginnings of words in their names and captions, so other forms of a word match too, and lists the latest records when given no words (1 to 50 results); `klepa__get` reads one record; `klepa__send_original` has Core send the person the original file with the name it came with. A tool acts for the person whose message the turn answers, over the shared space and that person's own: another member's personal records are never found, read or sent.
+**The tools**, as the model sees them:
+- `klepa__search` finds stored records by the beginnings of words, so other forms of a word match too: in their names, captions and, from stage 2b, texts. The best matches come first (FTS5's bm25, a name or caption weighing twice a page), each record once. A record whose text matches names its best page and quotes the words around, even when its name or caption ranks first. Without words it lists the latest records (1 to 50 results). The space filter is in the query itself, before the ranking (spec 5.6).
+- `klepa__get` reads one record and its text page by page, up to 10,000 characters of a page (a longer one is cut and says so). `text_status` says whether the text is there:
+  - `read`, with `partial` when a limit cut what was read;
+  - `reading`;
+  - `waiting`: its kind is not read until the owner installs what reading it needs;
+  - `failed`: the original is kept and can be sent;
+  - `none`: a file of this kind is not read.
+- `klepa__send_original` has Core send the person the original file with the name it came with.
+
+A tool acts for the person whose message the turn answers, over the shared space and that person's own: another member's personal records are never found, read or sent.
 
 **A signature per call** (spec 4.5). The MCP server holds no key, and the model never sees one:
 - the adapter's `before_tool_call` adds `_klepa`: the turn's run, the call's id and an HMAC over a domain string, the run, the call, the tool's name and the canonical JSON of exactly the parameters Core will run;
@@ -304,6 +375,13 @@ Receipts use the matching form ("1 file", "2 files"). Loading a locale checks th
 - **Keys and backups.** `keys/` is excluded from Time Machine at `init` and at `service install`. The snapshot signing key has a paper copy.
 - **Logs.** Under launchd, Core's stderr goes to `logs/` (0600), and anything shaped like a bot token is redacted.
 - **The host.** It holds a fake token, and reaches Telegram only through the gatekeeper and the internet only through the egress proxy, which checks the exact host name before any DNS lookup and fails closed. The adapter's messages are signed with a key the model never sees. Its configuration is Core's and read-only, and it runs its own Node and OpenClaw, pinned by a checksum and a lockfile.
+- **Readers.** Programs that parse what people send run under `sandbox-exec` (see [Processing](#processing)):
+  - no network, and writes only in their job's folder;
+  - nothing of the homes, the shared and temporary folders, the logs, or the data and documents folders but what they need;
+  - no program but the readers, no signal to another process, and no LaunchServices, pasteboard, Apple events or keychain;
+  - a copy of the original rather than the incoming folder, no core dumps, time and size limits.
+
+  A reader broken by a planted file could still put what it may read into the text it returns. What it may read holds no secret, except other processes' command lines and environments, which macOS shows every process.
 - **Per-call signatures.** Every call of a Core tool is signed by the adapter for exactly its parameters, its run and its call, and the model never sees the key (see [Core's tools](#cores-tools)).
 - **The model's replies.** They leave as text only, with every address inactive; the gatekeeper takes no file from the host, and the adapter drops media before OpenClaw would fetch them.
 - **What the model provider sees.** Besides the conversation, OpenClaw adds a runtime line to every turn's system prompt: the session key, which holds the person's Telegram id; the Mac's computer name (`host=`); the workspace path (`repo=`), which holds the macOS account name; the system, Node and model. No setting removes it. Name the Mac neutrally if that matters.
@@ -336,6 +414,12 @@ Receipts use the matching form ("1 file", "2 files"). Loading a locale checks th
   - S41 — a gateway restart passes the gate again quietly, and the waiting turn registers;
   - S12 — while Core is down the host gets nothing, then the backlog in order;
   - also: HOLD after silence and back, Pause and Resume, and the host's traffic through the egress proxy.
+- **Stage 2b, processing.** The readers run as stand-ins (`tests/fakereaders.py`): small scripts that take the real programs' arguments, write what the real ones would, leave their arguments in the job's folder, and refuse any file outside it.
+  - `tests/test_readers.py` runs each reader with and without the real sandbox: scans with a little text of their own, the notes on what a limit left out, encodings, video, HEIC, Word, spreadsheets, a program gone since the start, a crafted suffix.
+  - `tests/test_sandbox.py` checks the sandbox itself (macOS): writes, reads of the hidden folders, the network, signals, the programs that may run, macOS's services, links and clones of hidden files, a killed process group, the rlimits, the watchdog, the reader's environment, the installations Core refuses.
+  - `tests/test_jobs.py`: the queue's order, a crash in the middle of a job, Core stopping, a missing original, a kind that waits, a program that disappears, the folders a reader locked, the event log without texts.
+  - `tests/test_acceptance_stage2b.py`: a voice message, a PDF and a photo through intake and the real sandbox; files kept before processing was set up; a missing program; no sandbox; a job a crash left running.
+  - `tests/test_readers_real.py` runs the real programs in the real sandbox on English samples it makes, only where `KLEPA_TEST_PROCESSORS` names a speech model. The samples: speech by `say`; a PDF by `cupsfilter` and its scan by `pdftoppm`; a mixed PDF whose scans carry a page number and a scanner app's mark; a Word document by `textutil`; a spreadsheet; a tiled HEIC photo by `sips`; a video with sound and one without.
 - **The adapter plugin.** `tests/adapter/` runs Node's own test runner on the plugin, and `tsc` checks its types. `tests/test_adapter_plugin.py` runs the real plugin under Node against Core's adapter server.
 - **The real gateway** (`tests/test_gateway_live.py`). These tests run only where `KLEPA_TEST_RUNTIME` names an installed runtime, and each loads a launchd agent of its own:
   - the start gate and an answer of the model (a scripted one, reached through the egress proxy) through the real OpenClaw, with Core's instruction in the system prompt;
@@ -377,7 +461,7 @@ A stage is done when its acceptance scenarios pass on the test stand.
 | 1a | Core intake: journal, attachments, receipts, spaces, signed cards, locales. **Done.** |
 | 1b | Service bot for alerts and buttons; signed daily snapshots with a generation number; the daily "all good" line; Core as a launchd service with its own interpreter; at start it probes the documents folder and names the macOS permission it lacks. **Done.** |
 | 1c | A dedicated OpenClaw install with a reference config; egress proxy; host-facing API with a fake token and accept-and-hold; adapter plugin with heartbeat; supervision with a live probe at start. **Done.** |
-| 2 | Processing. 2a: the model answers with Core's instruction and Core's signed tools (search, get, send an original); replies as text only; a model probe at start. 2b: transcription, OCR and document text in a sandbox, given to the host as text, with progress and cancel. 2c: photo drafts to PDF, a page viewer, Core's buttons in the family bot. |
+| 2 | Processing. 2a: the model answers with Core's instruction and Core's signed tools (search, get, send an original); replies as text only; a model probe at start. **Done.** 2b: transcription, OCR and document text in a sandbox, kept as texts that search finds (**done**); the attachment given to the host as text, with progress and cancel. 2c: photo drafts to PDF, a page viewer, Core's buttons in the family bot. |
 | 3 | Knowledge: facts with verified quotes, instructions, session taint, disclosure journal, `make_private`. |
 | 4 | Reminders delivered by Core, fenced delivery, restore with a generation check, integrity and silence checks, watchdog. |
 | 5 | Workflows the family teaches by example, with versions, owner approval and rollback. |

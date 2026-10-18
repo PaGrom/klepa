@@ -77,6 +77,25 @@ At its first `run` or `host install` with this section Core makes two secrets, e
 
 The gateway reaches the model only through the egress proxy, so `egress_allow` needs `"api.anthropic.com:443"`; `host install` warns without it. Its own files live in `<data_dir>/host/`, which Core writes and the gateway may not change.
 
+## `[processing]`
+
+Optional, macOS only. With it, Core reads what people send, in a sandbox: voice messages and the sound of videos are transcribed, PDFs, photos, Word documents and spreadsheets give their text, and search finds a record by what it says ([architecture](architecture.md#processing)). Without it nothing is read, and search knows a record by its name and caption.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `whisper` | `/opt/homebrew/bin/whisper-cli` | whisper.cpp's program (Homebrew's `whisper-cpp`). |
+| `whisper_model` | none | The speech model, a whisper.cpp ggml file such as `ggml-large-v3-turbo-q8_0.bin`. Without it voice messages wait unread. |
+| `ffmpeg` | `/opt/homebrew/bin/ffmpeg` | Turns a recording or a video's sound into the WAV whisper reads, and a HEIC photo into PNG. |
+| `ffprobe` | `/opt/homebrew/bin/ffprobe` | Reads an image's size before OCR, and whether a video has sound. |
+| `pdftotext` | `/opt/homebrew/bin/pdftotext` | Poppler's: a PDF's text layer. |
+| `tesseract` | `/opt/homebrew/bin/tesseract` | OCR of photos and images. |
+| `ocrmypdf` | `ocrmypdf` beside Core's interpreter | OCR of scanned PDF pages, from the engine's `processing` extra. |
+| `tessdata` | `~/Library/Application Support/Klepa/tessdata` | Tesseract's languages: `<language>.traineddata` for each OCR language, with Homebrew's `configs`, `tessconfigs`, `pdf.ttf`, `eng` and `osd` linked in. |
+| `ocr_languages` | by the locale: `eng`; `rus+eng`; `ukr+rus+eng`; `srp+srp_latn+eng` | Tesseract's languages joined by `+`. More languages make OCR slower. |
+| `textutil` | `/usr/bin/textutil` | macOS's: Word, RTF, OpenDocument text and HTML as text. |
+
+The sandbox lets a reader read, of the home folder and the other hidden folders, only its job, the programs and the speech model themselves, `tessdata`, and Core's interpreter and environment. Core reads nothing, and says so, when one of these is the home folder or holds Core's data or documents folder, which it would open, or when the speech model or `tessdata` is inside Core's data or documents folder, which the readers never see. So keep the programs outside the home folder (Homebrew's are) or in the engine's environment, and the model and the languages outside Core's folders. Whatever is missing, Core says once through the service bot; the originals it would read wait and are read after a start that has it.
+
 ## `[[members]]`
 
 One table per family member. Exactly one member has the role `owner`.

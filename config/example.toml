@@ -48,3 +48,10 @@ token_file = "/Users/you/KlepaData/keys/service-bot.token"   # 0600, typed via s
 # gateway = "launchd"                      # Core runs its own OpenClaw gateway; install it with: host install
 # gateway_port = 19300                     # well away from another OpenClaw's ports (18789 and up by default)
 # model = "anthropic/claude-sonnet-5"      # the one model the gateway may use
+
+# Attachments read in a sandbox (optional, macOS). Without this section nothing is read: search knows a record by its
+# name and caption. The programs come from Homebrew and macOS; ocrmypdf from the engine's `processing` extra.
+# [processing]
+# whisper_model = "/Users/you/.cache/whisper/ggml-large-v3-turbo-q8_0.bin"   # without it, voice messages wait unread
+# tessdata = "/Users/you/Library/Application Support/Klepa/tessdata"         # <language>.traineddata, configs linked in
+# ocr_languages = "rus+eng"                                                  # default: by the locale; more is slower

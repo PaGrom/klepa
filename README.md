@@ -8,7 +8,7 @@ Klepa is a family second-brain engine for AI agent hosts.
 
 Family members send documents, photos and voice messages to a Telegram bot. Klepa keeps every original safe on the family's own Mac and files it into a shared or a personal space. In later stages it will let an agent host such as OpenClaw answer questions about those files, without ever holding the keys to the family's data.
 
-> **Status: stage 2a.** Core receives files from Telegram and stores them durably, runs as a launchd service, takes signed daily snapshots and reports to the owner through a service bot. OpenClaw runs behind the gatekeeper: Core installs its own pinned OpenClaw, starts it under launchd and checks it, with one model call, before it gets messages. The model answers people with Core's instruction and can find a stored file and have Core send it back, through Core's own tools, each call signed. Run it only against test bots and with test data.
+> **Status: stage 2b, Core's side.** Core receives files from Telegram and stores them durably, runs as a launchd service, takes signed daily snapshots and reports to the owner through a service bot. OpenClaw runs behind the gatekeeper: Core installs its own pinned OpenClaw, starts it under launchd and checks it, with one model call, before it gets messages. The model answers people with Core's instruction and can find a stored file and have Core send it back, through Core's own tools, each call signed. Core reads what people send in a sandbox (voice messages, videos, PDFs, scans, photos, Word documents, spreadsheets), and search finds a file by what it says. Run it only against test bots and with test data.
 
 ## Principles
 
@@ -121,6 +121,24 @@ Core runs its own OpenClaw gateway, apart from any other OpenClaw on the Mac. It
 4. **Restart Core:** `"$KLEPA_HOME/venv/bin/python" -m klepa_core service restart`. Core starts the gateway, checks it,
    and only then gives it messages. `host status` shows the runtime, the gateway, the model's token and Core's view.
 
+## Reading attachments
+
+Core reads voice messages, videos, PDFs, scans, photos, Word documents and spreadsheets in a sandbox, so that search
+finds a file by what it says ([architecture](docs/architecture.md#processing)). It needs Core running as a service, on
+macOS.
+
+1. **The programs:** `brew install whisper-cpp ffmpeg poppler tesseract ghostscript`, and ocrmypdf in Core's
+   environment: `uv pip install --python "$KLEPA_HOME/venv/bin/python" '.[processing]'`. macOS's own `textutil` reads
+   Word documents.
+2. **A speech model** for whisper.cpp, for example `ggml-large-v3-turbo-q8_0.bin` from the whisper.cpp project.
+3. **The OCR languages** in `~/Library/Application Support/Klepa/tessdata` (0700): `<language>.traineddata` from
+   [tessdata_best](https://github.com/tesseract-ocr/tessdata_best) at a pinned commit, checked by SHA-256, with links to
+   Homebrew's `configs`, `tessconfigs`, `pdf.ttf`, `eng.traineddata` and `osd.traineddata` from
+   `$(brew --prefix tesseract)/share/tessdata`.
+4. **Configure it:** add a `[processing]` section with `whisper_model` ([configuration](docs/configuration.md#processing))
+   and restart Core. If something is missing, the service bot says what; the files wait and are read after a restart
+   that has it.
+
 ## Development
 
 ```bash
@@ -134,6 +152,9 @@ cd tests/adapter && npm ci --ignore-scripts && npx tsc -p tsconfig.json && node 
 
 The tests against the real gateway run only where `KLEPA_TEST_RUNTIME` names an installed runtime, for example
 `KLEPA_TEST_RUNTIME="$HOME/Library/Application Support/Klepa/openclaw" uv run pytest tests/test_gateway_live.py`.
+The tests of the real readers run only where `KLEPA_TEST_PROCESSORS` names a speech model and the programs are
+installed (`uv sync --extra processing`), for example
+`KLEPA_TEST_PROCESSORS=~/.cache/whisper/ggml-large-v3-turbo-q8_0.bin uv run pytest tests/test_readers_real.py`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and the rules.
 
@@ -144,7 +165,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and the rules.
 | 1a | Core receives files from Telegram and stores them durably | done |
 | 1b | Service bot, signed daily snapshots, Core as a launchd service | done |
 | 1c | OpenClaw behind the gatekeeper: its own install, reference config, adapter plugin, egress proxy, supervision | done |
-| 2 | Processing: the model answers through Core's signed tools (2a); transcription and OCR in a sandbox (2b); photo drafts to PDF, page viewer (2c) | in progress |
+| 2 | Processing: the model answers through Core's signed tools (2a, done); transcription and OCR in a sandbox, searchable texts (2b, Core's side done); attachments to the host as text, progress and cancel (2b); photo drafts to PDF, page viewer (2c) | in progress |
 | 3 | Knowledge: facts with verified quotes, `make_private`, disclosure journal | planned |
 | 4 | Reminders and self-checks, fenced outbound delivery | planned |
 | 5 | Workflows the family teaches by example | planned |
