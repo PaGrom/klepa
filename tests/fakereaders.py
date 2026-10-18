@@ -82,6 +82,9 @@ args = sys.argv[1:]
 source, target = args[-2], args[-1]
 inside(source)
 data = open(source, "rb").read().decode("utf-8", "replace")
+if "SLOW" in data:  # a long scan another person sent
+    import time
+    time.sleep(30)
 if "SCAN" in data:
     pages = ["", ""]  # an image-only document: no text layer
 else:

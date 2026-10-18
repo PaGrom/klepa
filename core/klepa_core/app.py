@@ -9,7 +9,7 @@ import logging
 import os
 import resource
 import sqlite3
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,7 +41,7 @@ from .host.tools import ToolBox
 from .host.turns import TurnRegistry
 from .journal import InboundJournal
 from .keys import KeyFileError, ensure_host_token, ensure_private_dir, load_or_create_key
-from .processing.jobs import KINDS, Jobs, Worker
+from .processing.jobs import KINDS, RECORDING_KINDS, Jobs, Worker
 from .processing.readers import Readers
 from .processing.sandbox import sandbox_available, sandbox_for
 from .schedule import DailyJob, Scheduler
@@ -271,12 +271,17 @@ def _gateway(cfg: Config, key: bytes) -> tuple[Expectations | None, GatewayContr
 @dataclass(frozen=True)
 class ProcessingParts:
     jobs: Jobs
-    worker: Worker | None  # None: nothing is read now, and the jobs wait
+    workers: tuple[Worker, ...]  # none: nothing is read now, and the jobs wait
     loops: list[tuple[str, Loop]]
 
     def readable(self) -> frozenset[str]:
         """The kinds of original read now; the tools tell that the others' texts wait (finding I8)."""
-        return frozenset() if self.worker is None else self.worker.kinds
+        return frozenset().union(*(worker.kinds for worker in self.workers))
+
+    def stop_reading(self, job_ids: Collection[int]) -> None:
+        """Jobs the person cancelled: whichever worker reads one kills its reader."""
+        for worker in self.workers:
+            worker.stop_reading(job_ids)
 
 
 def _processing(cfg: Config, conn: sqlite3.Connection, alerts: Alerts, events: EventLog) -> ProcessingParts | None:
@@ -292,12 +297,12 @@ def _processing(cfg: Config, conn: sqlite3.Connection, alerts: Alerts, events: E
     jobs.backfill()
     if not sandbox_available():
         alerts.raise_("processing_unavailable", missing="sandbox-exec")
-        return ProcessingParts(jobs, None, [])
+        return ProcessingParts(jobs, (), [])
     try:
         sandbox = sandbox_for(cfg.processing, (cfg.data_dir, cfg.documents_dir))
     except ValueError as exc:
         alerts.raise_("processing_unavailable", missing=str(exc))
-        return ProcessingParts(jobs, None, [])
+        return ProcessingParts(jobs, (), [])
     readers = Readers(cfg.processing, sandbox)
     lacking = readers.unavailable()
     if lacking:
@@ -307,15 +312,19 @@ def _processing(cfg: Config, conn: sqlite3.Connection, alerts: Alerts, events: E
     def gone(kind: str, program: str) -> None:  # since the start: Homebrew replaced it (finding M8)
         alerts.raise_("processing_unavailable", missing=f"{kind}: {program}")
 
-    worker = Worker(
-        conn, jobs, readers, cfg.incoming_dir, cfg.jobs_dir, events, kinds=KINDS - set(lacking), on_missing=gone
+    # Two workers, one for recordings and one for the rest (the owner's choice, review 1's I3): a voice note never
+    # waits behind a scan another person sent; each reads its own kinds in the order they came.
+    readable = KINDS - set(lacking)
+    workers = tuple(
+        Worker(conn, jobs, readers, cfg.incoming_dir, cfg.jobs_dir, events, kinds=readable & part, on_missing=gone)
+        for part in (RECORDING_KINDS, KINDS - RECORDING_KINDS)
     )
     try:
-        worker.sweep()
+        workers[0].sweep()  # one jobs folder for both
     except OSError as exc:
         alerts.raise_("processing_unavailable", missing=f"the jobs folder: {type(exc).__name__}")
-        return ProcessingParts(jobs, None, [])
-    return ProcessingParts(jobs, worker, [("processing", worker.run)])
+        return ProcessingParts(jobs, (), [])
+    return ProcessingParts(jobs, workers, [("recordings", workers[0].run), ("documents", workers[1].run)])
 
 
 def _daily_jobs(cfg: Config, backups: Backups, service_bot: ServiceBot | None) -> list[DailyJob]:

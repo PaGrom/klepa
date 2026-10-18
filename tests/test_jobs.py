@@ -11,6 +11,7 @@ import threading
 import pytest
 
 from fakereaders import PlainRunner, processing_config
+from helpers import wait_until
 from klepa_core.events import EventLog
 from klepa_core.processing import jobs as jobs_module
 from klepa_core.processing.jobs import KINDS, MAX_ATTEMPTS, Jobs, Worker, job_kind
@@ -377,3 +378,103 @@ def test_core_stopping_in_the_middle_of_a_job_puts_it_back_without_using_an_atte
     assert (job["state"], job["attempts"]) == ("queued", 0)
     assert conn.execute("SELECT state FROM evidence WHERE id='ev-slow'").fetchone()[0] == "stored"
     assert not list(worker.jobs_dir.iterdir())
+
+
+# ---- cancel (stage 2b-2, spec 6.1 item 6) --------------------------------------------------------------------------
+
+
+def test_a_cancelled_job_that_waits_never_runs_and_its_record_stays_stored(setup):
+    cfg, conn, jobs, worker = setup
+    store(cfg, conn, "ev-a", "voice", None, b"first", mime="audio/ogg")
+    store(cfg, conn, "ev-b", "voice", None, b"second", mime="audio/ogg")
+    jobs.add("ev-a", "voice")
+    jobs.add("ev-b", "voice")
+    assert jobs.cancel(["ev-b"]) == []  # nothing of it was running
+    assert asyncio.run(worker.run_once()) is True
+    assert asyncio.run(worker.run_once()) is False
+    states = dict(conn.execute("SELECT evidence_id, state FROM job").fetchall())
+    assert states == {"ev-a": "done", "ev-b": "cancelled"}
+    assert conn.execute("SELECT state FROM evidence WHERE id='ev-b'").fetchone()[0] == "stored"
+    assert texts(conn, "ev-b") == []
+
+
+def test_cancelling_a_running_job_kills_its_reader_and_keeps_no_text(setup):
+    cfg, conn, jobs, worker = setup
+    store(cfg, conn, "ev-slow", "voice", None, b"SLOW words", mime="audio/ogg")  # the fake reader sleeps 30 s
+    store(cfg, conn, "ev-next", "voice", None, b"next words", mime="audio/ogg")
+    jobs.add("ev-slow", "voice")
+    jobs.add("ev-next", "voice")
+    ended = []
+    worker.on_end = lambda: ended.append(True)
+
+    def state(record_id):
+        return conn.execute("SELECT state FROM job WHERE evidence_id=?", (record_id,)).fetchone()[0]
+
+    async def cancel_while_reading():
+        stop = asyncio.Event()
+        task = asyncio.create_task(worker.run(stop))
+        await wait_until(lambda: state("ev-slow") == "running", timeout=20)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        worker.stop_reading(jobs.cancel(["ev-slow"]))
+        await wait_until(lambda: "job_cancelled" in EventLog(conn).kinds(), timeout=20)  # its process group is dead
+        killed = loop.time() - started
+        await wait_until(lambda: state("ev-next") == "done", timeout=60)  # and the queue goes on
+        stop.set()
+        await asyncio.wait_for(task, 10)
+        return killed
+
+    seconds = asyncio.run(cancel_while_reading())
+    assert seconds < 10  # the 30 s reading was killed at once
+    job = conn.execute("SELECT state, attempts FROM job WHERE evidence_id='ev-slow'").fetchone()
+    assert (job["state"], job["attempts"]) == ("cancelled", 1)
+    assert conn.execute("SELECT state FROM evidence WHERE id='ev-slow'").fetchone()[0] == "stored"
+    assert texts(conn, "ev-slow") == []
+    assert not list(worker.jobs_dir.iterdir())
+    assert "job_cancelled" in EventLog(conn).kinds()
+    assert len(ended) == 2  # told after each job: its message may be ready for the host
+
+
+def test_a_result_that_comes_after_the_cancel_is_dropped(setup):
+    cfg, conn, jobs, _ = setup
+    store(cfg, conn, "ev-a", "voice", None, b"words", mime="audio/ogg")
+    jobs.add("ev-a", "voice")
+    job = jobs.claim()
+    assert jobs.cancel(["ev-a"]) == [job.id]
+    from klepa_core.processing.readers import Pages
+
+    assert jobs.done(job, Pages(["late words"], "whisper")) is False
+    assert jobs.failed(job, "late failure") is False
+    assert conn.execute("SELECT state FROM job").fetchone()[0] == "cancelled"
+    assert texts(conn, "ev-a") == []
+    assert conn.execute("SELECT state FROM evidence WHERE id='ev-a'").fetchone()[0] == "stored"
+
+
+def test_a_recording_is_read_while_a_long_scan_is_read(setup, tmp_path):
+    """Two workers (review 1's I3): one reads recordings, one the rest; neither waits for the other."""
+    from klepa_core.processing.jobs import RECORDING_KINDS
+
+    cfg, conn, jobs, _ = setup
+    readers = Readers(processing_config(tmp_path), PlainRunner())
+    events = EventLog(conn)
+    recordings = Worker(conn, jobs, readers, cfg.incoming_dir, tmp_path / "jobs", events, kinds=RECORDING_KINDS)
+    documents = Worker(conn, jobs, readers, cfg.incoming_dir, tmp_path / "jobs", events, kinds=KINDS - RECORDING_KINDS)
+    store(cfg, conn, "ev-scan", "file", "scan.pdf", b"%PDF SLOW a long scan", mime="application/pdf")
+    store(cfg, conn, "ev-voice", "voice", None, b"a short note", mime="audio/ogg")
+    jobs.add("ev-scan", "pdf")  # first in the queue
+    jobs.add("ev-voice", "voice")
+
+    def state(record_id):
+        return conn.execute("SELECT state FROM job WHERE evidence_id=?", (record_id,)).fetchone()[0]
+
+    async def read_both():
+        stop = asyncio.Event()
+        tasks = [asyncio.create_task(worker.run(stop)) for worker in (recordings, documents)]
+        await wait_until(lambda: state("ev-voice") == "done", timeout=20)
+        scan = state("ev-scan")
+        stop.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), 10)
+        return scan
+
+    assert asyncio.run(read_both()) == "running"  # the voice note was read while the scan still was
+    assert texts(conn, "ev-voice") == [(1, "transcript: a short note")]

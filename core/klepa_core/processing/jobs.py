@@ -4,7 +4,9 @@ came, their texts stored page by page and indexed for search.
 The record follows its job (spec 5.4): `stored` → `processing` → `processed` or `failed`. A job a crash interrupted is
 queued again at the next start, a few times at most: an original that crashes its reader every time must not stop
 the queue. A job whose program is gone since the start waits, and its kind with it, for a start that has the program.
-The event log says which job, its kind, pages and time, or the error's name; never a text.
+The person may cancel a job (spec 6.1 item 6): a queued one never runs, a running one's reader is killed, and a result
+that comes after the cancel is dropped, so the record stays as it was stored. The event log says which job, its kind,
+pages and time, or the error's name; never a text.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ import shutil
 import sqlite3
 import stat
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +31,7 @@ from .sandbox import ProcessingStopped
 
 MAX_ATTEMPTS = 3  # starts of one job; a crash in the middle of each is the original's fault
 KINDS = frozenset({"voice", "video", "pdf", "image", "document", "sheet", "text"})
+RECORDING_KINDS = frozenset({"voice", "video"})  # read by a worker of their own: a voice note never waits for a scan
 IDLE_SECONDS = 60.0  # the worker looks at the queue at least this often, even without a wake-up
 _TEXT_SUFFIXES = frozenset({".txt", ".md", ".csv"})
 _TEXT_TYPES = frozenset({"text/plain", "text/markdown", "text/csv"})
@@ -138,7 +141,9 @@ class Jobs:
         return True
 
     def claim(self, kinds: frozenset[str] = KINDS) -> Job | None:
-        """The oldest queued job of these kinds, now running."""
+        """The oldest queued job of these kinds, now running; None also when no kind is given."""
+        if not kinds:
+            return None
         marks = ",".join("?" * len(kinds))
         with transaction(self.conn):
             row = self.conn.execute(
@@ -168,27 +173,55 @@ class Jobs:
                 "UPDATE evidence SET state='stored' WHERE id=? AND state='processing'", (job.evidence_id,)
             )
 
-    def done(self, job: Job, pages: Pages) -> None:
-        """The texts, their index rows, the job and its record: together or not at all."""
+    def done(self, job: Job, pages: Pages) -> bool:
+        """The texts, their index rows, the job and its record: together or not at all. False when the job was
+        cancelled meanwhile: its late result is dropped (spec 6.1 item 6)."""
         now = self.clock()
         with transaction(self.conn):
+            ended = self.conn.execute(
+                "UPDATE job SET state='done', pages=?, note=?, error=NULL, ended_at=? WHERE id=? AND state='running'",
+                (len(pages.texts), pages.note, now, job.id),
+            )
+            if ended.rowcount != 1:
+                return False
             self.conn.executemany(
                 "INSERT INTO evidence_text(evidence_id, page, text, extractor, created_at) VALUES (?, ?, ?, ?, ?)",
                 [(job.evidence_id, n, text, pages.extractor, now) for n, text in enumerate(pages.texts, 1) if text],
             )
             index_pages(self.conn, job.evidence_id, pages.texts)
-            self.conn.execute(
-                "UPDATE job SET state='done', pages=?, note=?, error=NULL, ended_at=? WHERE id=?",
-                (len(pages.texts), pages.note, now, job.id),
-            )
             self._mark(job.evidence_id, "processed")
+        return True
 
-    def failed(self, job: Job, error: str) -> None:
+    def failed(self, job: Job, error: str) -> bool:
+        """False when the job was cancelled meanwhile."""
         with transaction(self.conn):
-            self.conn.execute(
-                "UPDATE job SET state='failed', error=?, ended_at=? WHERE id=?", (error, self.clock(), job.id)
+            ended = self.conn.execute(
+                "UPDATE job SET state='failed', error=?, ended_at=? WHERE id=? AND state='running'",
+                (error, self.clock(), job.id),
             )
+            if ended.rowcount != 1:
+                return False
             self._mark(job.evidence_id, "failed")
+        return True
+
+    def cancel(self, evidence_ids: Collection[str]) -> list[int]:
+        """The person cancelled the reading of these originals: their queued and running jobs end 'cancelled' now,
+        and the records stay as they were stored. Returns the jobs that were running: the worker stops their readers."""
+        marks = ",".join("?" * len(evidence_ids))
+        with transaction(self.conn):
+            rows = self.conn.execute(
+                f"SELECT id, evidence_id, state FROM job WHERE evidence_id IN ({marks}) "
+                "AND state IN ('queued', 'running')",
+                list(evidence_ids),
+            ).fetchall()
+            for row in rows:
+                self.conn.execute("UPDATE job SET state='cancelled', ended_at=? WHERE id=?", (self.clock(), row["id"]))
+                self.conn.execute(
+                    "UPDATE evidence SET state='stored' WHERE id=? AND state='processing'", (row["evidence_id"],)
+                )
+        if rows:
+            self.events.log("jobs_cancelled", {"jobs": [int(row["id"]) for row in rows]})
+        return [int(row["id"]) for row in rows if row["state"] == "running"]
 
     def _mark(self, evidence_id: str, state: str) -> None:
         # Only a record that is still being read: one deleted meanwhile stays deleted.
@@ -261,6 +294,14 @@ class Worker:
         self.jobs_dir = jobs_dir
         self.events = events
         self.clock = clock
+        self.on_end: Callable[[], None] | None = None  # told when a job ends: its message may be ready for the host
+        self._current: Job | None = None
+        self._reading: asyncio.Future[Pages] | None = None
+
+    def stop_reading(self, job_ids: Collection[int]) -> None:
+        """Jobs the person cancelled (spec 6.1 item 6): the running one's reader is killed with its process group."""
+        if self._current is not None and self._current.id in job_ids and self._reading is not None:
+            self._reading.cancel()
 
     def sweep(self) -> None:
         """At start: what a crash left in the jobs folder is copies of originals and what readers wrote of them. A
@@ -294,12 +335,20 @@ class Worker:
             return False
         started = self.clock()
         folder = self.jobs_dir / str(job.id)
+        self._current = job
+        self._reading = asyncio.ensure_future(self._read(job, folder))
         try:
-            pages = await self._read(job, folder)
-            self.jobs.done(job, pages)
+            pages = await self._reading
+            if not self.jobs.done(job, pages):
+                self._cancelled(job, started)
+                return True
         except asyncio.CancelledError:
-            self.jobs.release(job)  # Core is stopping: the job is read at the next start, as if never begun
-            raise
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                self.jobs.release(job)  # Core is stopping: the job is read at the next start, as if never begun
+                raise
+            self._cancelled(job, started)  # only its reading was stopped: the person cancelled it
+            return True
         except ReaderMissing as e:
             self._missing(job, str(e))
         except (ReaderFailed, ProcessingStopped) as e:
@@ -319,6 +368,9 @@ class Worker:
                 },
             )
         finally:
+            self._current, self._reading = None, None
+            if self.on_end is not None:  # the result is written: its message need not wait for the folder to go
+                self.on_end()
             await self._clear(job, folder)
         return True
 
@@ -349,8 +401,21 @@ class Worker:
         if self.on_missing is not None:
             self.on_missing(job.kind, program)
 
+    def _cancelled(self, job: Job, started: float) -> None:
+        self.events.log(
+            "job_cancelled",
+            {
+                "job": job.id,
+                "evidence_id": job.evidence_id,
+                "kind": job.kind,
+                "seconds": round(self.clock() - started, 1),
+            },
+        )
+
     def _failed(self, job: Job, error: str, started: float) -> None:
-        self.jobs.failed(job, error)
+        if not self.jobs.failed(job, error):
+            self._cancelled(job, started)
+            return
         self.events.log(
             "job_failed",
             {

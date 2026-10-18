@@ -113,7 +113,7 @@ def test_processing_whose_sandbox_would_open_a_hidden_folder_reads_nothing_and_s
     cfg, conn, alerts, events = processing_setup(make_config, tmp_path, monkeypatch, tessdata=Path.home())
     parts = app._processing(cfg, conn, alerts, events)
     assert parts is not None
-    assert (parts.worker, parts.loops, parts.readable()) == (None, [], frozenset())
+    assert (parts.workers, parts.loops, parts.readable()) == ((), [], frozenset())
     assert alerts_logged(conn) == ["processing_unavailable"]
 
 
@@ -129,7 +129,7 @@ def test_a_jobs_folder_that_cannot_be_made_ready_reads_nothing_and_says_so(make_
     monkeypatch.setattr(Worker, "sweep", refuse)
     parts = app._processing(cfg, conn, alerts, events)
     assert parts is not None
-    assert (parts.worker, parts.loops) == (None, [])
+    assert (parts.workers, parts.loops) == ((), [])
     assert alerts_logged(conn) == ["processing_unavailable"]
 
 
@@ -140,14 +140,30 @@ def test_a_program_gone_since_start_takes_its_kind_from_what_get_says_is_read_an
     cfg, conn, alerts, events = processing_setup(make_config, tmp_path, monkeypatch)
     parts = app._processing(cfg, conn, alerts, events)
     assert parts is not None
-    assert parts.worker is not None
-    assert parts.readable() == parts.worker.kinds
+    recordings, documents = parts.workers
+    assert parts.readable() == recordings.kinds | documents.kinds
     assert "voice" in parts.readable()
-    assert parts.worker.on_missing is not None
-    parts.worker.kinds -= {"voice"}
-    parts.worker.on_missing("voice", "whisper-cli")
+    assert recordings.on_missing is not None
+    recordings.kinds -= {"voice"}
+    recordings.on_missing("voice", "whisper-cli")
     assert "voice" not in parts.readable()
     assert alerts_logged(conn) == ["processing_unavailable"]
+
+
+def test_recordings_and_the_rest_are_read_by_two_workers(make_config, tmp_path, monkeypatch):
+    """The owner's choice after review 1 (I3): a voice note never waits behind a scan another person sent."""
+    from klepa_core.processing.jobs import KINDS, RECORDING_KINDS
+
+    cfg, conn, alerts, events = processing_setup(make_config, tmp_path, monkeypatch)
+    parts = app._processing(cfg, conn, alerts, events)
+    assert parts is not None
+    recordings, documents = parts.workers
+    assert (recordings.kinds, documents.kinds) == (RECORDING_KINDS, KINDS - RECORDING_KINDS)
+    assert [name for name, _ in parts.loops] == ["recordings", "documents"]
+    stopped = []
+    recordings.stop_reading = documents.stop_reading = stopped.append
+    parts.stop_reading([7])
+    assert stopped == [[7], [7]]  # whichever reads the job kills its reader
 
 
 def test_the_tools_learn_what_core_reads_now(make_config, short_dir, tmp_path):
