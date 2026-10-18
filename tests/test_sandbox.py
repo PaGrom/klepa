@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -84,6 +85,42 @@ def test_a_reader_has_no_network(sandbox):
         )
         result = run(sandbox, code)
     assert result.stdout.startswith("refused"), result.stdout + result.stderr
+
+
+def test_a_readers_output_is_read_from_cores_own_file_never_through_a_link(sandbox, tmp_path):
+    """A reader may replace the file its output goes to with a link: Core reads the file it opened (final review,
+    C1)."""
+    secret = tmp_path / "home" / "secret.txt"
+    code = f"import os\nprint('the reader said this')\nos.unlink('.stdout')\nos.symlink({str(secret)!r}, '.stdout')\n"
+    result = run(sandbox, code)
+    assert "not for a reader" not in result.stdout
+    assert result.stdout.strip() == "the reader said this"
+
+
+def test_a_link_left_where_the_output_goes_is_replaced_never_written_through(sandbox, tmp_path):
+    """An earlier step's reader may leave a link where the next step's output goes: opened for writing, it would
+    empty the file it points to."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("precious")
+    job = sandbox[1]
+    (job / ".stdout").symlink_to(victim)
+    (job / ".stderr").symlink_to(victim)
+    result = run(sandbox, "print('hello')")
+    assert victim.read_text() == "precious"
+    assert result.stdout.strip() == "hello"
+
+
+def test_a_pipe_left_where_the_output_goes_does_not_stop_core(sandbox):
+    """A pipe in place of the output file would keep Core's read waiting forever, and all of Core with it."""
+    results = []
+    code = "import os\nos.unlink('.stdout')\nos.mkfifo('.stdout')\nprint('done')\n"
+    thread = threading.Thread(target=lambda: results.append(run(sandbox, code)), daemon=True)
+    thread.start()
+    thread.join(15)
+    if thread.is_alive():  # free the open that waits, so that the test run ends
+        os.close(os.open(sandbox[1] / ".stdout", os.O_WRONLY | os.O_NONBLOCK))
+        thread.join(5)
+    assert [result.stdout.strip() for result in results] == ["done"]
 
 
 def test_a_reader_that_overruns_is_killed_with_its_children(sandbox):

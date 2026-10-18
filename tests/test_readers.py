@@ -4,6 +4,8 @@ leaves behind. They run with stand-in programs: without a sandbox everywhere, an
 import asyncio
 import dataclasses
 import json
+import os
+import threading
 import zipfile
 
 import pytest
@@ -136,6 +138,34 @@ def test_a_text_past_the_limit_is_kept_in_part_and_says_so(setup, monkeypatch):
     pages = read(setup, "text", b"word " * 100, "long.txt")
     assert len("".join(pages.texts)) <= 100
     assert pages.note == "the text was cut at 2 MB"
+
+
+def test_a_text_a_reader_left_as_a_link_is_refused_not_followed(setup):
+    """A reader broken by a planted file may leave a link where its text goes: Core may read what the reader may not,
+    and must not follow it (final review, C1)."""
+    secret = setup[2] / "secret.txt"
+    secret.write_text("123:NOT-FOR-THE-MODEL")
+    with pytest.raises(ReaderFailed, match=r"transcript\.txt is not a plain file"):
+        read(setup, "voice", f"LINK {secret}".encode(), "voice.ogg")
+
+
+def test_a_text_a_reader_left_as_a_pipe_fails_at_once(setup):
+    """Or a pipe, which an open would wait on forever, and Core with it."""
+    errors: list[str] = []
+
+    def attempt():
+        try:
+            read(setup, "voice", b"PIPE", "voice.ogg")
+        except ReaderFailed as exc:
+            errors.append(str(exc))
+
+    thread = threading.Thread(target=attempt, daemon=True)
+    thread.start()
+    thread.join(10)
+    if thread.is_alive():  # free the open that waits, so that the test run ends
+        os.close(os.open(setup[2] / "jobs" / "voice" / "transcript.txt", os.O_WRONLY | os.O_NONBLOCK))
+        thread.join(5)
+    assert errors == ["transcript.txt is not a plain file"]
 
 
 def test_a_reader_that_fails_is_reported_by_its_exit_code_alone(setup):

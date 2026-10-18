@@ -14,13 +14,13 @@ import os
 import re
 import shutil
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import BinaryIO, Protocol
 
 from ..config import ProcessingConfig
-from .sandbox import Result
+from .sandbox import Result, open_written
 
 MAX_AUDIO_SECONDS = 30 * 60  # a longer recording is transcribed up to here
 MAX_OCR_PAGES = 50  # scanned pages of one document read with OCR
@@ -81,13 +81,23 @@ def decode(data: bytes) -> str:
     return data.decode("utf-8", "replace")
 
 
-def _read(path: Path) -> tuple[str, bool]:
-    """A file's text, at most MAX_TEXT_BYTES of it, and whether there was more."""
+@contextlib.contextmanager
+def _output(path: Path) -> Iterator[BinaryIO]:
+    """What a reader wrote, never through a link and never a pipe (final review, C1)."""
     try:
-        with path.open("rb") as file:
-            data = file.read(MAX_TEXT_BYTES + 1)
+        file = open_written(path)
     except FileNotFoundError:
         raise ReaderFailed(f"{path.name} was not written") from None
+    except OSError:
+        raise ReaderFailed(f"{path.name} is not a plain file") from None
+    with file:
+        yield file
+
+
+def _read(path: Path) -> tuple[str, bool]:
+    """A file's text, at most MAX_TEXT_BYTES of it, and whether there was more."""
+    with _output(path) as file:
+        data = file.read(MAX_TEXT_BYTES + 1)
     cut = len(data) > MAX_TEXT_BYTES
     return decode(data[:MAX_TEXT_BYTES]).replace("\x00", ""), cut
 
@@ -253,7 +263,8 @@ class Readers:
         audio = job / "audio.wav"
         convert = ["-nostdin", "-hide_banner", "-loglevel", "error", "-i", source, "-vn", "-t", MAX_AUDIO_SECONDS]
         await self._step([self.processing.ffmpeg, *convert, "-ar", 16000, "-ac", 1, "-y", audio], job, 300)
-        seconds = max(0.0, (audio.stat().st_size - 44) / 32_000)  # 16 kHz, 16-bit, mono
+        with _output(audio) as file:
+            seconds = max(0.0, (os.fstat(file.fileno()).st_size - 44) / 32_000)  # 16 kHz, 16-bit, mono
         # --suppress-nst: no "you" or "so" made up for silence and noise
         transcribe = [
             "-m",

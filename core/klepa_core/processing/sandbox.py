@@ -15,14 +15,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import functools
 import os
 import signal
+import stat
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import BinaryIO
 
 from ..config import ProcessingConfig
 
@@ -145,11 +148,34 @@ def _usage(folder: Path, stop_at: int) -> tuple[int, int]:
     return size, count
 
 
-def _tail(path: Path) -> str:
-    with path.open("rb") as file:
-        file.seek(0, os.SEEK_END)
-        file.seek(max(0, file.tell() - 4 * OUTPUT_TAIL))
-        return file.read().decode("utf-8", "replace")[-OUTPUT_TAIL:]
+def open_written(path: Path) -> BinaryIO:
+    """A file a reader wrote, opened for Core to read: never through a link, and only a plain file. A reader broken by
+    a planted file could otherwise leave a link that makes Core read, with Core's rights, what the reader may not, or a
+    pipe that keeps Core's open waiting forever (final review, C1). OSError for anything else."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a plain file", str(path))
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _fresh(path: Path) -> BinaryIO:
+    """A new file for a reader's output, which Core reads back through the same descriptor: what an earlier step's
+    reader left at `path` (a link, a pipe) is removed, never opened (final review, C1)."""
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(path)
+    return os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w+b")
+
+
+def _tail(file: BinaryIO) -> str:
+    """The end of what a reader printed, through Core's own descriptor: a reader may replace the file's name, never
+    the file Core holds."""
+    file.seek(0, os.SEEK_END)
+    file.seek(max(0, file.tell() - 4 * OUTPUT_TAIL))
+    return file.read().decode("utf-8", "replace")[-OUTPUT_TAIL:]
 
 
 @dataclass(frozen=True)
@@ -215,8 +241,7 @@ class Sandbox:
             **(env or {}),
         }
         name = Path(argv[0]).name
-        out_path, err_path = job / ".stdout", job / ".stderr"
-        with out_path.open("wb") as out, err_path.open("wb") as err:
+        with _fresh(job / ".stdout") as out, _fresh(job / ".stderr") as err:
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-I",
@@ -235,16 +260,16 @@ class Sandbox:
                 stderr=err,
                 start_new_session=True,  # its own process group: a timeout kills every process it started
             )
-        try:
-            await asyncio.wait_for(self._watch(process, job, name), timeout)
-        except TimeoutError:
-            await _kill(process)
-            raise ProcessingTimeout(f"{name} ran longer than {timeout:.0f} s") from None
-        except BaseException:  # stopped by the watchdog, or Core is stopping
-            await asyncio.shield(_kill(process))
-            raise
-        assert process.returncode is not None
-        return Result(process.returncode, _tail(out_path), _tail(err_path))
+            try:
+                await asyncio.wait_for(self._watch(process, job, name), timeout)
+            except TimeoutError:
+                await _kill(process)
+                raise ProcessingTimeout(f"{name} ran longer than {timeout:.0f} s") from None
+            except BaseException:  # stopped by the watchdog, or Core is stopping
+                await asyncio.shield(_kill(process))
+                raise
+            assert process.returncode is not None
+            return Result(process.returncode, _tail(out), _tail(err))
 
     async def _watch(self, process: asyncio.subprocess.Process, job: Path, name: str) -> None:
         while True:

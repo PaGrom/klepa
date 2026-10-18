@@ -57,6 +57,12 @@ if "SLOW" in data:
     time.sleep(30)
 if "BROKEN" in data:
     sys.exit(3)
+if data.startswith("LINK "):  # a reader a planted file broke: a link where its text goes
+    os.symlink(data.split()[1], base + ".txt")
+    sys.exit(0)
+if data.startswith("PIPE"):  # or a pipe, which an open waits on
+    os.mkfifo(base + ".txt")
+    sys.exit(0)
 open(base + ".txt", "w").write("transcript: " + data.strip())
 """
 
