@@ -2,6 +2,7 @@
 
 import pytest
 
+from klepa_core.host.tools import _stems
 from klepa_core.locale import load_locale
 from klepa_core.search import find, index_names, index_pages
 from klepa_core.spaces import is_private_caption
@@ -130,3 +131,12 @@ def test_search_finds_yo_written_as_ye_and_back(core_db, written, stem):
     _record(conn, "ev-caption", name="scan.pdf", caption=written)
     found = {hit.evidence_id for hit in find(conn, ("shared",), ("processed",), [stem], 10)}
     assert found == {"ev-page", "ev-caption"}
+
+
+@pytest.mark.parametrize("query", ["ёлка", "елка", "ёлкой", "ёлки", "Когда ставим ёлку?"])
+def test_search_finds_a_short_word_in_another_case(core_db, query):
+    """A model asks in the nominative, the document has the accusative: a short word keeps its root, not its ending
+    (found in the live run of 2b-1: "ёлка" missed "ёлку")."""
+    conn = core_db[1]
+    _record(conn, "ev-1", pages=("Решили: ёлку ставим во дворе 27 декабря",))
+    assert {hit.evidence_id for hit in find(conn, ("shared",), ("processed",), _stems(query), 10)} == {"ev-1"}

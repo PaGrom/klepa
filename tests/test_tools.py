@@ -199,6 +199,15 @@ def test_another_form_of_a_word_finds_the_record(box):
     assert [record["name"] for record in found["results"]] == ["car.pdf", "flat.pdf"]
 
 
+def test_a_short_word_finds_its_other_forms(box):
+    """A word of four letters keeps its root without the ending, like a longer one: "cars" finds "car" (found in the
+    live run of 2b-1, where a short Russian word missed the same word in another case)."""
+    issue(box.conn, MEMBER, "run-1")
+    store(box.conn, "ev-car", "member", "car.pdf", caption="car insurance")
+    found = box.call("search", signed("search", {"query": "cars"}))
+    assert [record["name"] for record in found["results"]] == ["car.pdf"]
+
+
 def test_without_words_search_lists_the_latest_records(box):
     issue(box.conn, MEMBER, "run-1")
     store(box.conn, "ev-old", "member", "old.pdf", received="2026-10-01T10:00:00Z")

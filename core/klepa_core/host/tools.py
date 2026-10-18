@@ -197,11 +197,12 @@ class ToolBox:
 
 def _stems(query: str) -> list[str]:
     """The query's words by their beginnings, so that another form of a word still matches ("insurances" finds
-    "insurance"; Russian or Serbian endings likewise). Words of one or two letters count only when there are no
-    others."""
+    "insurance"; Russian or Serbian endings likewise): a word keeps all but its last two letters, three at least, so
+    that a short word loses its ending too ("cars" finds "car"; found in the live run of 2b-1). Words of one or two
+    letters count only when there are no others."""
     words = re.findall(r"\w+", query.casefold())[:8]
     words = [word for word in words if len(word) >= 3] or words
-    return sorted({word if len(word) <= 4 else word[: max(4, len(word) - 2)] for word in words})
+    return sorted({word if len(word) <= 3 else word[: max(3, len(word) - 2)] for word in words})
 
 
 def _search(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
