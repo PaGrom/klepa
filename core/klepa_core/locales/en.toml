@@ -61,3 +61,4 @@ alert_host_turn_failed = "⚠️ A person's message got no answer: the model fai
 alert_host_model_auth = "⚠️ The model refused its token: people get a fixed reply until it works again. Run klepa-core host login with a new setup-token; if the host stopped, press Resume."
 alert_host_model_unavailable = "⚠️ The model did not answer the start check ({reason}). The host runs anyway: people get an apology for each message until the model answers again."
 alert_egress_failed = "⚠️ The egress proxy does not start ({error}). The host cannot reach the model."
+alert_processing_unavailable = "⚠️ Attachments are kept but not read ({missing}). They wait: once what is missing is installed and Core restarts, they are read."

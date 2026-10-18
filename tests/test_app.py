@@ -72,3 +72,74 @@ def test_a_person_hears_in_the_installs_language_when_an_original_did_not_go(mak
     finally:
         journal.close()
         conn.close()
+
+
+def processing_setup(make_config, tmp_path, monkeypatch, **changes):
+    """Core's database, alerts and a [processing] section of stand-ins, with sandbox-exec taken as present."""
+    import dataclasses
+
+    from fakereaders import processing_config, processing_section
+    from klepa_core import db
+    from klepa_core.alerts import Alerts
+    from klepa_core.events import EventLog
+
+    monkeypatch.setattr(app, "sandbox_available", lambda: True)
+    processing = dataclasses.replace(processing_config(tmp_path), **changes)
+    cfg = make_config(text=BASE_CONFIG + processing_section(processing))
+    app.init_layout(cfg)
+    conn = db.connect(cfg.core_db_path)
+    events = EventLog(conn)
+    return cfg, conn, Alerts(conn, None, events, cfg.locale), events
+
+
+def alerts_logged(conn):
+    import json
+
+    rows = conn.execute("SELECT data FROM event_log WHERE kind IN ('alert_unsent', 'alert_queued')")
+    return [json.loads(row[0])["alert"] for row in rows]
+
+
+def test_processing_whose_sandbox_would_open_a_hidden_folder_reads_nothing_and_says_so(
+    make_config, tmp_path, monkeypatch
+):
+    """OCR's languages in the home folder itself would make all of it readable (finding I3)."""
+    from pathlib import Path
+
+    cfg, conn, alerts, events = processing_setup(make_config, tmp_path, monkeypatch, tessdata=Path.home())
+    parts = app._processing(cfg, conn, alerts, events)
+    assert parts is not None
+    assert (parts.worker, parts.loops, parts.readable()) == (None, [], frozenset())
+    assert alerts_logged(conn) == ["processing_unavailable"]
+
+
+def test_a_jobs_folder_that_cannot_be_made_ready_reads_nothing_and_says_so(make_config, tmp_path, monkeypatch):
+    """Core still starts and receives (finding I4)."""
+    from klepa_core.processing.jobs import Worker
+
+    cfg, conn, alerts, events = processing_setup(make_config, tmp_path, monkeypatch)
+
+    def refuse(worker):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(Worker, "sweep", refuse)
+    parts = app._processing(cfg, conn, alerts, events)
+    assert parts is not None
+    assert (parts.worker, parts.loops) == (None, [])
+    assert alerts_logged(conn) == ["processing_unavailable"]
+
+
+def test_a_program_gone_since_start_takes_its_kind_from_what_get_says_is_read_and_tells_the_owner(
+    make_config, tmp_path, monkeypatch
+):
+    """Homebrew replaced a program while Core ran (finding M8)."""
+    cfg, conn, alerts, events = processing_setup(make_config, tmp_path, monkeypatch)
+    parts = app._processing(cfg, conn, alerts, events)
+    assert parts is not None
+    assert parts.worker is not None
+    assert parts.readable() == parts.worker.kinds
+    assert "voice" in parts.readable()
+    assert parts.worker.on_missing is not None
+    parts.worker.kinds -= {"voice"}
+    parts.worker.on_missing("voice", "whisper-cli")
+    assert "voice" not in parts.readable()
+    assert alerts_logged(conn) == ["processing_unavailable"]

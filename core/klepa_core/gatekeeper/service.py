@@ -17,6 +17,7 @@ from ..events import EventLog, utc_now_iso
 from ..evidence import EvidenceStore, IncomingFile
 from ..host.queue import HostQueue
 from ..journal import InboundJournal
+from ..processing.jobs import Jobs, job_kind
 from ..spaces import decide_space, is_private_caption
 from ..telegram.client import (
     Ambiguous,
@@ -50,6 +51,7 @@ class Gatekeeper:
         retry_seconds: float = 30.0,
         alerts: Alerts | None = None,
         host: HostQueue | None = None,
+        jobs: Jobs | None = None,
     ) -> None:
         self.cfg = cfg
         self.api = api
@@ -62,6 +64,7 @@ class Gatekeeper:
         self.retry_seconds = retry_seconds
         self.alerts = alerts
         self.host = host
+        self.jobs = jobs  # None: the installation reads no attachment (no [processing])
         self._album_alerted: set[tuple[int, str]] = set()
         self.members: dict[int, Member] = cfg.members_by_telegram_id()
         self._retry_at: dict[int, float] = {}
@@ -210,6 +213,10 @@ class Gatekeeper:
             return
         self._retry_at.pop(update_id, None)
         self._attempts.pop(update_id, None)
+        if self.jobs is not None:
+            kind = job_kind(row["kind"], row["mime"], row["original_name"])
+            if kind is not None:
+                self.jobs.add(row["id"], kind)  # once per original; a crash before this is made good at start
         if row["update_id"] != update_id and self.journal.state(row["update_id"]) == "done":
             # The same message came again under a new update_id after its receipt was queued.
             self.batcher.release(c.chat_id)

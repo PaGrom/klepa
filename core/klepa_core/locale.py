@@ -75,6 +75,7 @@ SERVICE_FIELDS: dict[str, tuple[str, ...]] = {
     "alert_host_send_failed": ("error",),
     "alert_host_send_refused": ("reason",),
     "alert_egress_failed": ("error",),
+    "alert_processing_unavailable": ("missing",),
 }
 _CODE = re.compile(r"^[a-z]{2,3}$")
 

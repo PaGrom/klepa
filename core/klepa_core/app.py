@@ -40,6 +40,9 @@ from .host.tools import ToolBox
 from .host.turns import TurnRegistry
 from .journal import InboundJournal
 from .keys import KeyFileError, ensure_host_token, ensure_private_dir, load_or_create_key
+from .processing.jobs import KINDS, Jobs, Worker
+from .processing.readers import Readers
+from .processing.sandbox import sandbox_available, sandbox_for
 from .schedule import DailyJob, Scheduler
 from .servicebot import ServiceBot
 from .snapshot import SnapshotError, Snapshotter
@@ -263,6 +266,56 @@ def _gateway(cfg: Config, probe: int) -> tuple[Expectations | None, GatewayContr
     return reference.expectations(table, adapter_sha256(), OPENCLAW_VERSION), control
 
 
+@dataclass(frozen=True)
+class ProcessingParts:
+    jobs: Jobs
+    worker: Worker | None  # None: nothing is read now, and the jobs wait
+    loops: list[tuple[str, Loop]]
+
+    def readable(self) -> frozenset[str]:
+        """The kinds of original read now; the tools tell that the others' texts wait (finding I8)."""
+        return frozenset() if self.worker is None else self.worker.kinds
+
+
+def _processing(cfg: Config, conn: sqlite3.Connection, alerts: Alerts, events: EventLog) -> ProcessingParts | None:
+    """Attachments read in a sandbox (spec 6.1 item 4). None without [processing]: then nothing is read.
+
+    What cannot be read now waits in the queue: the owner is told what is missing, and after a start that has it,
+    the waiting originals are read. So it is with a sandbox that would open a hidden folder to the readers and with a
+    jobs folder that cannot be made ready (findings I3, I4): Core still starts and receives."""
+    if cfg.processing is None:
+        return None
+    jobs = Jobs(conn, events)
+    jobs.recover()
+    jobs.backfill()
+    if not sandbox_available():
+        alerts.raise_("processing_unavailable", missing="sandbox-exec")
+        return ProcessingParts(jobs, None, [])
+    try:
+        sandbox = sandbox_for(cfg.processing, (cfg.data_dir, cfg.documents_dir))
+    except ValueError as exc:
+        alerts.raise_("processing_unavailable", missing=str(exc))
+        return ProcessingParts(jobs, None, [])
+    readers = Readers(cfg.processing, sandbox)
+    lacking = readers.unavailable()
+    if lacking:
+        missing = "; ".join(f"{kind}: {', '.join(names)}" for kind, names in sorted(lacking.items()))
+        alerts.raise_("processing_unavailable", missing=missing)
+
+    def gone(kind: str, program: str) -> None:  # since the start: Homebrew replaced it (finding M8)
+        alerts.raise_("processing_unavailable", missing=f"{kind}: {program}")
+
+    worker = Worker(
+        conn, jobs, readers, cfg.incoming_dir, cfg.jobs_dir, events, kinds=KINDS - set(lacking), on_missing=gone
+    )
+    try:
+        worker.sweep()
+    except OSError as exc:
+        alerts.raise_("processing_unavailable", missing=f"the jobs folder: {type(exc).__name__}")
+        return ProcessingParts(jobs, None, [])
+    return ProcessingParts(jobs, worker, [("processing", worker.run)])
+
+
 def _daily_jobs(cfg: Config, backups: Backups, service_bot: ServiceBot | None) -> list[DailyJob]:
     jobs: list[DailyJob] = []
     if cfg.snapshot_at is not None:
@@ -313,6 +366,7 @@ async def run_service(
                     service_outbox = Outbox(conn, service_api, events, bot="service")
                     service_outbox.recover()
                 alerts = Alerts(conn, service_outbox, events, cfg.locale, documents_grace=documents_grace)
+                processing = _processing(cfg, conn, alerts, events)
                 try:
                     host = _host(cfg, conn, journal, api, outbox, alerts, events, token, host_timing)
                 except (KeyFileError, OSError, ValueError) as exc:
@@ -343,6 +397,7 @@ async def run_service(
                     retry_seconds=retry_seconds,
                     alerts=alerts,
                     host=None if host is None else host.queue,
+                    jobs=None if processing is None else processing.jobs,
                 )
                 scheduler = Scheduler(conn, cfg.timezone, _daily_jobs(cfg, backups, service_bot), events)
                 side_loops: list[tuple[str, Loop]] = [
@@ -354,6 +409,8 @@ async def run_service(
                     side_loops += [("service_bot", service_bot.poll_forever), ("service_outbox", service_outbox.run)]
                 if host is not None:
                     side_loops += host.loops
+                if processing is not None:
+                    side_loops += processing.loops
                 events.log("core_started")
                 if crashed:
                     alerts.raise_("restarted")

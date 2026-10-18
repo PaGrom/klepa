@@ -65,6 +65,7 @@ alert_host_turn_failed = "turn {reason}"
 alert_host_model_auth = "token"
 alert_host_model_unavailable = "model {reason}"
 alert_egress_failed = "egress {error}"
+alert_processing_unavailable = "unread {missing}"
 """
 
 

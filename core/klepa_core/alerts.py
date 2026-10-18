@@ -40,6 +40,7 @@ DEFAULT_LIMITS: dict[str, float] = {
     "host_model_auth": 3600,
     "host_model_unavailable": 3600,
     "egress_failed": 3600,
+    "processing_unavailable": 6 * 3600,
 }
 DOCUMENTS_GRACE_SECONDS = 300.0
 

@@ -62,3 +62,4 @@ alert_host_turn_failed = "⚠️ Poruka je ostala bez odgovora: model nije uspeo
 alert_host_model_auth = "⚠️ Model nije prihvatio token: dok ponovo ne proradi, ljudi dobijaju fiksni odgovor. Pokreni klepa-core host login sa novim setup-token; ako je host zaustavljen, pritisni Resume."
 alert_host_model_unavailable = "⚠️ Model nije odgovorio na početnu proveru ({reason}). Host ipak radi: na svaku poruku ljudi dobijaju izvinjenje dok model ponovo ne odgovori."
 alert_egress_failed = "⚠️ Proksi za odlazni saobraćaj ne može da se pokrene ({error}). Host ne može da dođe do modela."
+alert_processing_unavailable = "⚠️ Prilozi se čuvaju, ali se ne čitaju ({missing}). Čekaju: kada se instalira ono što nedostaje i jezgro ponovo pokrene, biće pročitani."
