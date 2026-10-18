@@ -99,6 +99,27 @@ def test_scans_past_the_limit_are_left_and_the_pages_say_so(setup, monkeypatch):
     assert pages.note == "OCR read the first 2 of 4 scanned pages"
 
 
+def test_a_signed_scan_is_read(setup):
+    """ocrmypdf refuses a digitally signed PDF unless told that what it writes may break the signature, and it writes
+    no PDF here; official documents are often signed (final review, I-A)."""
+    pages = read(setup, "pdf", b"SCAN SIGNED", "statement.pdf")
+    assert pages.texts == ["scanned page 1 in rus+eng", "scanned page 2 in rus+eng"]
+
+
+def test_when_ocr_fails_the_text_layer_is_kept_and_the_note_says_so(setup):
+    """One page that OCR cannot read must not take the pages already read with it."""
+    pages = read(setup, "pdf", f"{POLICY} PAGEBREAK a short page OCRFAIL".encode(), "policy.pdf")
+    assert pages.texts == [POLICY, "a short page OCRFAIL"]
+    assert pages.extractor == "pdftotext"
+    assert pages.note == "the scanned pages could not be read: ocrmypdf exited with 5"
+
+
+def test_a_scan_whose_ocr_fails_fails(setup):
+    """Nothing but scans, and OCR failed: there is no text to keep."""
+    with pytest.raises(ReaderFailed, match="ocrmypdf exited with 5"):
+        read(setup, "pdf", b"SCAN OCRFAIL", "scan.pdf")
+
+
 def test_a_scan_is_read_with_ocr_in_the_installations_languages(setup):
     pages = read(setup, "pdf", b"SCAN", "scan.pdf")
     assert pages.texts == ["scanned page 1 in rus+eng", "scanned page 2 in rus+eng"]

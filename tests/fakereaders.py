@@ -86,6 +86,10 @@ sidecar = args[args.index("--sidecar") + 1]
 source = [a for a in args if a.endswith(".pdf")][0]
 inside(source)
 data = open(source, "rb").read().decode("utf-8", "replace")
+if "SIGNED" in data and "--invalidate-digital-signatures" not in args:
+    sys.exit(2)  # like the real one, which refuses a signed PDF unless told
+if "OCRFAIL" in data:
+    sys.exit(5)
 count = 2 if "SCAN" in data else len(data.split("PAGEBREAK"))
 languages = args[args.index("-l") + 1]
 wanted = set()

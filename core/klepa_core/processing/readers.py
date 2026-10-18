@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import BinaryIO, Protocol
 
 from ..config import ProcessingConfig
-from .sandbox import Result, open_written
+from .sandbox import ProcessingStopped, Result, open_written
 
 MAX_AUDIO_SECONDS = 30 * 60  # a longer recording is transcribed up to here
 MAX_OCR_PAGES = 50  # scanned pages of one document read with OCR
@@ -306,13 +306,22 @@ class Readers:
         # more letters, its layer's or OCR's.
         chosen = scanned[:MAX_OCR_PAGES]
         languages = self.processing.ocr_languages
+        # A digitally signed PDF is refused unless ocrmypdf is told that what it writes may break the signature: it
+        # writes no PDF here, and the original is never touched (final review, I-A).
         options = [
             "-l", languages, "--force-ocr", "--pages", _ranges(chosen), "--jobs", OCR_JOBS,
-            "--max-image-mpixels", MAX_IMAGE_PIXELS // 1_000_000, "--output-type", "none",
-            "--sidecar", job / "ocr.txt", source, "-",
+            "--max-image-mpixels", MAX_IMAGE_PIXELS // 1_000_000, "--invalidate-digital-signatures",
+            "--output-type", "none", "--sidecar", job / "ocr.txt", source, "-",
         ]  # fmt: skip
         limit = 120 + 60 * len(chosen)
-        await self._step([self.processing.ocrmypdf, *options], job, limit, self._ocr_env())
+        try:
+            await self._step([self.processing.ocrmypdf, *options], job, limit, self._ocr_env())
+        except (ReaderFailed, ProcessingStopped) as exc:
+            if not any(pages):  # nothing but scans: no text to keep
+                raise
+            # OCR failed, and the pages the text layer gave stay read: one bad page must not take them all.
+            failed = f"the scanned pages could not be read: {exc}"
+            return Pages(pages, self.pdftotext, _note(failed, TEXT_CUT if cut else None))
         sidecar, ocr_cut = _read(job / "ocr.txt")
         read = _sidecar(sidecar)
         from_ocr = 0

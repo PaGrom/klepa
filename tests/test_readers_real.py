@@ -165,6 +165,24 @@ def test_a_mixed_pdf_reads_its_text_page_and_its_scans_even_labelled_ones(reader
     assert capped.note == "OCR read the first 1 of 2 scanned pages"
 
 
+def test_a_signed_pdf_is_read(readers, tmp_path):
+    """ocrmypdf refuses a signed PDF unless told that what it writes may break the signature: it writes no PDF here."""
+    import pikepdf
+
+    two = joined(
+        [pdf_of(LEASE, tmp_path / "lease.pdf"), scan_of(DEPOSIT, tmp_path / "deposit.pdf", label="Page 2")],
+        tmp_path / "two.pdf",
+    )
+    signed = tmp_path / "signed.pdf"
+    with pikepdf.open(two) as document:
+        document.Root.AcroForm = pikepdf.Dictionary(Fields=pikepdf.Array(), SigFlags=3)
+        document.save(signed)
+    pages = asyncio.run(readers.read("pdf", signed, job(tmp_path, "signed")))
+    assert "first working day of every month" in pages.texts[0]
+    assert "handed back" in pages.texts[1]
+    assert pages.note is None
+
+
 def test_a_word_document_is_read(readers, tmp_path):
     notice = tmp_path / "notice.html"
     notice.write_text("<h1>Notice</h1><p>The water will be off on Tuesday from 9 to 12.</p>")
