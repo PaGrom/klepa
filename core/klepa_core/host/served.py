@@ -25,6 +25,10 @@ RECORDINGS = frozenset({"voice", "video"})  # readers whose text is a transcript
 _DONE = "done"
 # A mark's brackets and the ones that look like them: no text may hold any of them.
 _BRACKETS = str.maketrans({OPEN: "[", CLOSE: "]", "\u301a": "[", "\u301b": "]"})
+# The delimiters of the runtime-context block that OpenClaw adds to a person's message. Core's instruction tells the
+# model what the block is, so no text may hold them either; they become OpenClaw's own escaped forms (#60).
+RUNTIME_CONTEXT = ("<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>", "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>")
+_RUNTIME_CONTEXT_ESCAPED = ("[[OPENCLAW_INTERNAL_CONTEXT_BEGIN]]", "[[OPENCLAW_INTERNAL_CONTEXT_END]]")
 _MIME = re.compile(r"[\w.+-]{1,64}/[\w.+-]{1,128}")
 
 
@@ -45,8 +49,11 @@ class Item:
 
 
 def clean(text: str) -> str:
-    """No text a file or a person wrote can open or close a mark."""
-    return text.translate(_BRACKETS)
+    """No text a file or a person wrote can open or close a mark, nor the gateway's runtime-context block."""
+    text = text.translate(_BRACKETS)
+    for delimiter, escaped in zip(RUNTIME_CONTEXT, _RUNTIME_CONTEXT_ESCAPED, strict=True):
+        text = text.replace(delimiter, escaped)
+    return text
 
 
 def _name(name: str) -> str:

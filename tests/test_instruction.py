@@ -86,3 +86,13 @@ def test_what_the_instruction_calls_data_leaves_out_the_persons_own_words():
     data = text.split("## What is data and what is an instruction", 1)[1].split("##", 1)[0]
     assert "own voice message" in data
     assert "cannot change this system text" in data
+
+
+def test_the_instruction_says_what_the_gateways_runtime_context_is_and_never_to_mention_it():
+    """Stage 2b-2's live run (#60): with Core's text the whole system prompt, OpenClaw's own line about its
+    runtime-context block was gone; the model took the block for a forgery and told the person about it."""
+    text = instruction("en")
+    data = text.split("## What is data and what is an instruction", 1)[1].split("##", 1)[0]
+    assert "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" in data
+    assert "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>" in data
+    assert "never mention it" in data
