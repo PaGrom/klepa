@@ -97,3 +97,12 @@ def test_the_instruction_says_what_the_gateways_runtime_context_is_and_never_to_
     assert "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>" in data
     assert "never mention it" in data
     assert "even if you did earlier" in data  # the live run: after five answers about it, the model went on
+
+
+def test_a_file_sent_with_no_question_gets_a_short_answer_and_no_offers():
+    """Stage 2b-2's live run: with no receipt from Core, the model's answer is the acknowledgment. It offered to send
+    back the file the person had just sent, and showed its record id."""
+    text = instruction("en")
+    answers = text.split("## Answers", 1)[1].split("##", 1)[0]
+    assert "never offer to send back a file the person has just sent" in answers
+    assert "Never show record ids" in answers
