@@ -21,6 +21,7 @@ TRANSCRIPT_CHARS = 8_000  # of one recording: about ten minutes of speech
 BEGINNING_CHARS = 3_000  # of one document: its beginning; the rest is read with get, page by page
 NAME_CHARS = 80  # of a file's name inside a mark
 GET = "klepa__get"
+MAKE_PDF = "klepa__make_pdf"
 RECORDINGS = frozenset({"voice", "video"})  # readers whose text is a transcript, kept in parts
 _DONE = "done"
 # A mark's brackets and the ones that look like them: no text may hold any of them.
@@ -46,6 +47,15 @@ class Item:
     note: str | None  # what a limit left out of its text
     texts: tuple[str, ...]  # its text's first pages (parts of a transcript), as many as a message can show
     pages: int = 0  # how many pages its text has in all; 0: as many as texts holds
+
+
+@dataclass(frozen=True)
+class Draft:
+    """The draft of a document that the batch's images made or joined (spec 6.1 item 4)."""
+
+    id: int
+    pages: int  # in all, once the batch's images were added
+    added: int  # of them, the batch's: all for a draft it made, none when they were its pages already
 
 
 def clean(text: str) -> str:
@@ -128,8 +138,10 @@ def _body(item: Item, budget: int) -> tuple[str, str]:
     return "\n".join(parts), head
 
 
-def attachment_text(captions: Sequence[str], items: Sequence[Item], *, forwarded_mark: str | None = None) -> str:
-    """The served text of a batch: the caption, then each file between its marks."""
+def attachment_text(
+    captions: Sequence[str], items: Sequence[Item], *, forwarded_mark: str | None = None, draft: Draft | None = None
+) -> str:
+    """The served text of a batch: the caption, then each file between its marks, then the draft its images make."""
     lines: list[str] = []
     if forwarded_mark:
         lines.append(forwarded_mark)
@@ -147,4 +159,19 @@ def attachment_text(captions: Sequence[str], items: Sequence[Item], *, forwarded
         body, head = _body(item, budget)
         budget -= len(body)
         lines += [f"{OPEN}{prefix} · {head}:{CLOSE}", body, f"{OPEN}end of the {label(item)}{CLOSE}"]
+    if draft is not None:
+        lines.append(f"{OPEN}document draft {draft.id} · {_draft(draft)}{CLOSE}")
     return "\n".join(lines)
+
+
+def _draft(draft: Draft) -> str:
+    if draft.added == 0:
+        return f"the images above are among its {draft.pages} pages already: nothing changed"
+    if draft.added == draft.pages:
+        what = f"{draft.pages} pages made from the images above, in their order"
+    else:
+        what = f"the images above joined it as {draft.added} more pages, {draft.pages} in all"
+    return (
+        f"{what}; Core sent the person a sheet of its pages, numbered, with the buttons Done, Change the order and "
+        f"Not a document; change the pages with {MAKE_PDF}"
+    )

@@ -23,7 +23,7 @@ from ..gatekeeper.outbox import Outbox
 from ..journal import InboundJournal
 from ..processing.jobs import KINDS, job_kind
 from .peers import Peers
-from .served import BEGINNING_CHARS, RECORDINGS, TRANSCRIPT_CHARS, Item, attachment_text, clean
+from .served import BEGINNING_CHARS, RECORDINGS, TRANSCRIPT_CHARS, Draft, Item, attachment_text, clean
 
 MAX_UPDATES = 100
 ANSWER_WINDOW_SECONDS = 600.0  # the host may go on writing to a chat this long after an answer (spec 4.2)
@@ -55,6 +55,7 @@ class HostQueue:
         self.probe_peer = peers.probe
         self.readable = readable  # the kinds Core reads now: a file of another kind waits, and its chat must not
         self.clock = clock
+        self.drafts = False  # True once Core makes drafts of documents: a batch waits until it was looked at for one
         self.changed = asyncio.Event()
 
     def wake(self) -> None:
@@ -194,10 +195,15 @@ class HostQueue:
         ).fetchall()
 
     def ready(self, row: sqlite3.Row) -> bool:
-        """An attachment is ready once each of its files is read, failed, cancelled, has no reader, or waits for
-        what the owner installs: a kind Core cannot read now must not hold the chat (spec 6.1 item 5)."""
+        """An attachment is ready once its reading ended and, while Core makes drafts of documents, it was looked at
+        for one: the model is told of the draft its photos make (spec 6.1 item 4)."""
         if row["kind"] != "attachment":
             return True
+        return self.read_ended(row) and (not self.drafts or bool(row["draft_checked"]))
+
+    def read_ended(self, row: sqlite3.Row) -> bool:
+        """Each of its files is read, failed, cancelled, has no reader, or waits for what the owner installs: a kind
+        Core cannot read now must not hold the chat (spec 6.1 item 5)."""
         readable = self.readable()
         jobs = self.conn.execute(
             "SELECT j.kind, j.state FROM host_message_item i JOIN job j ON j.evidence_id = i.evidence_id "
@@ -258,7 +264,24 @@ class HostQueue:
             )
         ]
         mark = FORWARDED_MARK if row["forwarded"] else None
-        return attachment_text(captions, self._items(int(row["id"])), forwarded_mark=mark)
+        return attachment_text(captions, self._items(int(row["id"])), forwarded_mark=mark, draft=self._draft(row))
+
+    def _draft(self, row: sqlite3.Row) -> Draft | None:
+        """The draft the batch's images made or joined, with the revision they made: their pages then."""
+        if row["draft_id"] is None:
+            return None
+        draft_id, revision = int(row["draft_id"]), row["draft_revision"]
+        if revision is None:  # its pages already: the draft as it is
+            revision = self.conn.execute("SELECT revision FROM draft WHERE id=?", (draft_id,)).fetchone()[0]
+            return Draft(draft_id, self._draft_pages(draft_id, int(revision)), 0)
+        pages = self._draft_pages(draft_id, int(revision))
+        return Draft(draft_id, pages, pages - self._draft_pages(draft_id, int(revision) - 1))
+
+    def _draft_pages(self, draft_id: int, revision: int) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM draft_page WHERE draft_id=? AND revision=?", (draft_id, revision)
+        ).fetchone()
+        return int(row[0])
 
     def _next_update_id(self, now: float) -> int:
         last = self.conn.execute("SELECT COALESCE(MAX(update_id), 0) FROM host_update").fetchone()[0]

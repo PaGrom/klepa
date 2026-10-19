@@ -119,6 +119,11 @@ class Config:
         return self.data_dir / "jobs"
 
     @property
+    def drafts_dir(self) -> Path:
+        """The sheets of drafts of documents, as Core sends them (spec 6.1 item 4)."""
+        return self.data_dir / "drafts"
+
+    @property
     def journal_path(self) -> Path:
         return self.data_dir / "inbound-journal" / "inbound.db"
 

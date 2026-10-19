@@ -26,6 +26,7 @@ from ..host.queue import HostQueue
 from ..locale import Locale, available_locales, load_locale
 from ..processing.jobs import Jobs
 from ..telegram.client import Ambiguous, BotApi, NotSent, TelegramError
+from .drafts import Answer, Drafts, is_draft_action
 from .intake import Classified
 from .outbox import Outbox
 
@@ -64,6 +65,7 @@ class Attachments:
         self.interim_after = interim_after
         # The family may write in any of the languages Klepa speaks: a cancel word of each of them counts.
         self.words = frozenset().union(*(load_locale(code).cancel_words for code in available_locales()))
+        self.drafts: Drafts | None = None  # the buttons of a draft's sheet are Core's too (spec 6.1 item 4)
         self.wake = asyncio.Event()
 
     # ---- what is being read -----------------------------------------------------------------------------------------
@@ -193,36 +195,47 @@ class Attachments:
 
     async def press(self, c: Classified) -> None:
         """A press of one of Core's buttons in the family bot: one use, its own chat and message, before it expires
-        (scenario 45). A cancel button cancels at once; any press that is not good says the button no longer works."""
+        (scenario 45). A cancel button cancels at once, a draft's button goes to the drafts; any press that is not
+        good says the button no longer works."""
         row = self.conn.execute("SELECT * FROM button_action WHERE id=?", (c.data,)).fetchone()
-        done = False
+        answer = Answer(self.locale.text("button_expired"))
         if (
             row is not None
             and row["used_at"] is None
             and float(row["expires_at"]) > self.clock()
             and row["chat_id"] == c.chat_id
-            and str(row["action"]).startswith(_CANCEL)
             and self._on_its_message(str(row["outbound_key"]), c.message_id)
         ):
-            claimed = self.conn.execute(
-                "UPDATE button_action SET used_at=? WHERE outbound_key=? AND used_at IS NULL",
-                (utc_now_iso(), row["outbound_key"]),
-            ).rowcount
-            if claimed:
-                targets = [int(part) for part in str(row["action"])[len(_CANCEL) :].split(",") if part.isdigit()]
-                results = [self.cancel(target) for target in targets]  # every one of them, not the first only
-                done = any(results)
-                if done and str(row["outbound_key"]).startswith("cancel_which:"):
-                    assert c.chat_id is not None
-                    assert c.message_id is not None
-                    self.outbox.enqueue_edit(
-                        f"edit:{row['outbound_key']}", c.chat_id, c.message_id, self.locale.text("interim_cancelled")
-                    )
+            action = str(row["action"])
+            if action.startswith(_CANCEL) and self._cancel_pressed(row, c):
+                answer = Answer(None)
+            elif self.drafts is not None and is_draft_action(action):
+                assert c.chat_id is not None
+                answer = self.drafts.press(action, c.chat_id)
         try:
             assert c.callback_id is not None
-            await self.api.answer_callback_query(c.callback_id, None if done else self.locale.text("button_expired"))
+            await self.api.answer_callback_query(c.callback_id, answer.text, show_alert=answer.alert)
         except (TelegramError, NotSent, Ambiguous) as exc:
             self.events.log("press_answer_failed", {"error": type(exc).__name__})
+
+    def _cancel_pressed(self, row: sqlite3.Row, c: Classified) -> bool:
+        """A cancel button: it and the others on its message are spent, and its batches cancelled."""
+        claimed = self.conn.execute(
+            "UPDATE button_action SET used_at=? WHERE outbound_key=? AND used_at IS NULL",
+            (utc_now_iso(), row["outbound_key"]),
+        ).rowcount
+        if not claimed:
+            return False
+        targets = [int(part) for part in str(row["action"])[len(_CANCEL) :].split(",") if part.isdigit()]
+        results = [self.cancel(target) for target in targets]  # every one of them, not the first only
+        done = any(results)
+        if done and str(row["outbound_key"]).startswith("cancel_which:"):
+            assert c.chat_id is not None
+            assert c.message_id is not None
+            self.outbox.enqueue_edit(
+                f"edit:{row['outbound_key']}", c.chat_id, c.message_id, self.locale.text("interim_cancelled")
+            )
+        return done
 
     def _on_its_message(self, key: str, message_id: int | None) -> bool:
         """The press came on the message that carries the button: Telegram's id for it, or, for a send whose outcome
