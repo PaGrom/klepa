@@ -11,6 +11,7 @@ from __future__ import annotations
 import array
 import contextlib
 import importlib.metadata
+import importlib.util
 import os
 import re
 import shutil
@@ -34,6 +35,9 @@ SILENT_PEAK = round(32768 * 10 ** (-45 / 20))
 MIN_PAGE_LETTERS = 100  # a PDF page with fewer letters in its text layer may be a scan: OCR reads it too
 FRAGMENT_CHARS = 4000  # a transcript or a text file is kept in pieces of this size, a page each (spec 5.4)
 OCR_JOBS = 2  # ocrmypdf's workers: one per core would hold several large pages in memory at once
+PAGES_SECONDS = 120  # Core's renderer: a sheet or a PDF of a hundred pages
+PAGES = "pages"  # Core's renderer is no kind of original, yet it needs Pillow, which the processing extra brings
+PAGES_TOO_LARGE = 5  # the renderer's exit code when what it draws would pass its size (pages.OUTPUT_TOO_LARGE)
 _SUFFIX = re.compile(r"\.[a-z0-9]{1,8}")
 _SIZE = re.compile(r"(\d{1,6})x(\d{1,6})")
 _CELLAR = re.compile(r"/Cellar/[^/]+/([^/]+)/")
@@ -47,6 +51,14 @@ _TRAMPOLINE = re.compile(rb"#!/bin/sh\n'''exec' (['\"])([^'\"\n]+)\1 \"\$0\" \"\
 
 class ReaderFailed(Exception):
     """A reader could not read the original. The text names the program and its exit code, nothing it printed."""
+
+    def __init__(self, message: str, code: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code  # the program's exit code, when it ended with one
+
+
+class OutputTooLarge(ReaderFailed):
+    """What Core's renderer drew is larger than where it goes allows: a photo or a document in Telegram."""
 
 
 class ReaderMissing(Exception):
@@ -171,6 +183,10 @@ def _missing(*programs: Path) -> list[str]:
     return [program.name for program in programs if not os.access(program, os.X_OK)]
 
 
+def _has_pillow() -> bool:
+    return importlib.util.find_spec("PIL") is not None
+
+
 def _launcher(program: Path) -> list[str]:
     """How the sandbox starts a program. No shell may run there, so a Python program that begins with a shell
     trampoline is started by its interpreter, with the script (found in the live run of stage 2b-1)."""
@@ -235,7 +251,8 @@ class Readers:
         self.tesseract = _named("tesseract", program_version(processing.tesseract))
 
     def unavailable(self) -> dict[str, list[str]]:
-        """What each kind of original lacks to be read, by name: a program, the speech model, a language's data."""
+        """What each kind of original lacks to be read, by name: a program, the speech model, a language's data; and
+        what Core's renderer of pages lacks."""
         p = self.processing
         languages = [
             f"{language}.traineddata"
@@ -249,6 +266,7 @@ class Readers:
             "pdf": _missing(p.pdftotext, p.ocrmypdf) + languages,
             "image": _missing(p.ffprobe, p.ffmpeg, p.tesseract) + languages,
             "document": _missing(p.textutil),
+            PAGES: [] if _has_pillow() else ["pillow"],
         }
         return {kind: names for kind, names in needs.items() if names}
 
@@ -288,7 +306,7 @@ class Readers:
         command = [*_launcher(program), *(str(arg) for arg in argv[1:])]
         result = await self.runner.run(command, job, timeout=timeout, env=env, gpu=gpu)
         if result.returncode != 0:
-            raise ReaderFailed(f"{name or program.name} exited with {result.returncode}")
+            raise ReaderFailed(f"{name or program.name} exited with {result.returncode}", result.returncode)
         return result
 
     def _ocr_env(self) -> dict[str, str]:
@@ -389,16 +407,36 @@ class Readers:
         if pixels > MAX_IMAGE_PIXELS:
             raise ReaderFailed(f"the image is larger than {MAX_IMAGE_PIXELS // 1_000_000} megapixels")
         if source.suffix in (".heic", ".heif"):
-            # tesseract cannot open them, and macOS's sips does not work in the sandbox: it reads the home folder and
-            # writes in the user's temporary folder. ffmpeg makes a PNG, with the tiles joined.
             converted = job / "converted.png"
-            convert = ["-nostdin", "-hide_banner", "-loglevel", "error", "-i", source, "-frames:v", 1, "-y", converted]
-            await self._step([self.processing.ffmpeg, *convert], job, 60)
+            await self.to_png(source, converted, job)
             source = converted
         languages = self.processing.ocr_languages
         await self._step([self.processing.tesseract, source, job / "ocr", "-l", languages], job, 120, self._ocr_env())
         text, cut = _read(job / "ocr.txt")
         return Pages([text.strip()], f"{self.tesseract} {languages}", TEXT_CUT if cut else None)
+
+    async def to_png(self, source: Path, target: Path, job: Path) -> None:
+        """A HEIC image as a PNG, its tiles joined, by ffmpeg: tesseract and Pillow cannot open HEIC, and macOS's sips
+        does not work in the sandbox, as it reads the home folder and writes in the user's temporary folder."""
+        convert = ["-nostdin", "-hide_banner", "-loglevel", "error", "-i", source, "-frames:v", 1, "-y", target]
+        await self._step([self.processing.ffmpeg, *convert], job, 60)
+
+    async def pages(self, action: str, inputs: Sequence[Path], job: Path, *, max_bytes: int) -> bytes:
+        """Core's own renderer of a document's pages (processing.pages) in the sandbox, like a reader: the sheet of
+        numbered thumbnails ("sheet") or the PDF ("pdf"), at most `max_bytes` of it."""
+        output = job / ("sheet.jpg" if action == "sheet" else "document.pdf")
+        argv = [sys.executable, "-I", "-m", "klepa_core.processing.pages", action, "--max-bytes", max_bytes, output]
+        try:
+            await self._step([*argv, *inputs], job, PAGES_SECONDS, name="pages")
+        except ReaderFailed as exc:
+            if exc.code == PAGES_TOO_LARGE:
+                raise OutputTooLarge(f"{output.name} is larger than {max_bytes >> 20} MB") from None
+            raise
+        with _output(output) as file:
+            data = file.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise OutputTooLarge(f"{output.name} is larger than {max_bytes >> 20} MB")
+        return data
 
     async def _document(self, source: Path, job: Path) -> Pages:
         """Word, RTF, OpenDocument and HTML documents through macOS's textutil."""

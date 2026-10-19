@@ -10,11 +10,13 @@ import threading
 import zipfile
 
 import pytest
+from PIL import Image
 
 from fakereaders import INSIDE, OCRMYPDF, PlainRunner, processing_config
 from klepa_core.processing import readers as readers_module
 from klepa_core.processing.readers import (
     FRAGMENT_CHARS,
+    OutputTooLarge,
     ReaderFailed,
     ReaderMissing,
     Readers,
@@ -287,6 +289,12 @@ def test_what_each_kind_of_original_lacks_to_be_read_is_named(tmp_path):
     assert set(Readers(processing, PlainRunner()).unavailable()) == {"voice", "video", "image"}
 
 
+def test_without_pillow_cores_renderer_of_pages_is_named_unavailable(tmp_path, monkeypatch):
+    processing = processing_config(tmp_path, "rus+eng")
+    monkeypatch.setattr(readers_module, "_has_pillow", lambda: False)
+    assert Readers(processing, PlainRunner()).unavailable() == {"pages": ["pillow"]}
+
+
 def test_a_programs_version_is_read_from_where_homebrew_put_it(tmp_path):
     """A text names the program, the model and the version that read it (spec 5.4): Homebrew keeps each version in a
     folder of its own, and its link in bin/ points there."""
@@ -402,3 +410,33 @@ def test_a_crafted_suffix_never_reaches_a_readers_arguments(setup):
     args = json.loads((tmp_path / "jobs" / "image" / "tesseract.args").read_text())
     assert args[0].endswith("/input")
     assert "deu" not in args
+
+
+def test_cores_renderer_draws_a_sheet_and_a_pdf_of_the_pages_in_the_sandbox(setup):
+    processing, runner, tmp_path = setup
+    job = tmp_path / "jobs" / "draft"
+    job.mkdir(parents=True)
+    Image.new("RGB", (60, 80), "red").save(job / "page-1.jpg")
+    Image.new("RGB", (60, 80), "blue").save(job / "page-2.png")
+    inputs = [job / "page-1.jpg", job / "page-2.png"]
+    renderer = Readers(processing, runner)
+    sheet = asyncio.run(renderer.pages("sheet", inputs, job, max_bytes=10 << 20))
+    assert sheet.startswith(b"\xff\xd8")  # a JPEG
+    document = asyncio.run(renderer.pages("pdf", inputs, job, max_bytes=10 << 20))
+    assert document.startswith(b"%PDF-1.4")
+    assert (job / "page-1.jpg").read_bytes() in document  # the JPEG as it came
+
+
+def test_what_the_renderer_cannot_draw_or_draws_too_large_is_refused(setup):
+    processing, runner, tmp_path = setup
+    job = tmp_path / "jobs" / "draft"
+    job.mkdir(parents=True)
+    Image.new("RGB", (60, 80), "red").save(job / "page-1.jpg")
+    (job / "page-2.jpg").write_bytes(b"not an image")
+    renderer = Readers(processing, runner)
+    with pytest.raises(OutputTooLarge, match=r"^sheet\.jpg is larger than 0 MB$"):
+        asyncio.run(renderer.pages("sheet", [job / "page-1.jpg"], job, max_bytes=100))
+    with pytest.raises(OutputTooLarge, match=r"^document\.pdf is larger than 0 MB$"):
+        asyncio.run(renderer.pages("pdf", [job / "page-1.jpg"], job, max_bytes=100))
+    with pytest.raises(ReaderFailed, match=r"^pages exited with 3$"):
+        asyncio.run(renderer.pages("pdf", [job / "page-1.jpg", job / "page-2.jpg"], job, max_bytes=10 << 20))
