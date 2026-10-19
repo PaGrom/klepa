@@ -104,5 +104,5 @@ def test_a_file_sent_with_no_question_gets_a_short_answer_and_no_offers():
     back the file the person had just sent, and showed its record id."""
     text = instruction("en")
     answers = text.split("## Answers", 1)[1].split("##", 1)[0]
-    assert "never offer to send back a file the person has just sent" in answers
+    assert "never ask what to do with it or offer to send it back, even if you did earlier" in answers
     assert "Never show record ids" in answers
