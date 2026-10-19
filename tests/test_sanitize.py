@@ -241,6 +241,7 @@ def test_formatting_without_addresses_is_kept():
         ("Got <b>«7c.png»</b> (record ev801a9a36505e9261f281) — it is kept.", "Got «7c.png» — it is kept."),
         ("Got «7c.png» (zapis ev801a9a36505e9261f281).", "Got «7c.png»."),  # the label in another language
         ("See ev801a9a36505e9261f281 again.", "See again."),
+        ("The same note (another record: ev801a9a36505e9261f281).", "The same note."),
         ("An event ev123 and evening plans stay.", "An event ev123 and evening plans stay."),
     ],
 )

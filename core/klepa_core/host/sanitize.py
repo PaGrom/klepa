@@ -53,9 +53,10 @@ _ADDRESS = re.compile(
 
 
 # A record id is for Core's tools, never for a person, yet the model copies them from Core's marks into its answers
-# (stage 2b-2's live run): "(record ev…)", with its label in any language, or the id alone.
+# (stage 2b-2's live run): a bracket that ends in an id goes whole ("(record ev…)", "(another record: ev…)", in any
+# language), any other id alone.
 # Every repetition is bounded, so it costs linear time like _ADDRESS.
-_RECORD_ID = re.compile(r" ?\((?:[^\W\d_]{1,24} )?ev[0-9a-f]{20}\)| ?\bev[0-9a-f]{20}\b")
+_RECORD_ID = re.compile(r" ?\([^()\n]{0,40}?\bev[0-9a-f]{20}\)| ?\bev[0-9a-f]{20}\b")
 
 
 @dataclass(frozen=True)
