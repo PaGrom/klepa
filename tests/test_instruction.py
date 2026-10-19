@@ -96,3 +96,4 @@ def test_the_instruction_says_what_the_gateways_runtime_context_is_and_never_to_
     assert "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" in data
     assert "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>" in data
     assert "never mention it" in data
+    assert "even if you did earlier" in data  # the live run: after five answers about it, the model went on
