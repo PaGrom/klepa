@@ -4,6 +4,7 @@ import pytest
 
 from helpers import MEMBER, OWNER
 from klepa_core.events import EventLog
+from klepa_core.gatekeeper.drafts import DraftRefused
 from klepa_core.gatekeeper.outbox import Outbox
 from klepa_core.host.tools import GET_CHARS, ToolBox, ToolRefused, parse_call, signature
 from klepa_core.search import index_names, index_pages
@@ -382,3 +383,79 @@ def test_what_a_file_or_a_person_wrote_comes_back_without_the_brackets_of_cores_
     assert sent == {"sent": True, "name": "[notes].pdf"}  # the final review's I1
     payload = json.loads(box.conn.execute("SELECT payload FROM outbound").fetchone()["payload"])
     assert payload["name"] == "⟦notes⟧.pdf"  # the person gets the file under its own name
+
+
+class Drafts:
+    """make_pdf's other side: what it was asked, and what it answered."""
+
+    def __init__(self):
+        self.asked = []
+        self.refusal = None
+
+    def change(self, person_id, chat_id, spaces, **kwargs):
+        if self.refusal is not None:
+            raise DraftRefused(self.refusal)
+        self.asked.append((person_id, chat_id, spaces, kwargs))
+        return {"draft": 7, "pages": 2, "records": ["ev1", "ev2"]}
+
+
+def test_make_pdf_changes_a_draft_for_the_person_and_the_message_the_turn_answers(box):
+    issue(box.conn, OWNER, "run-1")
+    box.drafts = drafts = Drafts()
+    result = box.call("make_pdf", signed("make_pdf", {"draft": 7, "order": [2, 1], "add": ["ev3"]}))
+    assert result == {"draft": 7, "pages": 2, "records": ["ev1", "ev2"]}
+    message_id = box.conn.execute("SELECT message_id FROM host_message").fetchone()[0]
+    assert drafts.asked == [
+        (
+            "owner",
+            OWNER,
+            ("shared", "personal:owner"),
+            {"draft_id": 7, "order": [2, 1], "add": ["ev3"], "reply_to": message_id},
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("params", "reason"),
+    [
+        ({"order": [1, "2"]}, "order must be a list of integers"),
+        ({"order": [True]}, "order must be a list of integers"),
+        ({"order": 1}, "order must be a list of integers"),
+        ({"add": "ev1"}, "add must be a list of strings"),
+        ({"draft": "7"}, "draft must be a integer"),
+    ],
+)
+def test_make_pdf_takes_lists_of_their_own_type_only(box, params, reason):
+    issue(box.conn, OWNER, "run-1")
+    box.drafts = Drafts()
+    with pytest.raises(ToolRefused, match=reason):
+        box.call("make_pdf", signed("make_pdf", params))
+
+
+def test_make_pdf_says_what_it_cannot_do(box):
+    issue(box.conn, OWNER, "run-1")
+    with pytest.raises(ToolRefused, match=r"^documents from photos are not made here$"):
+        box.call("make_pdf", signed("make_pdf", {"add": ["ev1"]}))
+    box.drafts = drafts = Drafts()
+    drafts.refusal = "no such draft"
+    with pytest.raises(ToolRefused, match=r"^no such draft$"):
+        box.call("make_pdf", signed("make_pdf", {"draft": 9, "order": [1]}, call_id="call-2"))
+
+
+def test_search_and_get_name_the_version_of_a_document_made_from_photos(box):
+    issue(box.conn, OWNER, "run-1")
+    store(box.conn, "ev-doc", "owner", "Document 2026-10-19, version 2.pdf", caption=None)
+    read_as(box.conn, "ev-doc", "lease agreement page one", "page two")
+    box.conn.execute(
+        "INSERT INTO draft(id, chat_id, person_id, state, revision, created_at, updated_at) "
+        "VALUES (7, ?, 'owner', 'done', 3, 1, 1)",
+        (OWNER,),
+    )
+    box.conn.execute(
+        "INSERT INTO document_version(draft_id, version, revision, evidence_id, created_at) "
+        "VALUES (7, 2, 3, 'ev-doc', 1)"
+    )
+    [found] = box.call("search", signed("search", {"query": "lease"}))["results"]
+    assert (found["id"], found["version"], found["page"]) == ("ev-doc", 2, 1)
+    record = box.call("get", signed("get", {"id": "ev-doc"}, call_id="call-2"))
+    assert (record["version"], record["pages"]) == (2, 2)

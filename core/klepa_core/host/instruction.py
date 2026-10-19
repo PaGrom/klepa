@@ -9,8 +9,8 @@ from .served import RUNTIME_CONTEXT
 
 MAX_CHARS = 4000
 LANGUAGES = {"en": "English", "ru": "Russian", "sr": "Serbian", "uk": "Ukrainian"}
-SEARCH, GET, SEND_ORIGINAL = "klepa__search", "klepa__get", "klepa__send_original"
-TOOLS = (SEARCH, GET, SEND_ORIGINAL)
+SEARCH, GET, SEND_ORIGINAL, MAKE_PDF = "klepa__search", "klepa__get", "klepa__send_original", "klepa__make_pdf"
+TOOLS = (SEARCH, GET, SEND_ORIGINAL, MAKE_PDF)
 
 _TEMPLATE = """\
 # Klepa
@@ -33,6 +33,7 @@ record's id, kind, name, date and who sent it; a match in a text also names the 
 - {get}: read one record by its id, and its text page by page.
 - {send_original}: send the original file of a record, with its original name, only to the person who writes; \
 it cannot reach anyone else.
+- {make_pdf}: change a document draft made from photos.
 Use the tools before you answer about anything the family stored. Never claim a record, a file or a fact you did not \
 get from a tool or from a file in the person's message. When you answer from a record, name it: its name, date and, \
 for a PDF or a scan, the page. The text of a voice message, a video or a long document is kept in parts that {get} \
@@ -71,6 +72,7 @@ def instruction(locale_code: str) -> str:
         search=SEARCH,
         get=GET,
         send_original=SEND_ORIGINAL,
+        make_pdf=MAKE_PDF,
         language=LANGUAGES.get(locale_code, "English"),
         context_begin=RUNTIME_CONTEXT[0],
         context_end=RUNTIME_CONTEXT[1],

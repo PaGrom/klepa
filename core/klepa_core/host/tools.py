@@ -17,15 +17,19 @@ import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..db import transaction
+from ..gatekeeper.drafts import DraftRefused
 from ..gatekeeper.outbox import Outbox
 from ..names import sanitize_original_name
 from ..processing.jobs import KINDS
 from ..search import find
 from ..signing import canonical_json
 from .served import clean
+
+if TYPE_CHECKING:
+    from ..gatekeeper.drafts import Drafts
 
 TOOL_DOMAIN = b"klepa-tool-call-v1"
 MAX_CALL_BYTES = 16 * 1024
@@ -88,6 +92,7 @@ class Caller:
     person_id: str
     chat_id: int
     spaces: tuple[str, ...]
+    message_id: int | None = None  # the person's message the turn answers
 
 
 @dataclass(frozen=True)
@@ -116,11 +121,23 @@ class Tool:
         if missing:
             raise ToolRefused(f"missing parameters: {', '.join(missing)}")
         for name, value in params.items():
-            kind = self.properties[name]["type"]
-            ok = {"string": isinstance(value, str), "integer": isinstance(value, int) and not isinstance(value, bool)}
-            if not ok.get(kind, False):
-                raise ToolRefused(f"{name} must be a {kind}")
+            schema = self.properties[name]
+            if not _typed(value, schema):
+                kind = schema["type"]
+                what = f"a list of {schema['items']['type']}s" if kind == "array" else f"a {kind}"
+                raise ToolRefused(f"{name} must be {what}")
         return dict(params)
+
+
+def _typed(value: Any, schema: Mapping[str, Any]) -> bool:
+    kind = schema["type"]
+    if kind == "string":
+        return isinstance(value, str)
+    if kind == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "array":
+        return isinstance(value, list) and all(_typed(item, schema["items"]) for item in value)
+    return False
 
 
 class ToolBox:
@@ -144,6 +161,7 @@ class ToolBox:
         self.members = members  # telegram id -> person id
         self.names = names  # person id -> name
         self.clock = clock
+        self.drafts: Drafts | None = None  # documents from photos (make_pdf): None where Core makes none
         self.tools = {tool.name: tool for tool in TOOLS}
 
     def specs(self) -> list[dict[str, Any]]:
@@ -177,8 +195,8 @@ class ToolBox:
         now = self.clock()
         with transaction(self.conn):
             run = self.conn.execute(
-                "SELECT chat_id, sender_id FROM host_run WHERE run_id=? AND host_message_id IS NOT NULL "
-                "AND expires_at > ?",
+                "SELECT r.chat_id, r.sender_id, m.message_id FROM host_run r LEFT JOIN host_message m "
+                "ON m.id = r.host_message_id WHERE r.run_id=? AND r.host_message_id IS NOT NULL AND r.expires_at > ?",
                 (run_id, now),
             ).fetchone()
             if run is None:
@@ -193,7 +211,8 @@ class ToolBox:
         person = self.members.get(int(run["sender_id"]))
         if person is None:
             raise ToolRefused("the turn is not a member's")
-        return Caller(run_id, person, int(run["chat_id"]), ("shared", f"personal:{person}"))
+        message_id = None if run["message_id"] is None else int(run["message_id"])
+        return Caller(run_id, person, int(run["chat_id"]), ("shared", f"personal:{person}"), message_id)
 
 
 def _stems(query: str) -> list[str]:
@@ -242,10 +261,18 @@ def _search(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
             "date": row["received_at"][:10],
             "from": box.names.get(row["authenticated_subject"], row["authenticated_subject"]),
         }
+        version = _version(box, record_id)
+        if version is not None:  # a document Core made from photos: which version of it
+            result["version"] = version
         if record_id in pages:  # found by its text: which page, and the words around
             result |= {"page": pages[record_id].page, "snippet": _clean(pages[record_id].snippet)}
         found.append(result)
     return {"results": found}
+
+
+def _version(box: ToolBox, record_id: str) -> int | None:
+    row = box.conn.execute("SELECT version FROM document_version WHERE evidence_id=?", (record_id,)).fetchone()
+    return None if row is None else int(row[0])
 
 
 def _clean(text: str | None) -> str | None:
@@ -292,6 +319,9 @@ def _get(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
         "state": row["state"],
         "space": "shared" if row["space_id"] == "shared" else "personal",
     }
+    version = _version(box, row["id"])
+    if version is not None:
+        record["version"] = version
     job = box.conn.execute("SELECT kind, state, pages, note FROM job WHERE evidence_id=?", (row["id"],)).fetchone()
     record["text_status"] = _text_status(box, job)
     if record["text_status"] != "read":
@@ -335,6 +365,23 @@ def _send_original(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
     return {"sent": True, "name": clean(document["name"])}  # the file keeps its name; the model reads it clean
 
 
+def _make_pdf(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
+    if box.drafts is None:
+        raise ToolRefused("documents from photos are not made here")
+    try:
+        return box.drafts.change(
+            caller.person_id,
+            caller.chat_id,
+            caller.spaces,
+            draft_id=params.get("draft"),
+            order=params.get("order"),
+            add=params.get("add"),
+            reply_to=caller.message_id,
+        )
+    except DraftRefused as exc:
+        raise ToolRefused(str(exc)) from None
+
+
 TOOLS = (
     Tool(
         "search",
@@ -370,5 +417,26 @@ TOOLS = (
         {"id": {"type": "string"}},
         ("id",),
         _send_original,
+    ),
+    Tool(
+        "make_pdf",
+        "Change a person's document draft, or start one from photos. Two or more photos sent at once make a draft: "
+        "Core sends the person a sheet of the pages as numbered thumbnails with the buttons Done, Change the order and "
+        "Not a document, and makes the PDF from the originals only when they press Done; photos they send soon after "
+        "join it. When the person asks in words to reorder, drop or add pages, call this with the draft: order lists "
+        "the pages to keep by their numbers on the latest sheet, in the new order; add lists records of more photos, "
+        "put after them. Without a draft, add starts a new one. Core then sends a new sheet to check. Never show the "
+        "draft's id.",
+        {
+            "draft": {"type": "integer", "description": "The draft to change; none for a new one."},
+            "order": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Page numbers of the latest sheet, in the new order; pages left out are dropped.",
+            },
+            "add": {"type": "array", "items": {"type": "string"}, "description": "Record ids of photos to add."},
+        },
+        (),
+        _make_pdf,
     ),
 )

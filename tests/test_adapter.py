@@ -248,7 +248,7 @@ async def test_cores_tools_are_listed_and_a_signed_call_runs(server, short_dir):
             ran = await response.json()
         async with session.post("http://core/v1/tool", json={"name": "search", "arguments": params}) as response:
             refused = await response.json()
-    assert sorted(tool["name"] for tool in listed["tools"]) == ["get", "search", "send_original"]
+    assert sorted(tool["name"] for tool in listed["tools"]) == ["get", "make_pdf", "search", "send_original"]
     assert ran == {"isError": False, "content": [{"type": "text", "text": '{"results": []}'}]}
     assert refused["isError"] is True
     assert EventLog(conn).kinds().count("tool_refused") == 1

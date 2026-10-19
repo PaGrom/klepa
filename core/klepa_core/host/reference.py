@@ -47,8 +47,9 @@ FIXED: dict[str, Any] = {
     f"plugins.entries.{PLUGIN_ID}.hooks.allowConversationAccess": True,
     # Tools: Core's own only, by exact name (spike report, point 25), through the adapter's MCP server.
     "tools.profile": "minimal",
-    "tools.alsoAllow": ["klepa__get", "klepa__search", "klepa__send_original"],
-    "gateway.tools.deny": ["klepa__get", "klepa__search", "klepa__send_original"],  # never through /tools/invoke
+    "tools.alsoAllow": ["klepa__get", "klepa__make_pdf", "klepa__search", "klepa__send_original"],
+    # never through /tools/invoke
+    "gateway.tools.deny": ["klepa__get", "klepa__make_pdf", "klepa__search", "klepa__send_original"],
     "tools.deny": ["session_status"],
     "tools.sessions.visibility": "self",
     "tools.fs.workspaceOnly": True,
