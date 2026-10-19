@@ -34,6 +34,9 @@ def build_card(row: Mapping[str, Any] | sqlite3.Row) -> dict[str, Any]:
     for key in _FIELDS:
         card[key] = row[key]
     card["tags"] = json.loads(row["tags"] or "[]")
+    columns = row.keys()  # a Row's `in` looks at its values
+    if "derived_from" in columns and row["derived_from"]:  # a record Core made: its sources, in order
+        card["derived_from"] = json.loads(row["derived_from"])
     return card
 
 

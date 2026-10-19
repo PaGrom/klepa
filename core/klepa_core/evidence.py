@@ -15,7 +15,8 @@ import hmac
 import json
 import mimetypes
 import sqlite3
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -28,7 +29,7 @@ from .documents import DocumentsFolder
 from .durable import make_dirs_durably, write_new_atomically
 from .events import EventLog, utc_now_iso
 from .names import disk_name
-from .search import index_names
+from .search import index_names, index_pages
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,75 @@ class EvidenceStore:
         assert row is not None
         return row
 
+    async def ingest_derived(
+        self,
+        key: str,
+        *,
+        space_id: str,
+        person_id: str,
+        chat_id: int,
+        message_id: int,
+        name: str,
+        mime: str,
+        data: bytes,
+        sources: Sequence[str],
+        texts: Sequence[str],
+    ) -> sqlite3.Row:
+        """A record Core made from others (a document from photos): stored and copied like an original, under the
+        person whose originals it was made from, with its sources in order on its card and its texts searchable page
+        by page. Idempotent by `key`."""
+        existing = self.by_ingest_key(key)
+        if existing is not None:
+            return existing
+        evidence_id = self.evidence_id_for(key)
+        disk = disk_name(evidence_id, name)
+        now = int(time.time())
+        month = self.month(now)
+        directory = make_dirs_durably(self.incoming_dir, month)
+        digest = hashlib.sha256(data).hexdigest()
+        await asyncio.to_thread(self._write_original, directory, disk, data, digest)
+        with transaction(self.conn):
+            self.conn.execute(
+                """INSERT INTO evidence(id, space_id, kind, original_name, disk_name, incoming_path, mime, size,
+                       sha256, received_at, message_date, channel, chat_id, message_id, update_id,
+                       authenticated_subject, ingest_key, state, copy_state, tags, derived_from)
+                   VALUES (?,?, 'file', ?,?,?,?,?,?,?,?, 'core', ?,?, 0, ?,?, 'processed', 'pending', ?, ?)""",
+                (
+                    evidence_id,
+                    space_id,
+                    name,
+                    disk,
+                    f"{month}/{disk}",
+                    mime,
+                    len(data),
+                    digest,
+                    utc_now_iso(),
+                    now,
+                    chat_id,
+                    message_id,
+                    person_id,
+                    key,
+                    json.dumps(["derived"]),
+                    json.dumps(list(sources)),
+                ),
+            )
+            self.conn.executemany(
+                "INSERT INTO evidence_text(evidence_id, page, text, extractor, created_at) VALUES (?, ?, ?, ?, ?)",
+                [(evidence_id, n, text, "core", utc_now_iso()) for n, text in enumerate(texts, 1) if text],
+            )
+            # Its text is there from the start, as if read: get tells its pages, and no reader ever reads it again.
+            self.conn.execute(
+                "INSERT INTO job(evidence_id, kind, state, pages, created_at, ended_at) "
+                "VALUES (?, 'pdf', 'done', ?, ?, ?)",
+                (evidence_id, len(texts), now, now),
+            )
+            index_names(self.conn, evidence_id, name, None)
+            index_pages(self.conn, evidence_id, texts)
+        self.events.log("evidence_derived", {"evidence_id": evidence_id, "sources": len(sources)})
+        row = self.by_ingest_key(key)
+        assert row is not None
+        return row
+
     def record_too_large(self, f: IncomingFile, size: int | None) -> sqlite3.Row:
         """Record a file Telegram will not hand to bots (> 20 MB). No bytes are stored."""
         key = ingest_key(f.chat_id, f.message_id)
@@ -204,12 +274,31 @@ class EvidenceStore:
         return {row["space_id"] for row in rows}
 
     def move_album(self, chat_id: int, media_group_id: str, space_id: str) -> int:
-        """Put the album's items that are not copied yet into one space."""
-        return self.conn.execute(
+        """Put the album's items that are not copied yet into one space, and the records Core made from any of them
+        with them: a document with a personal page is personal."""
+        moved = self.conn.execute(
             "UPDATE evidence SET space_id=? WHERE chat_id=? AND media_group_id=? AND space_id<>? "
             "AND copy_state<>'copied'",
             (space_id, chat_id, media_group_id, space_id),
         ).rowcount
+        for row in self._made_from_album(chat_id, media_group_id):
+            if row["space_id"] != space_id and row["copy_state"] != "copied":
+                self.conn.execute("UPDATE evidence SET space_id=? WHERE id=?", (space_id, row["id"]))
+                moved += 1
+        return moved
+
+    def _made_from_album(self, chat_id: int, media_group_id: str) -> list[sqlite3.Row]:
+        items = {
+            row[0]
+            for row in self.conn.execute(
+                "SELECT id FROM evidence WHERE chat_id=? AND media_group_id=?", (chat_id, media_group_id)
+            )
+        }
+        made = self.conn.execute(
+            "SELECT id, space_id, copy_state, derived_from FROM evidence WHERE chat_id=? AND channel='core'",
+            (chat_id,),
+        ).fetchall()
+        return [row for row in made if items & set(json.loads(row["derived_from"] or "[]"))]
 
     def album_last_received(self, chat_id: int, media_group_id: str) -> float | None:
         """Unix time at which the latest stored item of an album arrived."""
@@ -220,18 +309,21 @@ class EvidenceStore:
         return None if row["last"] is None else datetime.fromisoformat(row["last"]).timestamp()
 
     def album_copied_count(self, chat_id: int, media_group_id: str) -> int:
+        """The album's items in the documents folder, and the records Core made from them that are there too."""
         row = self.conn.execute(
             "SELECT COUNT(*) FROM evidence WHERE chat_id=? AND media_group_id=? AND copy_state='copied'",
             (chat_id, media_group_id),
         ).fetchone()
-        return int(row[0])
+        made = self._made_from_album(chat_id, media_group_id)
+        return int(row[0]) + sum(1 for row in made if row["copy_state"] == "copied")
 
     async def copy_pending(self, ready: Callable[[sqlite3.Row], bool] | None = None) -> int:
         self.last_copy_error = None
         rows = self.conn.execute("SELECT * FROM evidence WHERE copy_state='pending' ORDER BY received_at").fetchall()
         copied = 0
         for row in rows:
-            if ready is not None and not ready(row):
+            # `ready` holds back what a batch may still change; a record Core made from others came in no batch.
+            if ready is not None and row["channel"] != "core" and not ready(row):
                 continue
             if await self.copy_one(row):
                 copied += 1

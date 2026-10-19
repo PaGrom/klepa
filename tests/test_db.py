@@ -15,8 +15,8 @@ def test_connect_sets_durability_pragmas(tmp_path):
 
 def test_migrate_is_idempotent(tmp_path):
     conn = db.connect(tmp_path / "core.db")
-    assert db.migrate(conn) == 6
-    assert db.migrate(conn) == 6
+    assert db.migrate(conn) == 7
+    assert db.migrate(conn) == 7
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     expected = {"member", "space", "evidence", "outbound", "event_log", "schema_version", "service_binding"}
     assert expected | {"button_action", "alert_state", "snapshot", "job_run"} <= tables
@@ -61,7 +61,7 @@ def test_v1_database_is_upgraded_in_place(tmp_path):
         "INSERT INTO outbound(idempotency_key, origin, method, chat_id, payload, state, created_at, updated_at) "
         "VALUES ('k', 'core', 'sendMessage', 1, '{}', 'PENDING', 't', 't')"
     )
-    assert db.migrate(conn) == 6
+    assert db.migrate(conn) == 7
     assert conn.execute("SELECT bot FROM outbound").fetchone()[0] == "family"
 
 
@@ -110,7 +110,7 @@ def test_records_stored_before_stage_2b_are_found_by_name_and_caption(tmp_path):
         "VALUES ('ev1', 'shared', 'file', 'Insurance_policy.pdf', 'd', 'p', 'application/pdf', 1, 'h', 't', "
         "'telegram', 1, 1, 1, 'owner', 'k1', 'stored', 'for the car of the \u0111ak')"
     )
-    assert db.migrate(conn) == 6
+    assert db.migrate(conn) == 7
     rows = conn.execute("SELECT evidence_id, page FROM evidence_fts WHERE evidence_fts MATCH 'insur* car'").fetchall()
     assert [(row[0], row[1]) for row in rows] == [("ev1", 0)]
     # folded as the index folds what it is given later: d with stroke as "dj"
@@ -139,3 +139,25 @@ def test_a_job_takes_every_kind_a_reader_reads_and_keeps_a_note(tmp_path):
         )
     with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
         conn.execute("INSERT INTO job(evidence_id, kind, state, created_at) VALUES ('ev7', 'zip', 'queued', 0)")
+
+
+def test_batches_closed_before_stage_2c1_are_never_looked_at_for_a_draft(tmp_path):
+    """A batch the host was given, or skipped, before drafts existed must not make one when Core starts with them."""
+    conn = db.connect(tmp_path / "core.db")
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    with db.transaction(conn):
+        for schema in (db.SCHEMA_V1, db.SCHEMA_V2, db.SCHEMA_V3, db.SCHEMA_V4, db.SCHEMA_V5, db.SCHEMA_V6):
+            for statement in schema:
+                conn.execute(statement)
+        conn.execute("INSERT INTO schema_version(version) VALUES (6)")
+    conn.execute(
+        "INSERT INTO host_message(kind, chat_id, message_id, sender_id, date, created_at) "
+        "VALUES ('attachment', 1, 1, 1, 1, 0)"
+    )
+    assert db.migrate(conn) == 7
+    assert conn.execute("SELECT draft_checked, draft_id FROM host_message").fetchone()[:] == (1, None)
+    conn.execute(
+        "INSERT INTO host_message(kind, chat_id, message_id, sender_id, date, created_at) "
+        "VALUES ('attachment', 1, 2, 1, 1, 0)"
+    )
+    assert conn.execute("SELECT draft_checked FROM host_message WHERE message_id = 2").fetchone()[0] == 0

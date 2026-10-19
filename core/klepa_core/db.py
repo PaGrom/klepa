@@ -232,6 +232,51 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     conn.execute("COMMIT")
 
 
+# Stage 2c-1: a document made from photos (spec 6.1 item 4, make_pdf). A draft holds a person's pages in an order they
+# check on a sheet of numbered thumbnails; each change is a revision with its own pages and sheet, and Done builds the
+# PDF of the current revision as a version of the document: a record Core derived, which names its sources. A batch is
+# looked at once for a draft; the batches closed before this stage are not.
+SCHEMA_V7 = (
+    """CREATE TABLE draft (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER NOT NULL,
+        person_id TEXT NOT NULL REFERENCES member(person_id),
+        state TEXT NOT NULL CHECK (state IN ('open', 'building', 'done', 'declined', 'failed')),
+        revision INTEGER NOT NULL DEFAULT 1,
+        reply_to INTEGER,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL)""",
+    """CREATE TABLE draft_page (
+        draft_id INTEGER NOT NULL REFERENCES draft(id),
+        revision INTEGER NOT NULL,
+        position INTEGER NOT NULL,
+        evidence_id TEXT NOT NULL REFERENCES evidence(id),
+        PRIMARY KEY (draft_id, revision, position))""",
+    """CREATE TABLE draft_sheet (
+        draft_id INTEGER NOT NULL REFERENCES draft(id),
+        revision INTEGER NOT NULL,
+        outbound_key TEXT,
+        unbuttoned INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (draft_id, revision))""",
+    "CREATE INDEX draft_sheet_buttoned ON draft_sheet(draft_id) WHERE unbuttoned = 0",
+    """CREATE TABLE document_version (
+        draft_id INTEGER NOT NULL REFERENCES draft(id),
+        version INTEGER NOT NULL,
+        revision INTEGER NOT NULL,
+        evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(id),
+        created_at REAL NOT NULL,
+        PRIMARY KEY (draft_id, version),
+        UNIQUE (draft_id, revision))""",
+    "CREATE INDEX draft_open ON draft(state) WHERE state IN ('open', 'building')",
+    "ALTER TABLE evidence ADD COLUMN derived_from TEXT",
+    "ALTER TABLE host_message ADD COLUMN draft_id INTEGER REFERENCES draft(id)",
+    "ALTER TABLE host_message ADD COLUMN draft_revision INTEGER",
+    "ALTER TABLE host_message ADD COLUMN draft_checked INTEGER NOT NULL DEFAULT 0",
+    "UPDATE host_message SET draft_checked = 1",
+    "CREATE INDEX host_message_unchecked ON host_message(id) WHERE kind = 'attachment' AND draft_checked = 0",
+)
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
     current = int(conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version").fetchone()[0])
@@ -271,6 +316,12 @@ def migrate(conn: sqlite3.Connection) -> int:
                 conn.execute(statement)
             conn.execute("INSERT INTO schema_version(version) VALUES (6)")
         current = 6
+    if current < 7:
+        with transaction(conn):
+            for statement in SCHEMA_V7:
+                conn.execute(statement)
+            conn.execute("INSERT INTO schema_version(version) VALUES (7)")
+        current = 7
     return current
 
 

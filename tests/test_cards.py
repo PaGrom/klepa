@@ -51,3 +51,10 @@ def test_card_is_written_once(tmp_path):
     write_card(tmp_path, build_card(ROW), KEY)
     with pytest.raises(FileExistsError):
         write_card(tmp_path, build_card(ROW), KEY)
+
+
+def test_a_card_of_a_record_core_made_names_its_sources_in_order():
+    card = build_card(ROW | {"channel": "core", "tags": '["derived"]', "derived_from": '["ev2", "ev1"]'})
+    assert (card["tags"], card["derived_from"]) == (["derived"], ["ev2", "ev1"])
+    assert "derived_from" not in build_card(ROW | {"derived_from": None})
+    assert "derived_from" not in build_card(ROW)

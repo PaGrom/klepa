@@ -1,6 +1,7 @@
 import dataclasses
 import errno
 import hashlib
+import json
 import threading
 from datetime import UTC, datetime
 
@@ -197,3 +198,98 @@ async def test_a_stored_original_is_found_by_its_name_and_caption(store):
     assert indexed(store, big["id"]) == [(0, "", "Scan.pdf", "")]
     await store.ingest(incoming())  # the same message again: still one row
     assert len(indexed(store, row["id"])) == 1
+
+
+async def test_a_record_core_made_is_kept_like_an_original_with_its_sources_and_its_pages_texts(store):
+    """A document from photos (stage 2c-1): stored once under the person, its sources in order, found by its text."""
+    made = await store.ingest_derived(
+        "draft:1:1",
+        space_id="shared",
+        person_id="owner",
+        chat_id=111111,
+        message_id=0,
+        name="Document 2026-10-19.pdf",
+        mime="application/pdf",
+        data=b"%PDF made",
+        sources=["ev2", "ev1"],
+        texts=["the lease, page one", ""],
+    )
+    assert (made["channel"], made["kind"], made["state"], made["copy_state"]) == (
+        "core",
+        "file",
+        "processed",
+        "pending",
+    )
+    assert (made["authenticated_subject"], made["update_id"]) == ("owner", 0)
+    assert (json.loads(made["tags"]), json.loads(made["derived_from"])) == (["derived"], ["ev2", "ev1"])
+    assert (store.incoming_dir / made["incoming_path"]).read_bytes() == b"%PDF made"
+    assert made["sha256"] == hashlib.sha256(b"%PDF made").hexdigest()
+    texts = store.conn.execute("SELECT page, text FROM evidence_text WHERE evidence_id=?", (made["id"],)).fetchall()
+    assert [tuple(row) for row in texts] == [(1, "the lease, page one")]  # a page without text keeps no row
+    job = store.conn.execute("SELECT kind, state, pages FROM job WHERE evidence_id=?", (made["id"],)).fetchone()
+    assert tuple(job) == ("pdf", "done", 2)  # read from the start: no reader ever reads it
+    found = store.conn.execute("SELECT evidence_id, page FROM evidence_fts WHERE evidence_fts MATCH 'lease'")
+    assert [tuple(row) for row in found] == [(made["id"], 1)]
+    again = await store.ingest_derived(
+        "draft:1:1",
+        space_id="shared",
+        person_id="owner",
+        chat_id=111111,
+        message_id=0,
+        name="Document 2026-10-19.pdf",
+        mime="application/pdf",
+        data=b"%PDF made",
+        sources=["ev2", "ev1"],
+        texts=["the lease, page one", ""],
+    )
+    assert again["id"] == made["id"]
+    assert store.conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0] == 1
+
+
+async def test_a_record_core_made_is_copied_at_once_with_its_sources_on_its_card(store):
+    """It came in no batch, so nothing a batch may still change holds it back."""
+    made = await store.ingest_derived(
+        "draft:1:1",
+        space_id="shared",
+        person_id="owner",
+        chat_id=111111,
+        message_id=0,
+        name="Document 2026-10-19.pdf",
+        mime="application/pdf",
+        data=b"%PDF made",
+        sources=["ev2", "ev1"],
+        texts=["page one"],
+    )
+    assert await store.copy_pending(ready=lambda row: False) == 1
+    row = store.conn.execute("SELECT copy_state, documents_path FROM evidence WHERE id=?", (made["id"],)).fetchone()
+    copy = store.documents_dir / row["documents_path"]
+    assert (row["copy_state"], copy.read_bytes()) == ("copied", b"%PDF made")
+    card = read_card(copy.parent / card_file_name(made["id"]), KEY)
+    assert card["derived_from"] == ["ev2", "ev1"]
+
+
+async def test_a_record_made_from_an_album_moves_with_it_until_it_is_copied_and_then_counts(store):
+    """Review 1's I4: a late private caption makes the album personal; what Core made of its photos goes with it."""
+    for message_id in (1, 2):
+        await store.ingest(dataclasses.replace(incoming(message_id), kind="photo", media_group_id="a"))
+    album = [row["id"] for row in store.conn.execute("SELECT id FROM evidence ORDER BY message_id")]
+    made = await store.ingest_derived(
+        "draft:1:1",
+        space_id="shared",
+        person_id="owner",
+        chat_id=111111,
+        message_id=0,
+        name="Document.pdf",
+        mime="application/pdf",
+        data=b"%PDF made",
+        sources=[album[1]],
+        texts=["page"],
+    )
+    store.move_album(111111, "a", "personal:owner")
+    assert store.conn.execute("SELECT space_id FROM evidence WHERE id=?", (made["id"],)).fetchone()[0] == (
+        "personal:owner"
+    )
+    store.conn.execute("UPDATE evidence SET space_id='shared', copy_state='copied'")
+    assert store.album_copied_count(111111, "a") == 3  # the two photos and the document made of one
+    store.move_album(111111, "a", "personal:owner")
+    assert store.conn.execute("SELECT space_id FROM evidence WHERE id=?", (made["id"],)).fetchone()[0] == "shared"
