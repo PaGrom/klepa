@@ -139,7 +139,14 @@ class BotApi:
         return await self._call_for_object("sendMessage", params, timeout=30)
 
     async def send_document(
-        self, chat_id: int, data: bytes, filename: str, mime: str, reply_to_message_id: int | None = None
+        self,
+        chat_id: int,
+        data: bytes,
+        filename: str,
+        mime: str,
+        reply_to_message_id: int | None = None,
+        *,
+        caption: str | None = None,
     ) -> dict[str, Any]:
         """Upload these bytes as a document named `filename`: the person gets back the name the file came with."""
         form = aiohttp.FormData(quote_fields=False)  # the name as UTF-8: percent-encoding would reach the person
@@ -147,11 +154,40 @@ class BotApi:
         if reply_to_message_id is not None:
             reply = {"message_id": reply_to_message_id, "allow_sending_without_reply": True}
             form.add_field("reply_parameters", json.dumps(reply))
+        if caption is not None:
+            form.add_field("caption", caption)
         form.add_field("document", data, filename=filename.replace('"', "'"), content_type=mime)
         result = await self.call("sendDocument", {}, timeout=120, form=form)
         if not isinstance(result, dict):
             raise Ambiguous("sendDocument: unexpected result")
         return result
+
+    async def send_photo(
+        self,
+        chat_id: int,
+        data: bytes,
+        caption: str,
+        reply_to_message_id: int | None = None,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Upload a picture Core drew (a draft's sheet), with its caption and buttons."""
+        form = aiohttp.FormData(quote_fields=False)
+        form.add_field("chat_id", str(chat_id))
+        form.add_field("caption", caption)
+        if reply_to_message_id is not None:
+            reply = {"message_id": reply_to_message_id, "allow_sending_without_reply": True}
+            form.add_field("reply_parameters", json.dumps(reply))
+        if reply_markup is not None:
+            form.add_field("reply_markup", json.dumps(reply_markup))
+        form.add_field("photo", data, filename="sheet.jpg", content_type="image/jpeg")
+        result = await self.call("sendPhoto", {}, timeout=120, form=form)
+        if not isinstance(result, dict):
+            raise Ambiguous("sendPhoto: unexpected result")
+        return result
+
+    async def edit_message_reply_markup(self, chat_id: int, message_id: int) -> None:
+        """Take the buttons off one of Core's messages; its text or picture stays."""
+        await self.call("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": message_id}, timeout=30)
 
     async def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
         """Rewrite one of Core's own messages. Without reply_markup Telegram drops its buttons."""
@@ -169,10 +205,14 @@ class BotApi:
     async def get_me(self) -> dict[str, Any]:
         return await self._call_for_object("getMe", {}, timeout=30)
 
-    async def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
+    async def answer_callback_query(
+        self, callback_query_id: str, text: str | None = None, *, show_alert: bool = False
+    ) -> None:
         params: dict[str, Any] = {"callback_query_id": callback_query_id}
         if text is not None:
             params["text"] = text
+        if show_alert:  # a dialog the person closes, not a toast that fades
+            params["show_alert"] = True
         await self.call("answerCallbackQuery", params, timeout=30)
 
     async def _call_for_object(self, method: str, params: dict[str, Any], *, timeout: float) -> dict[str, Any]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import time
 from typing import Any
 
@@ -27,6 +28,8 @@ class FakeTelegram:
         self.sent: list[dict[str, Any]] = []
         self.edited: list[dict[str, Any]] = []
         self.documents: list[dict[str, Any]] = []
+        self.photos: list[dict[str, Any]] = []  # the pictures Core sent: a draft's sheets
+        self.unbuttoned: list[dict[str, Any]] = []  # editMessageReplyMarkup calls
         self.calls: list[str] = []
         self.failures: dict[str, list[dict[str, Any]]] = {}
         self.url = ""
@@ -207,6 +210,8 @@ class FakeTelegram:
             "getFile": self._get_file,
             "sendMessage": self._send_message,
             "sendDocument": self._send_document,
+            "sendPhoto": self._send_photo,
+            "editMessageReplyMarkup": self._edit_markup,
             "answerCallbackQuery": self._answer_callback,
             "editMessageText": self._edit_message,
             "getMe": self._get_me,
@@ -286,6 +291,23 @@ class FakeTelegram:
         }
         self.documents.append({"params": params, "message": message, "name": name, "data": params.get("document")})
         return message
+
+    async def _send_photo(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._next_sent_id += 1
+        markup = json.loads(params["reply_markup"]) if "reply_markup" in params else None
+        message = {
+            "message_id": self._next_sent_id,
+            "date": int(time.time()),
+            "chat": {"id": int(params["chat_id"]), "type": "private"},
+            "photo": [{"file_id": f"SENT{self._next_sent_id}", "width": 1, "height": 1}],
+            "caption": params.get("caption"),
+        }
+        self.photos.append({"params": params, "message": message, "data": params.get("photo"), "markup": markup})
+        return message
+
+    async def _edit_markup(self, params: dict[str, Any]) -> bool:
+        self.unbuttoned.append(params)
+        return True
 
     async def _file(self, request: web.Request) -> web.StreamResponse:
         if request.match_info["token"] != self.token or not self.token_valid:

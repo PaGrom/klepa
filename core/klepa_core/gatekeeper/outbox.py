@@ -80,6 +80,34 @@ class Outbox:
         self._wake.set()
         return cursor.rowcount == 1
 
+    def enqueue_photo(
+        self,
+        key: str,
+        chat_id: int,
+        photo: dict[str, Any],
+        caption: str,
+        reply_to: int | None = None,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> bool:
+        """A picture Core drew, by its path, sha256 and size: what is sent is checked to be those bytes."""
+        payload = photo | {"caption": caption, "reply_to": reply_to, "reply_markup": reply_markup}
+        return self._enqueue(key, "sendPhoto", chat_id, payload)
+
+    def enqueue_unbutton(self, key: str, chat_id: int, message_id: int) -> bool:
+        """Take the buttons off a message Core sent, by Telegram's id for it."""
+        return self._enqueue(key, "editMessageReplyMarkup", chat_id, {"message_id": message_id})
+
+    def _enqueue(self, key: str, method: str, chat_id: int, payload: dict[str, Any]) -> bool:
+        now = utc_now_iso()
+        cursor = self.conn.execute(
+            """INSERT OR IGNORE INTO outbound(idempotency_key, origin, bot, method, chat_id, payload, state,
+                   created_at, updated_at)
+               VALUES (?, 'core', ?, ?, ?, ?, 'PENDING', ?, ?)""",
+            (key, self.bot, method, chat_id, json.dumps(payload, ensure_ascii=False), now, now),
+        )
+        self._wake.set()
+        return cursor.rowcount == 1
+
     def enqueue_edit(self, key: str, chat_id: int, message_id: int, text: str) -> bool:
         """Rewrite a message Core sent, by Telegram's id for it; its buttons go."""
         now = utc_now_iso()
@@ -149,8 +177,12 @@ class Outbox:
             try:
                 if row["method"] == "sendDocument":
                     result = await self._send_document(row["chat_id"], payload)
+                elif row["method"] == "sendPhoto":
+                    result = await self._send_photo(row["chat_id"], payload)
                 elif row["method"] == "editMessageText":
                     result = await self._edit(row["chat_id"], payload)
+                elif row["method"] == "editMessageReplyMarkup":
+                    result = await self._unbutton(row["chat_id"], payload)
                 else:
                     result = await self.api.send_message(
                         row["chat_id"], payload["text"], payload.get("reply_to"), payload.get("reply_markup")
@@ -199,6 +231,23 @@ class Outbox:
                 raise
         return {"message_id": payload["message_id"]}
 
+    async def _unbutton(self, chat_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        assert self.api is not None
+        try:
+            await self.api.edit_message_reply_markup(chat_id, payload["message_id"])
+        except BadRequest as exc:
+            if "not modified" not in exc.description.lower():  # it has no buttons any more: done
+                raise
+        return {"message_id": payload["message_id"]}
+
+    async def _send_photo(self, chat_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        """Read the picture once, check it is the one Core drew, and send exactly those bytes."""
+        assert self.api is not None
+        data = _checked(payload, "sendPhoto")
+        return await self.api.send_photo(
+            chat_id, data, payload["caption"], payload.get("reply_to"), payload.get("reply_markup")
+        )
+
     def _told(self, row: sqlite3.Row, payload: dict[str, Any]) -> None:
         if row["method"] == "sendDocument" and self.on_failed is not None:
             self.on_failed(row["idempotency_key"], int(row["chat_id"]), payload)
@@ -206,13 +255,10 @@ class Outbox:
     async def _send_document(self, chat_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         """Read the file once, check it is the stored original, and send exactly those bytes (spec 6.5)."""
         assert self.api is not None
-        try:
-            data = Path(payload["path"]).read_bytes()
-        except OSError as exc:
-            raise BadRequest("sendDocument", 400, f"the original is unreadable: {type(exc).__name__}") from None
-        if len(data) != payload["size"] or hashlib.sha256(data).hexdigest() != payload["sha256"]:
-            raise BadRequest("sendDocument", 400, "the file is not the stored original")
-        return await self.api.send_document(chat_id, data, payload["name"], payload["mime"], payload.get("reply_to"))
+        data = _checked(payload, "sendDocument")
+        return await self.api.send_document(
+            chat_id, data, payload["name"], payload["mime"], payload.get("reply_to"), caption=payload.get("caption")
+        )
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -220,3 +266,14 @@ class Outbox:
             self._wake.clear()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), timeout=1.0)
+
+
+def _checked(payload: dict[str, Any], method: str) -> bytes:
+    """The file's bytes, read once, if they are the ones recorded: a file put in its place is never sent."""
+    try:
+        data = Path(payload["path"]).read_bytes()
+    except OSError as exc:
+        raise BadRequest(method, 400, f"the file is unreadable: {type(exc).__name__}") from None
+    if len(data) != payload["size"] or hashlib.sha256(data).hexdigest() != payload["sha256"]:
+        raise BadRequest(method, 400, "the file is not the stored one")
+    return data

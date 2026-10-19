@@ -212,3 +212,44 @@ async def test_a_send_that_has_not_left_may_be_withdrawn(fake_tg, api, outbox_fa
     assert outbox.state("interim") == "FAILED"
     assert outbox.withdraw("interim") is False  # only what has not left
     assert outbox.state("missing") is None
+
+
+async def test_a_picture_core_drew_goes_out_as_those_bytes_or_not_at_all(fake_tg, api, outbox_factory, tmp_path):
+    """A draft's sheet: read once and checked against what Core drew, like an original (scenario 46)."""
+    sheet, swapped = tmp_path / "sheet.jpg", tmp_path / "swapped.jpg"
+    sheet.write_bytes(b"\xff\xd8 the sheet")
+    swapped.write_bytes(b"\xff\xd8 another picture")
+    picture = {
+        key: value for key, value in document(sheet, b"\xff\xd8 the sheet").items() if key in ("path", "sha256", "size")
+    }
+    markup = {"inline_keyboard": [[{"text": "Done", "callback_data": "abc"}]]}
+    outbox = outbox_factory(api)
+    assert outbox.enqueue_photo("sheet:1", OWNER, picture, "pages: 2", reply_to=9, reply_markup=markup)
+    assert outbox.enqueue_photo("sheet:2", OWNER, picture | {"path": str(swapped)}, "pages: 2")
+    await outbox.send_due()
+    [sent] = fake_tg.photos
+    assert (sent["data"], sent["params"]["caption"], sent["markup"]) == (b"\xff\xd8 the sheet", "pages: 2", markup)
+    assert json.loads(sent["params"]["reply_parameters"])["message_id"] == 9
+    assert state(outbox, "sheet:1")["state"] == "CONFIRMED"
+    assert outbox.message_id("sheet:1") == sent["message"]["message_id"]
+    assert state(outbox, "sheet:2")["state"] == "FAILED"
+
+
+async def test_buttons_come_off_cores_message_even_when_they_were_gone_already(fake_tg, api, outbox_factory):
+    outbox = outbox_factory(api)
+    fake_tg.fail("editMessageReplyMarkup", status=400, description="Bad Request: message is not modified")
+    outbox.enqueue_unbutton("unbutton:1", OWNER, 500)
+    outbox.enqueue_unbutton("unbutton:2", OWNER, 501)
+    await outbox.send_due()
+    assert fake_tg.unbuttoned == [{"chat_id": OWNER, "message_id": 501}]
+    assert (state(outbox, "unbutton:1")["state"], state(outbox, "unbutton:2")["state"]) == ("CONFIRMED", "CONFIRMED")
+
+
+async def test_a_document_core_made_goes_out_with_its_caption(fake_tg, api, outbox_factory, tmp_path):
+    made = tmp_path / "document.pdf"
+    made.write_bytes(b"%PDF made")
+    outbox = outbox_factory(api)
+    outbox.enqueue_document("pdf:1", OWNER, document(made, b"%PDF made", "Document.pdf") | {"caption": "pages: 2"})
+    await outbox.send_due()
+    [sent] = fake_tg.documents
+    assert (sent["name"], sent["params"]["caption"]) == ("Document.pdf", "pages: 2")
