@@ -52,6 +52,12 @@ _ADDRESS = re.compile(
 )
 
 
+# A record id is for Core's tools, never for a person, yet the model copies them from Core's marks into its answers
+# (stage 2b-2's live run): "(record ev…)", with its label in any language, or the id alone.
+# Every repetition is bounded, so it costs linear time like _ADDRESS.
+_RECORD_ID = re.compile(r" ?\((?:[^\W\d_]{1,24} )?ev[0-9a-f]{20}\)| ?\bev[0-9a-f]{20}\b")
+
+
 @dataclass(frozen=True)
 class Sanitized:
     html: str  # what Core sends with parse_mode HTML
@@ -202,7 +208,9 @@ class _Rewriter(HTMLParser):
 
 
 def sanitize_html(source: str) -> Sanitized:
-    """Rewrite Telegram HTML from the host: allowed formatting only, no web address active, always well formed."""
+    """Rewrite Telegram HTML from the host: allowed formatting only, no web address active, no record id, always well
+    formed."""
+    source = _RECORD_ID.sub("", source)
     rewriter = _Rewriter()
     # A lone surrogate (a chunker that cut an emoji in half) cannot be sent; it becomes the replacement character.
     rewriter.feed(source.encode("utf-16", "surrogatepass").decode("utf-16", "replace"))

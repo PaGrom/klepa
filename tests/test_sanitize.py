@@ -80,6 +80,9 @@ def test_long_runs_of_letters_and_dashes_take_linear_time():
     started = time.monotonic()
     sanitize_html("a-" * 30_000)
     sanitize_html("a." * 30_000 + "/")
+    sanitize_html(" " * 60_000 + "x")  # what a record id's pattern may meet
+    sanitize_html("(" + "a" * 60_000)
+    sanitize_html("(abc " * 12_000)
     assert time.monotonic() - started < 1.0
 
 
@@ -230,3 +233,18 @@ def test_an_address_split_by_tags_is_still_inactive(source, html):
 def test_formatting_without_addresses_is_kept():
     source = "a <i>normal</i> sentence with <b>bold</b> words and <tg-spoiler>a secret</tg-spoiler>."
     assert sanitize_html(source).html == source
+
+
+@pytest.mark.parametrize(
+    ("source", "plain"),
+    [
+        ("Got <b>«7c.png»</b> (record ev801a9a36505e9261f281) — it is kept.", "Got «7c.png» — it is kept."),
+        ("Got «7c.png» (zapis ev801a9a36505e9261f281).", "Got «7c.png»."),  # the label in another language
+        ("See ev801a9a36505e9261f281 again.", "See again."),
+        ("An event ev123 and evening plans stay.", "An event ev123 and evening plans stay."),
+    ],
+)
+def test_a_record_id_never_reaches_the_person(source, plain):
+    """Stage 2b-2's live run: record ids are for Core's tools, yet the model copied them from Core's marks into its
+    answers, also after the instruction said never to."""
+    assert sanitize_html(source).plain == plain
