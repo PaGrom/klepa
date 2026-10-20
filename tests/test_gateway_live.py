@@ -644,6 +644,47 @@ async def test_a_voice_note_reaches_the_model_as_its_transcript(stand_args, fake
         assert not [text for text in live.sent() if "got" in text]
 
 
+def page_photo(text, colour):
+    """A photo of a page: a real JPEG, whose words the stand-in OCR finds in its comment."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (300, 400), colour).save(buffer, "JPEG", comment=f"OCR<<{text}>>".encode())
+    return buffer.getvalue()
+
+
+async def test_the_model_reorders_a_draft_of_photos_through_cores_signed_tool(stand_args, fake_model, tmp_path):
+    """make_pdf through the real gateway: the list of page numbers reaches Core as the model wrote it, signed by the
+    plugin over exactly that list, and Core draws the new sheet; the person's Done builds the PDF in that order."""
+
+    def script(request):
+        draft = re.search(r"⟦document draft (\d+) ·", request.human)
+        if draft is not None and not request.tool_results:
+            return fakemodel.Call("klepa__make_pdf", {"draft": int(draft.group(1)), "order": [2, 1]})
+        pages = json.loads(request.tool_results[-1])["pages"] if request.tool_results else 0
+        return fakemodel.Say(f"DRAFT: {pages} pages")
+
+    fake_model.script = script
+    first, second = page_photo("page one", "red"), page_photo("page two", "blue")
+    readers = processing_section(processing_config(tmp_path / "readers"))
+    async with live_stand(*stand_args, model=fake_model, extra=readers) as live:
+        await wait_until(lambda: live.state() == "RUNNING", timeout=90)
+        live.telegram.add_photo(MEMBER, first, media_group_id="album")
+        live.telegram.add_photo(MEMBER, second, media_group_id="album")
+        await wait_until(lambda: len(live.telegram.photos) == 2, timeout=90)  # the sheet, then the new order's
+        assert query(live.cfg, "SELECT tool FROM host_tool_call")[0]["tool"] == "make_pdf"
+        await wait_until(lambda: "DRAFT: 2 pages" in live.sent(), timeout=30)
+        sheet = live.telegram.photos[1]
+        done = sheet["markup"]["inline_keyboard"][0][0]["callback_data"]
+        live.telegram.press(MEMBER, sheet["message"], done)
+        await wait_until(lambda: live.telegram.documents, timeout=60)
+        document = live.telegram.documents[0]["data"]
+        assert document.index(second) < document.index(first)
+        assert int(live.telegram.documents[0]["params"]["chat_id"]) == MEMBER
+
+
 async def test_a_reply_after_the_plugin_went_silent_waits_and_is_dropped_with_cores_apology(
     stand_args, fake_model, monkeypatch
 ):
