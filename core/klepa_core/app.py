@@ -23,6 +23,7 @@ from .documents import DocumentsFolder
 from .events import EventLog
 from .evidence import EvidenceStore
 from .gatekeeper.attachments import Attachments
+from .gatekeeper.drafts import Drafts
 from .gatekeeper.outbox import Outbox, tell_failed_original
 from .gatekeeper.receipts import ReceiptBatcher
 from .gatekeeper.service import Gatekeeper
@@ -43,7 +44,7 @@ from .host.turns import TurnRegistry
 from .journal import InboundJournal
 from .keys import KeyFileError, ensure_host_token, ensure_private_dir, load_or_create_key
 from .processing.jobs import KINDS, RECORDING_KINDS, Jobs, Worker
-from .processing.readers import Readers
+from .processing.readers import PAGES, Readers
 from .processing.sandbox import sandbox_available, sandbox_for
 from .schedule import DailyJob, Scheduler
 from .servicebot import ServiceBot
@@ -274,6 +275,7 @@ class ProcessingParts:
     jobs: Jobs
     workers: tuple[Worker, ...]  # none: nothing is read now, and the jobs wait
     loops: list[tuple[str, Loop]]
+    readers: Readers | None = None  # in the sandbox: they and Core's renderer of pages
 
     def readable(self) -> frozenset[str]:
         """The kinds of original read now; the tools tell that the others' texts wait (finding I8)."""
@@ -325,7 +327,40 @@ def _processing(cfg: Config, conn: sqlite3.Connection, alerts: Alerts, events: E
     except OSError as exc:
         alerts.raise_("processing_unavailable", missing=f"the jobs folder: {type(exc).__name__}")
         return ProcessingParts(jobs, (), [])
-    return ProcessingParts(jobs, workers, [("recordings", workers[0].run), ("documents", workers[1].run)])
+    loops: list[tuple[str, Loop]] = [("recordings", workers[0].run), ("documents", workers[1].run)]
+    return ProcessingParts(jobs, workers, loops, readers)
+
+
+def _drafts(
+    conn: sqlite3.Connection,
+    host: HostParts | None,
+    processing: ProcessingParts | None,
+    outbox: Outbox,
+    store: EvidenceStore,
+    cfg: Config,
+    events: EventLog,
+) -> Drafts | None:
+    """With a host and the sandbox: drafts of documents from photos (spec 6.1 item 4). A batch then waits until it
+    was looked at for one, and the model's make_pdf changes them."""
+    if host is None or processing is None or processing.readers is None:
+        return None
+    if PAGES in processing.readers.unavailable():  # no Pillow: the owner's alert named it, and no draft is made
+        return None
+    drafts = Drafts(
+        conn,
+        host.queue,
+        outbox,
+        store,
+        processing.readers,
+        cfg.locale,
+        events,
+        jobs_dir=cfg.jobs_dir,
+        drafts_dir=cfg.drafts_dir,
+        album_quiet_seconds=cfg.album_quiet_seconds,
+    )
+    host.queue.drafts = True
+    host.tools.drafts = drafts
+    return drafts
 
 
 def _attachments(
@@ -336,6 +371,7 @@ def _attachments(
     api: BotApi,
     cfg: Config,
     events: EventLog,
+    drafts: Drafts | None = None,
 ) -> Attachments | None:
     """With a host: Core's interim answer while a file is read, and the person's cancel (spec 6.1 items 4-6)."""
     if host is None:
@@ -351,11 +387,14 @@ def _attachments(
         jobs=None if processing is None else processing.jobs,
         stop_reading=None if processing is None or not workers else processing.stop_reading,
     )
+    attachments.drafts = drafts
     queue = host.queue
 
-    def ended() -> None:  # a job ended: its batch may go to the host, and its interim answer be edited
+    def ended() -> None:  # a job ended: its batch may make a draft, go to the host, have its interim answer edited
         queue.wake()
         attachments.wake.set()
+        if drafts is not None:
+            drafts.wake.set()
 
     for worker in workers:
         worker.on_end = ended
@@ -434,7 +473,8 @@ async def run_service(
                 batcher = ReceiptBatcher(
                     outbox, journal, cfg.batch_window_seconds, cfg.locale, host=None if host is None else host.queue
                 )
-                attachments = _attachments(conn, host, processing, outbox, api, cfg, events)
+                drafts = _drafts(conn, host, processing, outbox, store, cfg, events)
+                attachments = _attachments(conn, host, processing, outbox, api, cfg, events, drafts)
                 gatekeeper = Gatekeeper(
                     cfg,
                     api,
@@ -464,6 +504,8 @@ async def run_service(
                     side_loops += processing.loops
                 if attachments is not None:
                     side_loops.append(("attachments", attachments.run))
+                if drafts is not None:
+                    side_loops += [("drafts", drafts.run), ("drafts_drawing", drafts.draw)]
                 events.log("core_started")
                 if crashed:
                     alerts.raise_("restarted")

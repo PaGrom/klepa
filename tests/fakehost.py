@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aiohttp
@@ -43,6 +45,8 @@ class FakeHost:
         self.poll_timeout = poll_timeout
         self.answering = True  # False: the host takes messages but never gets to answer them
         self.model = lambda text: f"STUB: {text}"  # the scripted model; the gate's model probe gets "OK"
+        # A scripted model that calls Core's tools: given the text and a tool(name, params) of its turn, it answers.
+        self.agent: Callable[[str, Callable[[str, dict[str, Any]], Awaitable[Any]]], Awaitable[str]] | None = None
         self.updates: list[dict[str, Any]] = []
         self.offset: int | None = None
 
@@ -97,7 +101,18 @@ class FakeHost:
             await self.send(peer, turn["message"])
             return
         text = message.get("text", "")
-        answer = "OK" if text.startswith("Klepa start check") else self.model(text)
+        if text.startswith("Klepa start check"):
+            answer = "OK"
+        elif self.agent is not None:
+
+            async def tool(name: str, params: dict[str, Any]) -> Any:
+                result = await self.adapter.tool(run_id, name, params)
+                text = result["content"][0]["text"]
+                return {"refused": text} if result["isError"] else json.loads(text)
+
+            answer = await self.agent(text, tool)
+        else:
+            answer = self.model(text)
         await self.send(peer, answer)
         await self.adapter.turn_reply(run_id)
 

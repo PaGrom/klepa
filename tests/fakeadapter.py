@@ -15,6 +15,7 @@ from typing import Any
 import aiohttp
 
 from klepa_core.host.adapter import SIGNATURE_HEADER, sign_body
+from klepa_core.host.tools import signature
 
 HOOKS = ["before_dispatch", "before_prompt_build", "before_agent_run", "before_tool_call", "reply_payload_sending"]
 
@@ -84,6 +85,18 @@ class FakeAdapter:
     ) -> tuple[int, dict[str, Any]]:
         """How a turn that reached the model replied, as reply_payload_sending reports it."""
         return await self.send("turn_reply", run_id=run_id, error=error, error_kind=error_kind)
+
+    async def tool(self, run_id: str, name: str, params: dict[str, Any]) -> dict[str, Any]:
+        """A call of Core's tool in a turn: signed as the plugin's before_tool_call signs it, posted as the MCP shim
+        posts it. The shim's answer: isError and the content's text."""
+        call_id = secrets.token_hex(8)
+        klepa = {"run_id": run_id, "tool_call_id": call_id, "sig": signature(self.key, run_id, call_id, name, params)}
+        async with (
+            aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=self.socket_path)) as session,
+            session.post("http://core/v1/tool", json={"name": name, "arguments": params | {"_klepa": klepa}}) as resp,
+        ):
+            answer: dict[str, Any] = await resp.json()
+            return answer
 
     async def beat(self, stop: asyncio.Event, every: float = 0.1) -> None:
         """The plugin's heartbeat service, every 5 s in production."""

@@ -139,12 +139,19 @@ if "BROKEN" in data:
 open(target, "w").write("document text: " + data.strip())
 """
 
+# A real image says what is written on it in a comment of its own, OCR<<...>>; any other file is its text.
 TESSERACT = r"""
+import re
 args = sys.argv[1:]
 source, base = args[0], args[1]
 inside(source)
 languages = args[args.index("-l") + 1]
-data = open(source, "rb").read().decode("utf-8", "replace")
+raw = open(source, "rb").read()
+if b"SLOW" in raw:  # a page that hangs
+    import time
+    time.sleep(30)
+said = re.search(rb"OCR<<(.*?)>>", raw, re.S)
+data = (said.group(1) if said else raw).decode("utf-8", "replace")
 open(base + ".txt", "w").write(f"photo text ({languages}): " + data.strip())
 """
 
