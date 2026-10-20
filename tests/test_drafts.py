@@ -778,3 +778,35 @@ async def test_a_stop_cancels_the_drawing_under_way_and_its_draft_is_drawn_again
     await asyncio.wait_for(drawing, 2)
     assert d.conn.execute("SELECT COUNT(*) FROM draft_sheet").fetchone()[0] == 0
     assert d.conn.execute("SELECT state FROM draft").fetchone()[0] == "open"
+
+
+async def test_a_page_no_longer_the_persons_to_use_is_never_drawn_nor_built(d):
+    """The final review's I2: a shared photo the owner added may become another member's own (a late private caption,
+    or stage 3's make_private); from then on Core draws it for nobody else."""
+    image(d, "ev10", b"mine")
+    image(d, "theirs", b"their photo", chat_id=MEMBER, message_id=60)
+    result = d.drafts.change("owner", OWNER, SPACES, draft_id=None, order=None, add=["ev10", "theirs"], reply_to=50)
+    d.conn.execute("UPDATE evidence SET space_id='personal:member' WHERE id='theirs'")
+    await d.drafts.run_once()
+    assert d.conn.execute("SELECT state FROM draft").fetchone()[0] == "failed"
+    assert d.renderer.calls == []
+    event = d.conn.execute("SELECT data FROM event_log WHERE kind='draft_failed'").fetchone()[0]
+    assert json.loads(event)["error"] == "page 2 is no longer the person's to use"
+    d.conn.execute("UPDATE draft SET state='building'")  # and not at Done either
+    await d.drafts.run_once()
+    assert d.conn.execute("SELECT COUNT(*) FROM document_version").fetchone()[0] == 0
+    assert result["pages"] == 2
+
+
+async def test_a_change_leaves_out_a_page_no_longer_the_persons_to_use(d):
+    image(d, "ev10", b"mine")
+    image(d, "theirs", b"their photo", chat_id=MEMBER, message_id=60)
+    draft = d.drafts.change("owner", OWNER, SPACES, draft_id=None, order=None, add=["ev10", "theirs"], reply_to=50)
+    d.conn.execute("UPDATE evidence SET space_id='personal:member' WHERE id='theirs'")
+    result = d.drafts.change("owner", OWNER, SPACES, draft_id=draft["draft"], order=[2, 1], add=None, reply_to=51)
+    assert result == {
+        "draft": draft["draft"],
+        "pages": 1,
+        "records": ["ev10"],
+        "left_out": "1 photo(s) no longer the person's to use",
+    }

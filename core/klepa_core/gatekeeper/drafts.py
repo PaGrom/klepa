@@ -94,6 +94,11 @@ def _distinct(rows: Sequence[sqlite3.Row]) -> list[sqlite3.Row]:
     return kept
 
 
+def _spaces(person_id: str) -> tuple[str, str]:
+    """The spaces whose records a person may use: the shared one and their own."""
+    return ("shared", f"personal:{person_id}")
+
+
 def _space(pages: Sequence[sqlite3.Row]) -> str:
     """The most private of the pages' spaces: a document with one personal page is personal."""
     return next((str(page["space_id"]) for page in pages if page["space_id"] != "shared"), "shared")
@@ -173,7 +178,12 @@ class Drafts:
             current: list[str] = []
             merged: list[str] = []
             if joined is not None:
-                current = [str(page["id"]) for page in self._pages(int(joined["id"]), int(joined["revision"]))]
+                spaces = _spaces(str(joined["person_id"]))
+                current = [
+                    str(page["id"])
+                    for page in self._pages(int(joined["id"]), int(joined["revision"]))
+                    if page["space_id"] in spaces  # a page no longer the person's to use is left out
+                ]
                 merged = [str(page["id"]) for page in _distinct(self._rows([*current, *records]))]
                 if len(merged) > MAX_PAGES:  # a draft that would pass its pages takes none of them
                     joined = None
@@ -283,7 +293,7 @@ class Drafts:
                 if not pages:
                     raise DraftRefused("give the photos of the new document in add")
                 draft_id = self._create(chat_id, person_id, reply_to, [str(page["id"]) for page in pages])
-                revision, asked = 1, len(added)
+                revision, lost, repeated = 1, 0, len(added) - len(pages)
             else:
                 draft = self.conn.execute(
                     "SELECT * FROM draft WHERE id = ? AND person_id = ? AND chat_id = ?", (draft_id, person_id, chat_id)
@@ -300,8 +310,9 @@ class Drafts:
                     if len(set(order)) != len(order):
                         raise DraftRefused("a page appears twice in order")
                     kept = [current[number - 1] for number in order]
-                pages = _distinct([*kept, *added])
-                asked = len(kept) + len(added)
+                usable = [page for page in kept if page["space_id"] in spaces]  # the final review's I2
+                pages = _distinct([*usable, *added])
+                lost, repeated = len(kept) - len(usable), len(usable) + len(added) - len(pages)
                 if not pages:
                     raise DraftRefused("a document needs one page at least")
                 if len(pages) > MAX_PAGES:
@@ -312,8 +323,10 @@ class Drafts:
         self.wake.set()  # the older sheet's buttons come off
         self.drawing.set()  # the new one is drawn
         result: dict[str, Any] = {"draft": draft_id, "pages": len(pages), "records": [str(p["id"]) for p in pages]}
-        if asked > len(pages):
-            result["left_out"] = f"{asked - len(pages)} photo(s) already in the draft"
+        notes = [f"{repeated} photo(s) already in the draft"] if repeated else []
+        notes += [f"{lost} photo(s) no longer the person's to use"] if lost else []
+        if notes:
+            result["left_out"] = "; ".join(notes)
         return result
 
     def _addable(self, record: str, spaces: Sequence[str]) -> sqlite3.Row:
@@ -411,7 +424,8 @@ class Drafts:
         pages = self._pages(draft_id, revision)
         folder = self.jobs_dir / f"draft-{draft_id}-{revision}"
         try:
-            data = await self._render("sheet", folder, pages, MAX_SHEET_BYTES)
+            person = self.conn.execute("SELECT person_id FROM draft WHERE id = ?", (draft_id,)).fetchone()[0]
+            data = await self._render("sheet", folder, pages, MAX_SHEET_BYTES, str(person))
         except _RENDER_ERRORS as exc:
             self._failed(draft_id, revision, "sheet", exc)
             return
@@ -477,7 +491,7 @@ class Drafts:
         if record is None:
             folder = self.jobs_dir / f"draft-{draft_id}-{revision}"
             try:
-                data = await self._render("pdf", folder, pages, MAX_PDF_BYTES)
+                data = await self._render("pdf", folder, pages, MAX_PDF_BYTES, str(draft["person_id"]))
             except _RENDER_ERRORS as exc:
                 self._failed(draft_id, revision, "pdf", exc)
                 return
@@ -585,9 +599,15 @@ class Drafts:
         return "\n\n".join(str(row[0]) for row in rows)
 
     # ---- drawing ----------------------------------------------------------------------------------------------------
-    async def _render(self, action: str, folder: Path, pages: Sequence[sqlite3.Row], max_bytes: int) -> bytes:
+    async def _render(
+        self, action: str, folder: Path, pages: Sequence[sqlite3.Row], max_bytes: int, person_id: str
+    ) -> bytes:
         """The sheet or the PDF of these pages, drawn in the sandbox from copies of their originals in a folder of
-        its own: the renderer never sees the incoming folder."""
+        its own: the renderer never sees the incoming folder. Every page must still be the person's to use: a shared
+        photo may have become another member's own since it was added (the final review's I2)."""
+        for number, page in enumerate(pages, 1):
+            if page["space_id"] not in _spaces(person_id):
+                raise ReaderFailed(f"page {number} is no longer the person's to use")
         if os.path.lexists(folder):
             await asyncio.to_thread(remove, folder)
         folder.mkdir(mode=0o700, parents=True)
