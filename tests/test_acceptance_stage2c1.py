@@ -14,6 +14,7 @@ from fakereaders import processing_config, processing_section
 from helpers import BASE_CONFIG, MEMBER, OWNER, free_port, query, wait_until, with_host, with_service_bot
 from klepa_core import db
 from klepa_core.app import init_layout
+from klepa_core.processing import pages
 from klepa_core.processing.sandbox import sandbox_available
 from test_acceptance_stage1c import running, stand
 
@@ -84,6 +85,8 @@ async def test_photos_out_of_order_become_a_pdf_in_the_confirmed_order_across_a_
     """Scenario 48 and the forum's #77177 (3): an album out of order, the order fixed in words, a restart between the
     steps, Done, a PDF of the originals, search citing its version and page; a second change gives version 2."""
     one, two, three = page("lease page one", "red"), page("lease page two", "green"), page("lease page three", "blue")
+    # In the PDF each goes as it came, but for its comment, where the stand-in OCR finds its words.
+    kept = {photo: pages.without_metadata(photo) for photo in (one, two, three)}
     model = Model()
     async with stand(cfg) as s:
         s.host.agent = model
@@ -116,7 +119,7 @@ async def test_photos_out_of_order_become_a_pdf_in_the_confirmed_order_across_a_
         assert pdf["params"]["caption"] == "📄 Done, pages: 3."
         assert re.fullmatch(r"Document \d{4}-\d\d-\d\d\.pdf", pdf["name"])
         assert pdf["data"].startswith(b"%PDF-1.4")
-        assert pdf["data"].index(one) < pdf["data"].index(two) < pdf["data"].index(three)  # the originals, in order
+        assert pdf["data"].index(kept[one]) < pdf["data"].index(kept[two]) < pdf["data"].index(kept[three])
         fake_tg.add_text(OWNER, "find: lease page two")
         await wait_until(
             lambda: any(t.startswith("Document ") and t.endswith(" v1 p2") for t in texts(fake_tg)), timeout=20
@@ -126,7 +129,7 @@ async def test_photos_out_of_order_become_a_pdf_in_the_confirmed_order_across_a_
         fake_tg.press(OWNER, fake_tg.photos[2]["message"], buttons(fake_tg.photos[2])[0])
         await wait_until(lambda: len(fake_tg.documents) == 2, timeout=30)
         assert fake_tg.documents[1]["name"].endswith(", version 2.pdf")
-        assert fake_tg.documents[1]["data"].index(three) < fake_tg.documents[1]["data"].index(one)
+        assert fake_tg.documents[1]["data"].index(kept[three]) < fake_tg.documents[1]["data"].index(kept[one])
         fake_tg.add_text(OWNER, "find: lease page two")
         await wait_until(lambda: any(t.endswith("v2 p2") for t in texts(fake_tg)), timeout=20)
         copies = "SELECT copy_state, documents_path FROM evidence WHERE channel='core' ORDER BY received_at"

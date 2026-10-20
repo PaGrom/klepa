@@ -681,7 +681,9 @@ async def test_the_model_reorders_a_draft_of_photos_through_cores_signed_tool(st
         live.telegram.press(MEMBER, sheet["message"], done)
         await wait_until(lambda: live.telegram.documents, timeout=60)
         document = live.telegram.documents[0]["data"]
-        assert document.index(second) < document.index(first)
+        from klepa_core.processing.pages import without_metadata  # each goes in but for its comment, the OCR's words
+
+        assert document.index(without_metadata(second)) < document.index(without_metadata(first))
         assert int(live.telegram.documents[0]["params"]["chat_id"]) == MEMBER
 
 

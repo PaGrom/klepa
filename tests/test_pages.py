@@ -132,3 +132,23 @@ def test_originals_that_would_not_fit_are_encoded_anew_smaller_until_they_do(tmp
     with pytest.raises(pages.PageError):
         pages.pdf(tmp_path / "none.pdf", files, max_bytes=100)
     assert not (tmp_path / "none.pdf").exists()
+
+
+def test_a_jpeg_goes_in_without_what_says_where_when_and_with_what_it_was_taken(tmp_path):
+    """The final review's M3: Telegram strips a photo, never a file; a PDF people forward must not say where home is.
+    The image itself still goes in byte for byte."""
+    exif = Image.Exif()
+    exif[0x010F] = "PhoneMaker"  # the camera's maker
+    exif[0x8825] = {2: (45.0, 15.0, 30.0)}  # GPS: latitude
+    path = tmp_path / "file.jpg"
+    Image.new("RGB", (600, 800), "#c8d6e5").save(path, "JPEG", exif=exif.tobytes(), comment=b"taken at home")
+    original = path.read_bytes()
+    pages.pdf(tmp_path / "doc.pdf", [path])
+    data = (tmp_path / "doc.pdf").read_bytes()
+    assert b"Exif" not in data
+    assert b"PhoneMaker" not in data
+    assert b"taken at home" not in data
+    scan = original[original.index(b"\xff\xda") :]
+    assert scan in data  # from the start of the scan to its end, as it came
+    assert pages.without_metadata(original) in data
+    assert pages.without_metadata(b"not a jpeg") is None

@@ -4,9 +4,11 @@ the person checks the order, and the PDF itself.
 Core runs this module in the sandbox, like its readers:
 `python -I -m klepa_core.processing.pages sheet|pdf [--max-bytes N] <output> <page>...`. With `--max-bytes` it stops
 once the output would pass that size: a PDF as it adds its pages, before it holds them all.
-Every page is an image that came from a person, and Core never decodes one itself. A JPEG goes into the PDF byte for
-byte as it came, unless its EXIF orientation asks for a turn; any other image is encoded once as a JPEG. The PDF holds
-no dates, so the same pages in the same order always give the same file.
+Every page is an image that came from a person, and Core never decodes one itself. A JPEG's image goes into the PDF
+byte for byte as it came, without what says where, when and with what it was taken, unless its EXIF orientation asks
+for a turn; any other image is encoded once as a JPEG, no larger than A4 at 300 dpi. When the pages as they came would
+pass --max-bytes, all of them are encoded anew, smaller. The PDF holds no dates, so the same pages in the same order
+always give the same file.
 """
 
 from __future__ import annotations
@@ -35,6 +37,9 @@ NOT_AN_IMAGE = 3  # exit codes
 TOO_LARGE = 4  # an image too large to unpack, or too many pages
 OUTPUT_TOO_LARGE = 5  # what it draws would pass --max-bytes
 _ORIENTATION = 0x0112  # the EXIF tag
+# The segments that say where, when and with what a photo was taken: APP1 (EXIF, XMP), APP13 (IPTC) and comments.
+_DROPPED = frozenset({0xE1, 0xED, 0xFE})
+_STANDALONE = frozenset({0x01, *range(0xD0, 0xD8)})  # markers with no length: TEM and the restarts
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS  # a larger image raises DecompressionBombError before it is decoded
 
 
@@ -91,14 +96,57 @@ def sheet(output: Path, pages: Sequence[Path], max_bytes: int | None = None) -> 
         raise _too_large(output, max_bytes)
 
 
+def without_metadata(data: bytes) -> bytes | None:
+    """A JPEG without what says where, when and with what it was taken, its image byte for byte, and nothing after its
+    end (a phone may append more pictures); None for one whose markers Core does not follow, which is encoded anew."""
+    if data[:2] != b"\xff\xd8":
+        return None
+    out = bytearray(data[:2])
+    i, n = 2, len(data)
+    while i + 1 < n:
+        if data[i] != 0xFF:
+            return None
+        marker = data[i + 1]
+        if marker == 0xFF:  # a fill byte
+            i += 1
+            continue
+        if marker == 0xD9:  # the end of the image
+            out += data[i : i + 2]
+            return bytes(out)
+        if marker in _STANDALONE:
+            out += data[i : i + 2]
+            i += 2
+            continue
+        length = int.from_bytes(data[i + 2 : i + 4], "big")
+        if length < 2 or i + 2 + length > n:
+            return None
+        if marker not in _DROPPED:
+            out += data[i : i + 2 + length]
+        i += 2 + length
+        if marker == 0xDA:  # a scan: its coded data runs to the next marker that is no stuffed byte and no restart
+            start = i
+            while True:
+                i = data.find(b"\xff", i)
+                if i < 0 or i + 1 >= n:
+                    return None
+                if data[i + 1] == 0x00 or 0xD0 <= data[i + 1] <= 0xD7:
+                    i += 2
+                    continue
+                break
+            out += data[start:i]
+    return None
+
+
 def _jpeg(path: Path, max_side: int, quality: int, *, as_it_came: bool) -> tuple[bytes, int, int, str]:
-    """The page as JPEG bytes, its size and its PDF colour space: the file itself when it may go in as it is,
-    otherwise encoded anew, upright, at most `max_side` pixels long."""
+    """The page as JPEG bytes, its size and its PDF colour space: the file itself, without what says where and when it
+    was taken, when it may go in as it is; otherwise encoded anew, upright, at most `max_side` pixels long."""
     with _open(path) as image:
         orientation = image.getexif().get(_ORIENTATION, 1)
         if as_it_came and image.format == "JPEG" and image.mode in ("RGB", "L") and orientation == 1:
-            space = "/DeviceRGB" if image.mode == "RGB" else "/DeviceGray"
-            return path.read_bytes(), image.width, image.height, space
+            kept = without_metadata(path.read_bytes())
+            if kept is not None:
+                space = "/DeviceRGB" if image.mode == "RGB" else "/DeviceGray"
+                return kept, image.width, image.height, space
         upright = ImageOps.exif_transpose(image).convert("RGB")
     upright.thumbnail((max_side, max_side))  # never larger than it was
     buffer = io.BytesIO()
