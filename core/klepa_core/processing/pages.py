@@ -65,6 +65,17 @@ def _too_large(output: Path, max_bytes: int) -> PageError:
     return PageError(OUTPUT_TOO_LARGE, f"{output.name} is larger than {max_bytes >> 20} MB")
 
 
+def _flat(image: Image.Image) -> Image.Image:
+    """The image upright, in RGB on white paper: what it leaves transparent is no black (the final review's M7)."""
+    upright = ImageOps.exif_transpose(image)
+    if upright.mode in ("RGBA", "LA", "PA") or (upright.mode == "P" and "transparency" in upright.info):
+        rgba = upright.convert("RGBA")
+        paper = Image.new("RGB", rgba.size, "white")
+        paper.paste(rgba, mask=rgba.getchannel("A"))
+        return paper
+    return upright.convert("RGB")
+
+
 def sheet(output: Path, pages: Sequence[Path], max_bytes: int | None = None) -> None:
     """The pages' thumbnails in a grid, each with its number, as one JPEG."""
     if not 1 <= len(pages) <= MAX_PAGES:
@@ -77,7 +88,7 @@ def sheet(output: Path, pages: Sequence[Path], max_bytes: int | None = None) -> 
     font = ImageFont.load_default(size=BADGE + 8)
     for index, path in enumerate(pages):
         with _open(path) as image:
-            thumb = ImageOps.exif_transpose(image).convert("RGB")
+            thumb = _flat(image)
             thumb.thumbnail((THUMB, THUMB))
         left = GAP + (index % columns) * cell + (THUMB - thumb.width) // 2
         top = GAP + (index // columns) * cell + (THUMB - thumb.height) // 2
@@ -147,7 +158,7 @@ def _jpeg(path: Path, max_side: int, quality: int, *, as_it_came: bool) -> tuple
             if kept is not None:
                 space = "/DeviceRGB" if image.mode == "RGB" else "/DeviceGray"
                 return kept, image.width, image.height, space
-        upright = ImageOps.exif_transpose(image).convert("RGB")
+        upright = _flat(image)
     upright.thumbnail((max_side, max_side))  # never larger than it was
     buffer = io.BytesIO()
     upright.save(buffer, "JPEG", quality=quality)

@@ -1,5 +1,6 @@
 """The pages of a document made from photos: the sheet of numbered thumbnails and the PDF (spec 6.1 item 4)."""
 
+import io
 import re
 import shutil
 import subprocess
@@ -152,3 +153,18 @@ def test_a_jpeg_goes_in_without_what_says_where_when_and_with_what_it_was_taken(
     assert scan in data  # from the start of the scan to its end, as it came
     assert pages.without_metadata(original) in data
     assert pages.without_metadata(b"not a jpeg") is None
+
+
+def test_a_transparent_page_is_white_paper_not_black(tmp_path):
+    """The final review's M7: what a PNG leaves transparent is paper."""
+    image = Image.new("RGBA", (400, 400), (0, 0, 0, 0))
+    image.paste((20, 20, 200, 255), (100, 100, 300, 300))  # an opaque blue square
+    image.save(tmp_path / "page.png")
+    pages.pdf(tmp_path / "doc.pdf", [tmp_path / "page.png"])
+    data = (tmp_path / "doc.pdf").read_bytes()
+    with Image.open(io.BytesIO(data[data.index(b"\xff\xd8") : data.rindex(b"\xff\xd9") + 2])) as page:
+        assert min(page.getpixel((10, 10))) > 240  # white where it was transparent
+        assert page.getpixel((200, 200))[2] > 150  # the blue square stays
+    pages.sheet(tmp_path / "sheet.jpg", [tmp_path / "page.png"])
+    with Image.open(tmp_path / "sheet.jpg") as sheet:
+        assert min(sheet.getpixel((pages.GAP + 300, pages.GAP + 5))) > 240
