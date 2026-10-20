@@ -27,6 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..aio import until_stopped
 from ..db import transaction
 from ..durable import make_dirs_durably, write_new_atomically
 from ..events import EventLog, utc_now_iso
@@ -655,10 +656,14 @@ class Drafts:
                 await asyncio.wait_for(self.wake.wait(), TICK_SECONDS)
 
     async def draw(self, stop: asyncio.Event) -> None:
-        """Drawing: sheets and PDFs, one at a time."""
+        """Drawing: sheets and PDFs, one at a time. A stop cancels the drawing under way, its renderer killed with its
+        process group; its draft is left as it was, so the next start draws it again (the final review's I1)."""
         while not stop.is_set():
             self.drawing.clear()
-            await self._sheets()
-            await self._builds()
+            await until_stopped(stop, self._draw_once())
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.drawing.wait(), TICK_SECONDS)
+
+    async def _draw_once(self) -> None:
+        await self._sheets()
+        await self._builds()

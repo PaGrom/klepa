@@ -755,3 +755,26 @@ async def test_a_sheet_too_large_to_send_is_told_as_one_that_could_not_be_made(d
     await d.drafts.run_once()
     payload = outbound(d, f"draft_failed:{draft_of(d, message)}:1")[2]
     assert payload["text"] == "I couldn't make the PDF. The photos are saved."
+
+
+async def test_a_stop_cancels_the_drawing_under_way_and_its_draft_is_drawn_again(d):
+    """The final review's I1: a long drawing must not keep Core from stopping (launchd would kill it, and the owner
+    would hear of a crash); the draft is left as it was, so the next start draws its sheet."""
+    import asyncio
+
+    started = asyncio.Event()
+
+    async def held(action, inputs, job, *, max_bytes):
+        started.set()
+        await asyncio.sleep(3600)
+
+    d.renderer.pages = held
+    album(d, b"one", b"two")
+    d.drafts.tick()
+    stop = asyncio.Event()
+    drawing = asyncio.create_task(d.drafts.draw(stop))
+    await asyncio.wait_for(started.wait(), 5)
+    stop.set()
+    await asyncio.wait_for(drawing, 2)
+    assert d.conn.execute("SELECT COUNT(*) FROM draft_sheet").fetchone()[0] == 0
+    assert d.conn.execute("SELECT state FROM draft").fetchone()[0] == "open"
