@@ -243,17 +243,17 @@ async def test_a_batch_given_to_the_host_before_drafts_makes_none(d):
     assert d.conn.execute("SELECT draft_checked FROM host_message WHERE id=?", (message,)).fetchone()[0] == 1
 
 
-async def test_photos_sent_soon_after_join_the_open_draft_and_repeats_add_nothing(d):
+async def test_a_photo_sent_soon_after_joins_the_open_draft_and_a_repeat_adds_nothing(d):
     first = album(d, b"one", b"two")
     d.drafts.tick()
     draft = draft_of(d, first)
     d.clock.advance(JOIN_SECONDS - 5)
-    more = album(d, b"two", b"three", first=20)  # one of them it has already
+    more = album(d, b"three", first=20)  # the page that was missing
     d.drafts.tick()
     assert draft_of(d, more) == draft
-    assert pages(d, draft) == ["ev10", "ev11", "ev21"]
+    assert pages(d, draft) == ["ev10", "ev11", "ev20"]
     row = d.conn.execute("SELECT revision, reply_to FROM draft WHERE id=?", (draft,)).fetchone()
-    assert (row["revision"], row["reply_to"]) == (2, 20)  # its sheet answers the new photos
+    assert (row["revision"], row["reply_to"]) == (2, 20)  # its sheet answers the new photo
     again = album(d, b"one", first=30)
     d.drafts.tick()
     assert draft_of(d, again) == draft
@@ -267,6 +267,17 @@ async def test_photos_sent_soon_after_join_the_open_draft_and_repeats_add_nothin
     assert texts[2].endswith(
         f"⟦document draft {draft} · the images above are among its 3 pages already: nothing changed⟧"
     )
+
+
+async def test_an_album_sent_soon_after_is_a_document_of_its_own(d):
+    """The final review's M2: a passport, then a visa form a few minutes later, are two documents."""
+    first = album(d, b"passport one", b"passport two")
+    d.drafts.tick()
+    d.clock.advance(60)
+    second = album(d, b"form one", b"form two", first=20)
+    d.drafts.tick()
+    assert draft_of(d, second) not in (None, draft_of(d, first))
+    assert pages(d, draft_of(d, first)) == ["ev10", "ev11"]
 
 
 async def test_photos_sent_later_or_after_done_make_a_draft_of_their_own(d):
@@ -657,15 +668,14 @@ async def test_a_page_changed_on_disk_is_never_drawn_nor_built(d):
     assert json.loads(event)["error"] == "page 2 is not its stored original"
 
 
-async def test_a_draft_that_would_pass_its_pages_takes_no_more_and_the_photos_make_their_own(d, monkeypatch):
-    monkeypatch.setattr(drafts_module, "MAX_PAGES", 3)
+async def test_a_draft_that_would_pass_its_pages_takes_no_more(d, monkeypatch):
+    monkeypatch.setattr(drafts_module, "MAX_PAGES", 2)
     first = album(d, b"one", b"two")
     d.drafts.tick()
-    more = album(d, b"three", b"four", first=20)
+    more = album(d, b"three", first=20)
     d.drafts.tick()
-    assert draft_of(d, more) != draft_of(d, first)
+    assert draft_of(d, more) is None  # a photo alone makes no draft of its own
     assert pages(d, draft_of(d, first)) == ["ev10", "ev11"]
-    assert pages(d, draft_of(d, more)) == ["ev20", "ev21"]
 
 
 async def test_deciding_never_waits_for_drawing(d):

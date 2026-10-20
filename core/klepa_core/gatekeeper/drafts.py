@@ -40,7 +40,7 @@ from ..processing.sandbox import ProcessingStopped
 from .outbox import Outbox
 
 MIN_PAGES = 2  # images in one batch that make a draft
-JOIN_SECONDS = 600.0  # images sent this soon after a draft's last change are more of its pages
+JOIN_SECONDS = 600.0  # a photo sent alone this soon after a draft's last change is one more of its pages
 MAX_PAGES = 100  # pages of one draft, as Core's renderer draws them (processing.pages.MAX_PAGES)
 SHEET_SIDE = 720  # pixels: a HEIC page for the sheet, twice its thumbnail
 PDF_SIDE = 3508  # pixels: a HEIC page for the PDF, A4 at 300 dpi (processing.pages.MAX_SIDE)
@@ -168,15 +168,16 @@ class Drafts:
                 self._decide(row)
 
     def _decide(self, row: sqlite3.Row) -> None:
-        """The batch's images join the chat's open draft when it changed less than ten minutes ago: pages come in
-        more than one batch, and one sent twice is a page once. Otherwise two or more of them make a new draft."""
+        """A photo sent alone joins the chat's open draft when it changed less than ten minutes ago: a page forgotten
+        comes after the album, and one sent twice is a page once. Two or more images make a new draft: an album sent
+        soon after is another document (the final review's M2)."""
         pages = self._images(int(row["id"]))
         records = [str(page["id"]) for page in pages]
         chat_id, message_id = int(row["chat_id"]), int(row["message_id"])
         draft_id: int | None = None
         revision: int | None = None
         with transaction(self.conn):
-            joined = self._joinable(chat_id) if pages else None
+            joined = self._joinable(chat_id) if 0 < len(pages) < MIN_PAGES else None
             current: list[str] = []
             merged: list[str] = []
             if joined is not None:
