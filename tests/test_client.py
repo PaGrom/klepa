@@ -148,3 +148,18 @@ async def test_buttons_come_off_a_message_and_a_press_may_be_answered_with_a_dia
     assert fake_tg.unbuttoned == [{"chat_id": OWNER, "message_id": 42}]  # no reply_markup: no buttons
     await api.answer_callback_query("cb3", "write the new order", show_alert=True)
     assert fake_tg.answered[-1] == {"callback_query_id": "cb3", "text": "write the new order", "show_alert": True}
+
+
+async def test_an_upload_has_time_for_its_size(fake_tg, api, monkeypatch):
+    """The final review's M4: a 50 MB PDF on a slow home line must not time out at two minutes and end UNKNOWN."""
+    seen = []
+    call = api.call
+
+    async def timed(method, params, *, timeout, form=None):
+        seen.append((method, timeout))
+        return await call(method, params, timeout=timeout, form=form)
+
+    monkeypatch.setattr(api, "call", timed)
+    await api.send_document(OWNER, b"x" * 5_000_000, "big.pdf", "application/pdf")
+    await api.send_photo(OWNER, b"x" * 1_000_000, "pages: 2")
+    assert seen == [("sendDocument", 170.0), ("sendPhoto", 130.0)]  # two minutes, and a second per 100 KB

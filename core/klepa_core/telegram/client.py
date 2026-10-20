@@ -48,6 +48,12 @@ class DownloadFailed(Exception):
     """A file download failed or arrived incomplete; retry later."""
 
 
+def upload_seconds(size: int) -> float:
+    """How long an upload may take: two minutes, and a second for every 100 KB, so that a 50 MB document has some ten
+    minutes on a slow home line instead of ending UNKNOWN (the final review's M4)."""
+    return 120.0 + size / 100_000
+
+
 class BotApi:
     def __init__(self, session: aiohttp.ClientSession, api_root: str, token: str) -> None:
         self._session = session
@@ -157,7 +163,7 @@ class BotApi:
         if caption is not None:
             form.add_field("caption", caption)
         form.add_field("document", data, filename=filename.replace('"', "'"), content_type=mime)
-        result = await self.call("sendDocument", {}, timeout=120, form=form)
+        result = await self.call("sendDocument", {}, timeout=upload_seconds(len(data)), form=form)
         if not isinstance(result, dict):
             raise Ambiguous("sendDocument: unexpected result")
         return result
@@ -180,7 +186,7 @@ class BotApi:
         if reply_markup is not None:
             form.add_field("reply_markup", json.dumps(reply_markup))
         form.add_field("photo", data, filename="sheet.jpg", content_type="image/jpeg")
-        result = await self.call("sendPhoto", {}, timeout=120, form=form)
+        result = await self.call("sendPhoto", {}, timeout=upload_seconds(len(data)), form=form)
         if not isinstance(result, dict):
             raise Ambiguous("sendPhoto: unexpected result")
         return result
