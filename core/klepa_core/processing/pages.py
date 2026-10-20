@@ -28,6 +28,9 @@ GAP = 24
 BADGE = 30  # the radius of a page number's circle
 A4 = (595.28, 841.89)  # points: a page of the PDF is its image fitted into A4, upright or across as the image is
 JPEG_QUALITY = 92  # of a page encoded anew; a sheet is smaller
+MAX_SIDE = 3508  # pixels: the longest side of A4 at 300 dpi; a page encoded anew is no larger (the final review's I3)
+# When the pages as they came would not fit --max-bytes, every page is encoded anew, smaller at each try.
+FALLBACK = ((3508, 85), (2480, 80))
 NOT_AN_IMAGE = 3  # exit codes
 TOO_LARGE = 4  # an image too large to unpack, or too many pages
 OUTPUT_TOO_LARGE = 5  # what it draws would pass --max-bytes
@@ -88,16 +91,18 @@ def sheet(output: Path, pages: Sequence[Path], max_bytes: int | None = None) -> 
         raise _too_large(output, max_bytes)
 
 
-def _jpeg(path: Path) -> tuple[bytes, int, int, str]:
-    """The page as JPEG bytes, its size and its PDF colour space: the file itself when it can go in as it is."""
+def _jpeg(path: Path, max_side: int, quality: int, *, as_it_came: bool) -> tuple[bytes, int, int, str]:
+    """The page as JPEG bytes, its size and its PDF colour space: the file itself when it may go in as it is,
+    otherwise encoded anew, upright, at most `max_side` pixels long."""
     with _open(path) as image:
         orientation = image.getexif().get(_ORIENTATION, 1)
-        if image.format == "JPEG" and image.mode in ("RGB", "L") and orientation == 1:
+        if as_it_came and image.format == "JPEG" and image.mode in ("RGB", "L") and orientation == 1:
             space = "/DeviceRGB" if image.mode == "RGB" else "/DeviceGray"
             return path.read_bytes(), image.width, image.height, space
         upright = ImageOps.exif_transpose(image).convert("RGB")
+    upright.thumbnail((max_side, max_side))  # never larger than it was
     buffer = io.BytesIO()
-    upright.save(buffer, "JPEG", quality=JPEG_QUALITY)
+    upright.save(buffer, "JPEG", quality=quality)
     return buffer.getvalue(), upright.width, upright.height, "/DeviceRGB"
 
 
@@ -105,13 +110,10 @@ def pdf(output: Path, pages: Sequence[Path], max_bytes: int | None = None) -> No
     """A PDF of the pages in this order, one image a page, each page its image fitted into A4."""
     if not 1 <= len(pages) <= MAX_PAGES:
         raise PageError(TOO_LARGE, f"a document holds 1 to {MAX_PAGES} pages")
-    images = []
-    size = 0
-    for path in pages:
-        images.append(_jpeg(path))
-        size += len(images[-1][0])
-        if max_bytes is not None and size > max_bytes:
-            raise _too_large(output, max_bytes)
+    images = _fitting(pages, max_bytes)
+    if images is None:
+        assert max_bytes is not None
+        raise _too_large(output, max_bytes)
     count = len(images)
     # Objects: 1 the catalog, 2 the page tree, then for each page: the page, its content, its image.
     objects: list[bytes] = [
@@ -147,6 +149,23 @@ def pdf(output: Path, pages: Sequence[Path], max_bytes: int | None = None) -> No
     body += b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets)
     body += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
     output.write_bytes(bytes(body))
+
+
+def _fitting(pages: Sequence[Path], max_bytes: int | None) -> list[tuple[bytes, int, int, str]] | None:
+    """The pages as they came (a JPEG byte for byte), or, when that would pass `max_bytes`, every page encoded anew at
+    the sizes of FALLBACK until they fit; None when none does. Each try stops at the page that passes."""
+    tries = [(MAX_SIDE, JPEG_QUALITY, True), *((side, quality, False) for side, quality in FALLBACK)]
+    for max_side, quality, as_it_came in tries:
+        images = []
+        size = 0
+        for path in pages:
+            images.append(_jpeg(path, max_side, quality, as_it_came=as_it_came))
+            size += len(images[-1][0])
+            if max_bytes is not None and size > max_bytes:
+                break
+        else:
+            return images
+    return None
 
 
 def main(argv: Sequence[str]) -> int:

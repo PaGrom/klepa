@@ -459,3 +459,10 @@ def test_search_and_get_name_the_version_of_a_document_made_from_photos(box):
     assert (found["id"], found["version"], found["page"]) == ("ev-doc", 2, 1)
     record = box.call("get", signed("get", {"id": "ev-doc"}, call_id="call-2"))
     assert (record["version"], record["pages"]) == (2, 2)
+
+
+def test_make_pdf_tells_the_model_of_the_50_mb_limit_and_the_way_round_it(box):
+    [spec] = [tool for tool in box.specs() if tool["name"] == "make_pdf"]
+    assert (
+        "A PDF over 50 MB is not made: if the person says so, split the pages into two drafts." in spec["description"]
+    )

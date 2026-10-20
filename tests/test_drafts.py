@@ -27,8 +27,8 @@ class Renderer:
         self.calls = []
         self.fail = None
 
-    async def to_png(self, source, target, job):
-        self.calls.append(("png", source.name))
+    async def to_png(self, source, target, job, *, max_side=None):
+        self.calls.append(("png", source.name, max_side))
         target.write_bytes(b"png of " + source.read_bytes())
 
     async def pages(self, action, inputs, job, *, max_bytes):
@@ -326,7 +326,9 @@ async def test_a_heic_page_is_turned_into_a_png_first(d):
     message = d.queue.enqueue_attachment(OWNER, [(10, 10, "ev10"), (11, 11, "ev11")])
     await d.drafts.run_once()
     assert draft_of(d, message) is not None
-    assert d.renderer.calls == [("png", "page-1.heic"), ("sheet", [b"png of heic one", b"jpeg two"])]
+    assert d.renderer.calls == [("png", "page-1.heic", 720), ("sheet", [b"png of heic one", b"jpeg two"])]
+    await done(d, draft_of(d, message), 1, 500)
+    assert ("png", "page-1.heic", 3508) in d.renderer.calls  # the PDF's page, A4 at 300 dpi
 
 
 async def test_a_sheet_that_cannot_be_drawn_tells_the_person_and_keeps_the_photos(d):
@@ -810,3 +812,10 @@ async def test_a_change_leaves_out_a_page_no_longer_the_persons_to_use(d):
         "records": ["ev10"],
         "left_out": "1 photo(s) no longer the person's to use",
     }
+
+
+def test_the_heic_sides_are_the_renderers_page_and_twice_a_thumbnail():
+    from klepa_core.gatekeeper import drafts
+    from klepa_core.processing import pages as renderer
+
+    assert (drafts.PDF_SIDE, drafts.SHEET_SIDE) == (renderer.MAX_SIDE, 2 * renderer.THUMB)

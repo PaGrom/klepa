@@ -42,6 +42,8 @@ from .outbox import Outbox
 MIN_PAGES = 2  # images in one batch that make a draft
 JOIN_SECONDS = 600.0  # images sent this soon after a draft's last change are more of its pages
 MAX_PAGES = 100  # pages of one draft, as Core's renderer draws them (processing.pages.MAX_PAGES)
+SHEET_SIDE = 720  # pixels: a HEIC page for the sheet, twice its thumbnail
+PDF_SIDE = 3508  # pixels: a HEIC page for the PDF, A4 at 300 dpi (processing.pages.MAX_SIDE)
 MAX_SHEET_BYTES = 10 << 20  # what Telegram takes as a photo
 MAX_PDF_BYTES = 50 << 20  # what Telegram takes from a bot as a document
 BUTTON_TTL_SECONDS = 24 * 3600.0  # as Core's other buttons; make_pdf draws a sheet with fresh ones
@@ -624,7 +626,8 @@ class Drafts:
         for number, copy in enumerate(copies, 1):
             if copy.suffix in _HEIC:
                 converted = folder / f"page-{number}.png"
-                await self.readers.to_png(copy, converted, folder)
+                side = SHEET_SIDE if action == "sheet" else PDF_SIDE
+                await self.readers.to_png(copy, converted, folder, max_side=side)
                 copy = converted
             inputs.append(copy)
         return await self.readers.pages(action, inputs, folder, max_bytes=max_bytes)

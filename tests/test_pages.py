@@ -103,3 +103,32 @@ def test_what_would_pass_its_size_stops_with_its_own_code(tmp_path):
     assert pages.main(["sheet", "--max-bytes", "100", str(tmp_path / "out.jpg"), page]) == pages.OUTPUT_TOO_LARGE
     assert pages.main(["pdf", "--max-bytes", "x", str(tmp_path / "out.pdf"), page]) == 2
     assert readers_module.PAGES_TOO_LARGE == pages.OUTPUT_TOO_LARGE  # Core's side names the code without Pillow
+
+
+def noise(path, size):
+    """A photo that compresses badly, as real ones do: grey noise, saved at the highest quality."""
+    grey = Image.effect_noise(size, 64)
+    Image.merge("RGB", (grey, grey, grey)).save(path, "JPEG", quality=100)
+    return path
+
+
+def test_a_page_encoded_anew_is_no_larger_than_a4_at_300_dpi(tmp_path):
+    """The final review's I3: a phone's 24-megapixel photo is no more paper than A4 can show."""
+    pages.pdf(tmp_path / "doc.pdf", [photo(tmp_path / "big.png", size=(5000, 4000), fmt="PNG")])
+    data = (tmp_path / "doc.pdf").read_bytes()
+    assert b"/Width 3508 /Height 2806" in data
+
+
+def test_originals_that_would_not_fit_are_encoded_anew_smaller_until_they_do(tmp_path, monkeypatch):
+    monkeypatch.setattr(pages, "MAX_SIDE", 400)
+    monkeypatch.setattr(pages, "FALLBACK", ((300, 85), (200, 80)))
+    files = [noise(tmp_path / f"{n}.jpg", (600, 800)) for n in range(2)]
+    whole = sum(path.stat().st_size for path in files)
+    pages.pdf(tmp_path / "doc.pdf", files, max_bytes=whole // 2)
+    data = (tmp_path / "doc.pdf").read_bytes()
+    assert files[0].read_bytes() not in data  # no longer as they came
+    assert data.count(b"/Width 225 /Height 300") == 2  # every page at the first size that fits
+    assert len(data) < whole // 2
+    with pytest.raises(pages.PageError):
+        pages.pdf(tmp_path / "none.pdf", files, max_bytes=100)
+    assert not (tmp_path / "none.pdf").exists()

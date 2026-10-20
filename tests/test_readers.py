@@ -440,3 +440,24 @@ def test_what_the_renderer_cannot_draw_or_draws_too_large_is_refused(setup):
         asyncio.run(renderer.pages("pdf", [job / "page-1.jpg"], job, max_bytes=100))
     with pytest.raises(ReaderFailed, match=r"^pages exited with 3$"):
         asyncio.run(renderer.pages("pdf", [job / "page-1.jpg", job / "page-2.jpg"], job, max_bytes=10 << 20))
+
+
+FIT = "scale='min(iw,720)':'min(ih,720)':force_original_aspect_ratio=decrease"
+
+
+def test_a_heic_page_is_turned_into_a_png_no_larger_than_asked(setup):
+    """An iPhone's photo is a grid of tiles, which ffmpeg 9 joins in a filter graph: the scale goes after the join.
+    A HEIC with no grid takes the scale as a plain filter (both seen with the real ffmpeg 9.0.2)."""
+    processing, runner, tmp_path = setup
+    job = tmp_path / "jobs" / "draft"
+    job.mkdir(parents=True)
+    (job / "page-1.heic").write_bytes(b"heic")
+    (job / "page-2.heic").write_bytes(b"heic NOGRID")
+    readers = Readers(processing, runner)
+    asyncio.run(readers.to_png(job / "page-1.heic", job / "page-1.png", job, max_side=720))
+    args = json.loads((job / "ffmpeg.args").read_text())
+    assert args[args.index("-filter_complex") + 1 :][:3] == [f"[0:g:0]{FIT}[page]", "-map", "[page]"]
+    asyncio.run(readers.to_png(job / "page-2.heic", job / "page-2.png", job, max_side=720))
+    args = json.loads((job / "ffmpeg.args").read_text())
+    assert args[args.index("-vf") + 1] == FIT
+    assert (job / "page-2.png").read_bytes() == b"heic NOGRID"

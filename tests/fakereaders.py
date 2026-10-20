@@ -28,6 +28,8 @@ args = sys.argv[1:]
 source, target = args[args.index("-i") + 1], args[-1]
 inside(source)
 data = open(source, "rb").read()
+if "-filter_complex" in args and b"NOGRID" in data:  # like the real one, for a HEIC that is no grid of tiles
+    sys.exit(234)
 if data.startswith((b"SILENT", b"AUDIBLE")):  # a real WAV: two seconds near silence (-50 dBFS) or quiet (-30 dBFS)
     import array, wave
     loudest = 103 if data.startswith(b"SILENT") else 1036

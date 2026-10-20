@@ -415,11 +415,22 @@ class Readers:
         text, cut = _read(job / "ocr.txt")
         return Pages([text.strip()], f"{self.tesseract} {languages}", TEXT_CUT if cut else None)
 
-    async def to_png(self, source: Path, target: Path, job: Path) -> None:
+    async def to_png(self, source: Path, target: Path, job: Path, *, max_side: int | None = None) -> None:
         """A HEIC image as a PNG, its tiles joined, by ffmpeg: tesseract and Pillow cannot open HEIC, and macOS's sips
-        does not work in the sandbox, as it reads the home folder and writes in the user's temporary folder."""
-        convert = ["-nostdin", "-hide_banner", "-loglevel", "error", "-i", source, "-frames:v", 1, "-y", target]
-        await self._step([self.processing.ffmpeg, *convert], job, 60)
+        does not work in the sandbox, as it reads the home folder and writes in the user's temporary folder. With
+        `max_side`, no longer than that and never enlarged: a 24-megapixel photo's PNG is slow to write and large."""
+        ffmpeg = self.processing.ffmpeg
+        convert: list[object] = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", source, "-frames:v", 1]
+        if max_side is None:
+            await self._step([*convert, "-y", target], job, 60)
+            return
+        fit = f"scale='min(iw,{max_side})':'min(ih,{max_side})':force_original_aspect_ratio=decrease"
+        try:  # an iPhone's photo is a grid of tiles, which ffmpeg joins in a filter graph of its own (ffmpeg 9)
+            await self._step(
+                [*convert, "-filter_complex", f"[0:g:0]{fit}[page]", "-map", "[page]", "-y", target], job, 60
+            )
+        except ReaderFailed:  # one image, with no grid of tiles
+            await self._step([*convert, "-vf", fit, "-y", target], job, 60)
 
     async def pages(self, action: str, inputs: Sequence[Path], job: Path, *, max_bytes: int) -> bytes:
         """Core's own renderer of a document's pages (processing.pages) in the sandbox, like a reader: the sheet of
