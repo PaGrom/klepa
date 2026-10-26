@@ -68,7 +68,8 @@ class HostQueue:
         self.changed = asyncio.Event()
         # The digests of served texts, by message, in memory only: core.db never holds what people wrote, nor a
         # digest a short text could be guessed from. After a restart a turn takes its chat's oldest message.
-        self.digests: dict[int, tuple[str, int]] = {}
+        # An attachment's mark may change before a repeat, so each serving's digest is kept.
+        self.digests: dict[int, list[tuple[str, int]]] = {}
 
     def wake(self) -> None:
         """Something may have become servable: a waiting getUpdates looks again."""
@@ -203,7 +204,10 @@ class HostQueue:
         return updates
 
     def _keep_digest(self, host_message_id: int, message: dict[str, Any]) -> None:
-        self.digests[host_message_id] = text_digest(str(message.get("text", "")))
+        kept = self.digests.setdefault(host_message_id, [])
+        digest = text_digest(str(message.get("text", "")))
+        if digest not in kept:
+            kept.append(digest)
         while len(self.digests) > KEEP_DIGESTS:
             del self.digests[next(iter(self.digests))]
 

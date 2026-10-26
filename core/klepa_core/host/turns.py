@@ -123,25 +123,31 @@ class TurnRegistry:
 
     def _taken(self, waiting: list[sqlite3.Row], prompt: Prompt | None) -> int:
         """Which waiting message a turn answers: the first whose text its prompt is; else the last of a long text's
-        fragments it joins (the gateway's own rule: a text of 4000 characters or more and what follows it); else, as
-        a turn whose prompt Core cannot tell, the oldest."""
+        fragments it joins (the gateway's own rule: a text of 4000 characters or more and the message of the next id);
+        else, as a turn whose prompt Core cannot tell, the oldest. Only messages whose digests Core has count, from the
+        oldest on: one served before Core restarted runs before the later ones (the review's I1)."""
         if prompt is None:
             return 0
-        digests = [self.queue.digests.get(int(row["id"])) for row in waiting]
-        for index, digest in enumerate(digests):
-            if digest is not None and digest[0] == prompt.sha256:
+        known: list[tuple[sqlite3.Row, list[tuple[str, int]]]] = []
+        for row in waiting:
+            digests = self.queue.digests.get(int(row["id"]))
+            if digests is None:
+                break
+            known.append((row, digests))
+        for index, (_, digests) in enumerate(known):
+            if any(sha == prompt.sha256 for sha, _ in digests):
                 return index
-        for first, digest in enumerate(digests):
-            if digest is None or digest[1] < FRAGMENT_CHARS:
-                continue
-            units = digest[1]
-            for index in range(first + 1, len(digests)):
-                following = digests[index]
-                if following is None:
-                    break
-                units += following[1]
-                if units == prompt.units:
-                    return index
+        for first, (row, digests) in enumerate(known):
+            for units in {units for _, units in digests if units >= FRAGMENT_CHARS}:
+                previous = row
+                for index in range(first + 1, len(known)):
+                    following, more = known[index]
+                    if int(following["message_id"]) != int(previous["message_id"]) + 1 or len(more) != 1:
+                        break
+                    units += more[0][1]
+                    if units == prompt.units:
+                        return index
+                    previous = following
         return 0
 
     def replied(self, run_id: str, ok: bool) -> tuple[str, int] | None:

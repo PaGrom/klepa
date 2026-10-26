@@ -264,3 +264,33 @@ def test_an_answer_leaves_an_older_message_whose_own_turn_runs(setup):
     second = start(turns, "run-2", text=prompt_of(two))
     queue.mark_answered(OWNER, prefer=second.host_message_id)
     assert answered(queue, first.host_message_id, second.host_message_id) == {second.host_message_id}
+
+
+def test_an_older_message_core_has_no_digest_of_is_taken_first(setup):
+    """The review's I1: a message issued before Core restarted has no digest; its run comes first, so a newer message
+    of the same text must not take it."""
+    turns, queue, journal, _ = setup
+    issue(queue, journal, 1, OWNER, 10, "yes")
+    text = issue(queue, journal, 2, OWNER, 11, "yes")
+    oldest = int(queue.conn.execute("SELECT MIN(id) FROM host_message").fetchone()[0])
+    del queue.digests[oldest]  # it was served before Core restarted
+    assert start(turns, "run-1", text=prompt_of(text)).host_message_id == oldest
+
+
+def test_fragments_are_only_messages_of_consecutive_ids(setup):
+    """The review's M3: the gateway joins a long text only with the message of the next id."""
+    turns, queue, journal, _ = setup
+    long = issue(queue, journal, 1, OWNER, 10, "L" * 4090)
+    short = issue(queue, journal, 2, OWNER, 12, "beta two")
+    oldest = int(queue.conn.execute("SELECT MIN(id) FROM host_message").fetchone()[0])
+    assert start(turns, "run-1", text=prompt_of(long, short)).host_message_id == oldest
+
+
+def test_a_message_served_again_with_another_text_is_known_by_either(setup):
+    """The review's M4: an attachment's mark may change before the host takes it again after a hiccup."""
+    turns, queue, journal, _ = setup
+    issue(queue, journal, 1, OWNER, 10, "left behind")
+    text = issue(queue, journal, 2, OWNER, 11, "as first served")
+    newer = int(queue.conn.execute("SELECT MAX(id) FROM host_message").fetchone()[0])
+    queue._keep_digest(newer, {"text": "as served again"})
+    assert start(turns, "run-1", text=prompt_of(text)).host_message_id == newer
