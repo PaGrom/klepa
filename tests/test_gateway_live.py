@@ -496,6 +496,24 @@ async def test_a_message_in_the_middle_of_a_turn_gets_its_own_turn(stand_args, f
         assert len([entry for entry in people if not entry.get("model_probe")]) == 2
 
 
+async def test_a_long_text_the_gateway_joins_with_the_next_leaves_no_message_behind(stand_args, fake_model):
+    """The live run of 2026-10-26: the gateway joins a text of 4000 characters or more with the next message in one
+    run. Core pairs the run with the later one and its answer closes both, so the chat's next message gets the next
+    answer, not one message behind."""
+    fake_model.script = lambda request: fakemodel.Say(f"STUB: {request.human[:12]}")
+    async with live_stand(*stand_args, model=fake_model) as live:
+        await wait_until(lambda: live.state() == "RUNNING", timeout=90)
+        live.telegram.add_text(MEMBER, "L" * 4090)
+        live.telegram.add_text(MEMBER, "beta two")
+        await wait_until(lambda: any(t.startswith("STUB: LLL") for t in live.sent()), timeout=60)
+        assert [r.human for r in fake_model.requests][-1] == "L" * 4090 + "beta two"  # one run for both
+        live.telegram.add_text(MEMBER, "gamma three")
+        await wait_until(lambda: "STUB: gamma three" in live.sent(), timeout=60)
+        rows = query(live.cfg, "SELECT answered_at FROM host_message WHERE kind = 'text'")
+        assert len(rows) == 3
+        assert all(row["answered_at"] is not None for row in rows)
+
+
 async def test_a_turn_cut_by_a_crash_is_answered_once_after_the_restart(stand_args, fake_model):
     """Scenario 32: the gateway dies while the model thinks; launchd brings it back, its own queue runs the turn
     again, Core registers it by the message still without an answer, and the person gets one answer."""
