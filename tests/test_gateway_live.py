@@ -689,6 +689,30 @@ async def test_the_model_reorders_a_draft_of_photos_through_cores_signed_tool(st
         assert int(live.telegram.documents[0]["params"]["chat_id"]) == MEMBER
 
 
+async def test_the_model_closes_a_draft_of_photos_that_are_no_document(stand_args, fake_model, tmp_path):
+    """make_pdf's boolean through the real gateway: the model reads an album of a trip as no document, the plugin
+    signs `not_a_document: true` as Core reads it, and no sheet goes out."""
+
+    def script(request):
+        draft = re.search(r"⟦document draft (\d+) ·", request.human)
+        if draft is not None and not request.tool_results:
+            revision = int(re.search(r"with revision (\d+)", request.human).group(1))
+            params = {"draft": int(draft.group(1)), "not_a_document": True, "revision": revision}
+            return fakemodel.Call("klepa__make_pdf", params)
+        return fakemodel.Say("TRIP: " + ("closed" if request.tool_results else "none"))
+
+    fake_model.script = script
+    readers = processing_section(processing_config(tmp_path / "readers"))
+    async with live_stand(*stand_args, model=fake_model, extra=readers) as live:
+        await wait_until(lambda: live.state() == "RUNNING", timeout=90)
+        live.telegram.add_photo(MEMBER, page_photo("holiday at the beach", "red"), media_group_id="trip")
+        live.telegram.add_photo(MEMBER, page_photo("holiday in the mountains", "blue"), media_group_id="trip")
+        await wait_until(lambda: "TRIP: closed" in live.sent(), timeout=90)
+        await asyncio.sleep(3)
+        assert live.telegram.photos == []
+        assert query(live.cfg, "SELECT state FROM draft")[0]["state"] == "declined"
+
+
 async def test_a_reply_after_the_plugin_went_silent_waits_and_is_dropped_with_cores_apology(
     stand_args, fake_model, monkeypatch
 ):

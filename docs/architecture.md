@@ -323,7 +323,7 @@ Code: `klepa_core/host/tools.py`, `klepa_core/host/instruction.py`, `klepa_core/
   - `failed`: the original is kept and can be sent;
   - `none`: a file of this kind is not read.
 - `klepa__send_original` has Core send the person the original file with the name it came with.
-- `klepa__make_pdf` changes a person's draft of a document from photos (below, under Delivery): `order` lists the pages to keep by their numbers on the latest sheet, in their new order, and `add` the records of more images to put after them; without a draft, `add` starts a new one. Before the first sheet the model sets the order its pages' content shows, or closes a draft that is no document with `not_a_document`; later changes come from the person's words. Core then draws a new sheet; the PDF still waits for the person's Done. `search` and `get` name the version of a document Core made.
+- `klepa__make_pdf` changes a person's draft of a document from photos (below, under Delivery): `order` lists the pages to keep by their numbers on the latest sheet, in their new order, and `add` the records of more images to put after them; without a draft, `add` starts a new one. Before the first sheet the model sets the order its pages' content shows, or closes a draft that is no document with `not_a_document` (only before its first sheet, with its revision, once every page was read; an order opens it again); later changes come from the person's words. Core then draws a new sheet; the PDF still waits for the person's Done. `search` and `get` name the version of a document Core made.
 
 A tool acts for the person whose message the turn answers, over the shared space and that person's own: another member's personal records are never found, read or sent.
 

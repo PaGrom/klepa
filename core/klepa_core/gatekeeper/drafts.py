@@ -3,7 +3,8 @@
 Two or more images in one batch are a draft of a document: an album's arrival does not prove that every page came
 (forum #65177), so the person checks the pages before there is a PDF. When the batch's reading ends, the batch's message
 tells the model of the draft and numbers its pages; the model puts them in the order their content shows, through
-make_pdf, before it answers (the owner's choice of 2026-10-26), and only then Core sends one sheet of numbered
+make_pdf, before it answers, or says they are no document, and then no sheet goes out (the owner's choices of
+2026-10-26); only then Core sends one sheet of numbered
 thumbnails, as a reply to the first image, with the buttons Done, Change the order and Not a document. Later the person
 says in words what to change, and the model passes it to make_pdf. Each change is a revision with a sheet of its own,
 and an older sheet loses its buttons. Done builds the PDF of the current revision from the originals: each time a new
@@ -300,6 +301,8 @@ class Drafts:
             raise DraftRefused("not_a_document goes alone: no order, no add")
         if not_a_document and draft_id is None:
             raise DraftRefused("not_a_document needs a draft")
+        if not_a_document and revision is None:  # the review's M2: never a page the model did not see
+            raise DraftRefused("not_a_document needs the draft's revision")
         if len(add or ()) > MAX_PAGES:
             raise DraftRefused(f"a document has at most {MAX_PAGES} pages")
         added = [self._addable(record, spaces) for record in add or ()]
@@ -329,13 +332,24 @@ class Drafts:
                 if not_a_document:
                     if draft["state"] == "done":
                         raise DraftRefused("its PDF is made already")
+                    if self._sheet_sent(draft_id):  # the review's I1: a stray photo joined; the person decides
+                        raise DraftRefused(
+                            "a sheet went out already: the person decides with its buttons, and a page that is no "
+                            "part of the document is left out with order"
+                        )
+                    if not self._all_read(draft_id, int(draft["revision"])):  # the review's I2: no text, no sign
+                        raise DraftRefused("a page was not read: keep the draft, and the person decides")
                     self.conn.execute(
                         "UPDATE draft SET state = 'declined', updated_at = ? WHERE id = ?", (self.clock(), draft_id)
                     )
                     declined = {"draft": draft_id, "revision": int(draft["revision"]), "by": "model"}
                     self.events.log("draft_declined", declined)
                     self.wake.set()  # a sheet sent already loses its buttons
-                    return {"draft": draft_id, "not_a_document": True}
+                    return {
+                        "draft": draft_id,
+                        "not_a_document": True,
+                        "note": "make_pdf with the draft and an order opens it again",
+                    }
                 kept = current
                 if order is not None:
                     if not all(1 <= number <= len(current) for number in order):
@@ -364,6 +378,16 @@ class Drafts:
         if notes:
             result["left_out"] = "; ".join(notes)
         return result
+
+    def _all_read(self, draft_id: int, revision: int) -> bool:
+        """Every page's reading ended with a text, empty or not: a reader not installed, or one that failed, is no
+        sign that a page holds no text."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM draft_page p LEFT JOIN job j ON j.evidence_id = p.evidence_id "
+            "WHERE p.draft_id = ? AND p.revision = ? AND (j.state IS NULL OR j.state != 'done')",
+            (draft_id, revision),
+        ).fetchone()
+        return int(row[0]) == 0
 
     def _sheet_sent(self, draft_id: int) -> bool:
         row = self.conn.execute(

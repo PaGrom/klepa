@@ -451,9 +451,10 @@ TOOLS = (
             "add": {"type": "array", "items": {"type": "string"}, "description": "Record ids of photos to add."},
             "not_a_document": {
                 "type": "boolean",
-                "description": "True when the draft's images are no document (people, places, things; no text, or "
-                "text only by chance): the draft closes, and a sheet not sent yet never goes out. Alone, with the "
-                "draft and its revision.",
+                "description": "True when what was read of the draft's images shows people, places or things and "
+                "the person's words do not ask for a document (little text is no sign; when unsure, keep the draft): "
+                "the draft closes, and no sheet goes out. Only with the draft and its revision, before its first "
+                "sheet; make_pdf with the draft and an order opens it again.",
             },
         },
         (),

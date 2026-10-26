@@ -287,7 +287,8 @@ class HostQueue:
             (draft_id, int(revision)),
         ).fetchone()
         added = pages - self._draft_pages(draft_id, int(revision) - 1)
-        return Draft(draft_id, pages, added, records, int(revision), sent is None)
+        state = self.conn.execute("SELECT state FROM draft WHERE id=?", (draft_id,)).fetchone()[0]
+        return Draft(draft_id, pages, added, records, int(revision), sent is None, state == "declined")
 
     def _draft_pages(self, draft_id: int, revision: int) -> int:
         row = self.conn.execute(

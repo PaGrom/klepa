@@ -20,14 +20,23 @@ from klepa_core.processing.readers import OutputTooLarge, ReaderFailed
 SPACES = ("shared", "personal:owner")
 
 
-def waits(revision):
+def waits(revision, made=True):
     """The end of a mark of a draft the batch made or joined, while its sheet waits for the model's answer."""
-    return (
+    sheet = (
         "once you have answered, Core sends the person a sheet of its pages, numbered, with the buttons Done, Change "
-        "the order and Not a document. If the images are no document (people, places, things; no text, or text only "
-        "by chance), pass not_a_document to klepa__make_pdf instead, and no sheet goes out. If what the pages say "
-        f"shows another order, pass it to klepa__make_pdf first, every number once, with revision {revision}; never "
-        "name these numbers to the person, who confirms with Done⟧"
+        "the order and Not a document. "
+    )
+    never = "never name these numbers to the person, who confirms with Done⟧"
+    if made:
+        return sheet + (
+            "If what was read shows people, places or things, and the person's words do not ask for a document, pass "
+            f"not_a_document to klepa__make_pdf instead, with revision {revision}, and no sheet goes out; little or no "
+            "text is no sign of that, and when unsure, keep the draft. If what the pages say shows another order, "
+            f"pass it to klepa__make_pdf first, every number once, with revision {revision}; " + never
+        )
+    return sheet + (
+        f"Pass the order the pages' content shows to klepa__make_pdf, with revision {revision}, leaving out an image "
+        "above that is no part of the document; " + never
     )
 
 
@@ -272,7 +281,7 @@ async def test_a_photo_sent_soon_after_joins_the_open_draft_and_a_repeat_adds_no
     texts = [update["message"]["text"] for update in d.queue.serve(None, 100, lambda *_: True)]
     assert texts[1].endswith(
         f"⟦document draft {draft} · the images above joined it as 1 more pages, 3 in all: 1 record ev10, 2 record "
-        f"ev11, 3 record ev20; {waits(2)}"
+        f"ev11, 3 record ev20; {waits(2, made=False)}"
     )
     assert texts[2].endswith(
         f"⟦document draft {draft} · the images above are among its 3 pages already: nothing changed⟧"
@@ -981,7 +990,11 @@ async def test_photos_the_model_finds_no_document_get_no_sheet(d):
     result = d.drafts.change(
         "owner", OWNER, SPACES, draft_id=draft, order=None, add=None, reply_to=None, revision=1, not_a_document=True
     )
-    assert result == {"draft": draft, "not_a_document": True}
+    assert result == {
+        "draft": draft,
+        "not_a_document": True,
+        "note": "make_pdf with the draft and an order opens it again",
+    }
     d.queue.mark_answered(OWNER, prefer=message)
     await d.drafts.run_once()
     d.clock.advance(HOLD_SECONDS + 1)
@@ -996,14 +1009,69 @@ async def test_photos_the_model_finds_no_document_get_no_sheet(d):
     assert draft_of(d, lone) is None  # a declined draft takes no more photos
 
 
-async def test_a_sheet_already_sent_loses_its_buttons_when_the_model_finds_no_document(d):
+async def test_once_a_sheet_went_out_the_person_decides_not_the_model(d):
+    """The review's I1: a selfie sent alone joins the contract's draft; the model must not close the contract."""
     message = album(d, b"one", b"two")
     await d.drafts.run_once()
     draft = draft_of(d, message)
-    sent(d, f"draft_sheet:{draft}:1", 500)
-    d.drafts.change("owner", OWNER, SPACES, draft_id=draft, order=None, add=None, reply_to=None, not_a_document=True)
+    with pytest.raises(DraftRefused) as refused:
+        d.drafts.change(
+            "owner", OWNER, SPACES, draft_id=draft, order=None, add=None, reply_to=None, revision=1, not_a_document=True
+        )
+    assert str(refused.value) == (
+        "a sheet went out already: the person decides with its buttons, and a page that is no part of the document "
+        "is left out with order"
+    )
+    assert d.conn.execute("SELECT state FROM draft").fetchone()[0] == "open"
+
+
+async def test_a_draft_with_a_page_not_read_is_never_closed_as_no_document(d):
+    """The review's I2: no text because no reader read it (none installed, or it failed) is no sign of anything."""
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    d.conn.execute("UPDATE job SET state='failed' WHERE evidence_id='ev11'")
+    with pytest.raises(DraftRefused, match=r"^a page was not read: keep the draft, and the person decides$"):
+        d.drafts.change(
+            "owner",
+            OWNER,
+            SPACES,
+            draft_id=draft_of(d, message),
+            order=None,
+            add=None,
+            reply_to=None,
+            revision=1,
+            not_a_document=True,
+        )
+
+
+async def test_a_draft_closed_as_no_document_opens_again_with_an_order(d):
+    """The review's M1: the way back, when the person says it is a document after all."""
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    draft = draft_of(d, message)
+    d.drafts.change(
+        "owner", OWNER, SPACES, draft_id=draft, order=None, add=None, reply_to=None, revision=1, not_a_document=True
+    )
+    d.drafts.change("owner", OWNER, SPACES, draft_id=draft, order=[1, 2], add=None, reply_to=None, revision=1)
     await d.drafts.run_once()
-    assert outbound(d, f"draft_unbutton:{draft}:1")[2] == {"message_id": 500}
+    assert d.conn.execute("SELECT state FROM draft").fetchone()[0] == "open"
+    assert d.renderer.calls == [("sheet", [b"one", b"two"])]
+
+
+async def test_a_mark_served_after_the_model_closed_the_draft_says_so(d):
+    """The review's M4: a turn retried after a restart reads that the draft is closed, not that a sheet will come."""
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    draft = draft_of(d, message)
+    d.drafts.change(
+        "owner", OWNER, SPACES, draft_id=draft, order=None, add=None, reply_to=None, revision=1, not_a_document=True
+    )
+    [update] = served(d)
+    assert update["message"]["text"].endswith(
+        f"⟦document draft {draft} · 2 pages made from the images above, in the order they came: 1 record ev10, 2 "
+        "record ev11; it is closed as no document, and no sheet goes out; klepa__make_pdf with the draft and an "
+        "order opens it again⟧"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1013,6 +1081,7 @@ async def test_a_sheet_already_sent_loses_its_buttons_when_the_model_finds_no_do
         ({"add": ["ev10"]}, "not_a_document goes alone: no order, no add"),
         ({"draft_id": None}, "not_a_document needs a draft"),
         ({"revision": 5}, "the draft has changed: it is revision 1 now, its pages 1 record ev10, 2 record ev11"),
+        ({}, "not_a_document needs the draft's revision"),
     ],
 )
 async def test_not_a_document_is_refused_with_anything_else(d, kwargs, refusal):
@@ -1032,5 +1101,13 @@ async def test_a_document_being_built_or_built_is_a_document(d):
         d.conn.execute("UPDATE draft SET state=?", (state,))
         with pytest.raises(DraftRefused, match=f"^{refusal}"):
             d.drafts.change(
-                "owner", OWNER, SPACES, draft_id=draft, order=None, add=None, reply_to=None, not_a_document=True
+                "owner",
+                OWNER,
+                SPACES,
+                draft_id=draft,
+                order=None,
+                add=None,
+                reply_to=None,
+                revision=1,
+                not_a_document=True,
             )

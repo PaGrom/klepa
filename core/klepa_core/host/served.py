@@ -59,6 +59,7 @@ class Draft:
     records: tuple[str, ...] = ()  # its pages' records, in their order: the model's numbers for make_pdf
     revision: int = 1  # the revision those numbers belong to
     waits: bool = True  # its sheet waits for the model's answer; False: it went out already
+    closed: bool = False  # the model closed it as no document
 
 
 def clean(text: str) -> str:
@@ -175,15 +176,29 @@ def _draft(draft: Draft) -> str:
     else:
         what = f"the images above joined it as {draft.added} more pages, {draft.pages} in all"
     numbers = ", ".join(f"{number} record {record}" for number, record in enumerate(draft.records, 1))
+    if draft.closed:  # the review's M4: a turn retried after the model closed it
+        return (
+            f"{what}: {numbers}; it is closed as no document, and no sheet goes out; {MAKE_PDF} with the draft and an "
+            "order opens it again"
+        )
     if not draft.waits:
         return (
             f"{what}: {numbers}; Core sent the person a sheet of its pages, numbered, with the buttons Done, Change "
             f"the order and Not a document; change the pages with {MAKE_PDF}"
         )
-    return (
+    sheet = (
         f"{what}: {numbers}; once you have answered, Core sends the person a sheet of its pages, numbered, with the "
-        "buttons Done, Change the order and Not a document. If the images are no document (people, places, things; "
-        f"no text, or text only by chance), pass not_a_document to {MAKE_PDF} instead, and no sheet goes out. If "
-        f"what the pages say shows another order, pass it to {MAKE_PDF} first, every number once, with revision "
-        f"{draft.revision}; never name these numbers to the person, who confirms with Done"
+        "buttons Done, Change the order and Not a document. "
+    )
+    never = "never name these numbers to the person, who confirms with Done"
+    if draft.added != draft.pages:  # the review's I1: a photo joined a document: its pages are not the model's to drop
+        return sheet + (
+            f"Pass the order the pages' content shows to {MAKE_PDF}, with revision {draft.revision}, leaving out an "
+            f"image above that is no part of the document; {never}"
+        )
+    return sheet + (
+        "If what was read shows people, places or things, and the person's words do not ask for a document, pass "
+        f"not_a_document to {MAKE_PDF} instead, with revision {draft.revision}, and no sheet goes out; little or no "
+        "text is no sign of that, and when unsure, keep the draft. If what the pages say shows another order, pass "
+        f"it to {MAKE_PDF} first, every number once, with revision {draft.revision}; {never}"
     )
