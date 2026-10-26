@@ -1,14 +1,15 @@
 """Documents from photos (spec 6.1 item 4, 10 make_pdf; scenarios 37, 45, 46, 48).
 
 Two or more images in one batch are a draft of a document: an album's arrival does not prove that every page came
-(forum #65177), so the person checks the pages before there is a PDF. When the batch's reading ends, Core sends a
-sheet of numbered thumbnails in the order the images came, as a reply to the first of them, with the buttons Done,
-Change the order and Not a document, and the batch's message tells the model of the draft. The person says in words
-what to change; the model passes it to make_pdf. Each change is a revision with a sheet of its own, and an older sheet
-loses its buttons. Done builds the PDF of the current revision from the originals: each time a new version of the
-document, a record Core derived, whose text is its pages' texts and whose space is the most private of theirs. The
-originals stay as they are, and search finds only the latest version. Sheets and PDFs are drawn in the sandbox by
-Core's own renderer, as readers read files: Core never decodes a person's image itself.
+(forum #65177), so the person checks the pages before there is a PDF. When the batch's reading ends, the batch's message
+tells the model of the draft and numbers its pages; the model puts them in the order their content shows, through
+make_pdf, before it answers (the owner's choice of 2026-10-26), and only then Core sends one sheet of numbered
+thumbnails, as a reply to the first image, with the buttons Done, Change the order and Not a document. Later the person
+says in words what to change, and the model passes it to make_pdf. Each change is a revision with a sheet of its own,
+and an older sheet loses its buttons. Done builds the PDF of the current revision from the originals: each time a new
+version of the document, a record Core derived, whose text is its pages' texts and whose space is the most private of
+theirs. The originals stay as they are, and search finds only the latest version. Sheets and PDFs are drawn in the
+sandbox by Core's own renderer, as readers read files: Core never decodes a person's image itself.
 """
 
 from __future__ import annotations
@@ -40,7 +41,10 @@ from ..processing.sandbox import ProcessingStopped
 from .outbox import Outbox
 
 MIN_PAGES = 2  # images in one batch that make a draft
-HOLD_SECONDS = 120.0  # a sheet waits at most this long for the model's answer to its batch (the order it reads)
+# A sheet waits for the model's answer to its batch, which may put the pages in the order their content shows: while
+# the model's run on the batch is alive, and at most this long after the host took it (the owner's word, 2026-10-26:
+# many pages of small text take a model long; ten minutes is also when Core alerts the owner to a silent model).
+HOLD_SECONDS = 600.0
 JOIN_SECONDS = 600.0  # a photo sent alone this soon after a draft's last change is one more of its pages
 MAX_PAGES = 100  # pages of one draft, as Core's renderer draws them (processing.pages.MAX_PAGES)
 SHEET_SIDE = 720  # pixels: a HEIC page for the sheet, twice its thumbnail
@@ -284,10 +288,12 @@ class Drafts:
         order: Sequence[int] | None,
         add: Sequence[str] | None,
         reply_to: int | None,
+        revision: int | None = None,
     ) -> dict[str, Any]:
         """A new revision of the person's own draft, or a new draft from images they may see. `order`: the pages to
-        keep, by their numbers on the latest sheet, in their new order; `add`: records of images to put after them.
-        Core then sends a new sheet, and the PDF still waits for the person's Done."""
+        keep, by their numbers as the draft is now (before its first sheet, every one), in their new order; `add`:
+        records of images to put after them; `revision`: the revision the numbers belong to. Core then sends a new
+        sheet, and the PDF still waits for the person's Done."""
         if len(add or ()) > MAX_PAGES:
             raise DraftRefused(f"a document has at most {MAX_PAGES} pages")
         added = [self._addable(record, spaces) for record in add or ()]
@@ -309,12 +315,20 @@ class Drafts:
                 if draft["state"] == "building":
                     raise DraftRefused("its PDF is being made: try again in a moment")
                 current = self._pages(draft_id, int(draft["revision"]))
+                if revision is not None and revision != draft["revision"]:  # the review's I1: numbers of another one
+                    pages_now = ", ".join(f"{n} record {page['id']}" for n, page in enumerate(current, 1))
+                    raise DraftRefused(
+                        f"the draft has changed: it is revision {draft['revision']} now, its pages {pages_now}"
+                    )
                 kept = current
                 if order is not None:
                     if not all(1 <= number <= len(current) for number in order):
                         raise DraftRefused(f"the pages of the latest sheet are numbered 1 to {len(current)}")
                     if len(set(order)) != len(order):
                         raise DraftRefused("a page appears twice in order")
+                    whole = sorted(order) == list(range(1, len(current) + 1))
+                    if order and not whole and not self._sheet_sent(draft_id):
+                        raise DraftRefused(f"before the first sheet, order lists every page once: 1 to {len(current)}")
                     kept = [current[number - 1] for number in order]
                 usable = [page for page in kept if page["space_id"] in spaces]  # the final review's I2
                 pages = _distinct([*usable, *added])
@@ -334,6 +348,12 @@ class Drafts:
         if notes:
             result["left_out"] = "; ".join(notes)
         return result
+
+    def _sheet_sent(self, draft_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM draft_sheet WHERE draft_id = ? AND outbound_key IS NOT NULL LIMIT 1", (draft_id,)
+        ).fetchone()
+        return row is not None
 
     def _addable(self, record: str, spaces: Sequence[str]) -> sqlite3.Row:
         marks = ",".join("?" * len(spaces))
@@ -473,13 +493,15 @@ class Drafts:
     def _held(self, draft: sqlite3.Row) -> bool:
         """A batch that made or joined the draft is with the model, which puts the pages in the order their content
         shows before it answers (the owner's choice of 2026-10-26): the person gets one sheet, in that order. The wait
-        ends with the answer, or HOLD_SECONDS after the host took the batch, or after the draft's last change while
-        the host has not taken it: no person is left without a sheet."""
+        ends with the answer, or when the model's run on the batch is over and HOLD_SECONDS have passed since the
+        host took it (or since the draft's last change while the host has not): no person is left without a sheet."""
+        now = self.clock()
         row = self.conn.execute(
             "SELECT 1 FROM host_message m LEFT JOIN host_update u ON u.host_message_id = m.id "
             "WHERE m.draft_id = ? AND m.answered_at IS NULL AND m.cancelled_at IS NULL "
-            "AND COALESCE(u.issued_at, ?) > ? LIMIT 1",
-            (draft["id"], draft["updated_at"], self.clock() - self.hold),
+            "AND (COALESCE(u.issued_at, ?) > ? OR EXISTS (SELECT 1 FROM host_run r WHERE r.host_message_id = m.id "
+            "AND r.expires_at > ?)) LIMIT 1",
+            (draft["id"], draft["updated_at"], now - self.hold, now),
         ).fetchone()
         return row is not None
 

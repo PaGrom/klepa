@@ -377,6 +377,7 @@ def _make_pdf(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
             order=params.get("order"),
             add=params.get("add"),
             reply_to=caller.message_id,
+            revision=params.get("revision"),
         )
     except DraftRefused as exc:
         raise ToolRefused(str(exc)) from None
@@ -426,7 +427,7 @@ TOOLS = (
         "soon after joins it. When Core's mark names a draft its images made or joined, before you answer, put the "
         "pages in the order their content shows (how a text runs on, headings, signatures, page numbers), if it "
         "differs: the sheet goes out once you have answered. When the person asks in words to reorder, drop or add "
-        "pages, call this with the draft: order lists the pages to keep by their numbers on the latest sheet, in the "
+        "pages, call this with the draft: order lists the pages to keep by their numbers as the draft is now, in the "
         "new order; add lists records of more photos, put after them. Without a draft, add starts a new one. Core "
         "then sends a new sheet to check. A PDF over 50 MB is not made: if the person says so, split the pages into "
         "two drafts. Never show the draft's id.",
@@ -435,7 +436,13 @@ TOOLS = (
             "order": {
                 "type": "array",
                 "items": {"type": "integer"},
-                "description": "Page numbers of the latest sheet, in the new order; pages left out are dropped.",
+                "description": "Page numbers as the draft is now (in Core's mark, or on the latest sheet), in the new "
+                "order; pages left out are dropped.",
+            },
+            "revision": {
+                "type": "integer",
+                "description": "The revision your page numbers belong to, as Core's mark names it: a draft changed "
+                "since is refused with its pages as they are.",
             },
             "add": {"type": "array", "items": {"type": "string"}, "description": "Record ids of photos to add."},
         },

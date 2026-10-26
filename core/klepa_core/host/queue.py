@@ -282,7 +282,12 @@ class HostQueue:
                 (draft_id, int(revision)),
             )
         )
-        return Draft(draft_id, pages, pages - self._draft_pages(draft_id, int(revision) - 1), records)
+        sent = self.conn.execute(  # the review's I4: the host took the batch only after its sheet went out
+            "SELECT 1 FROM draft_sheet WHERE draft_id=? AND revision>=? AND outbound_key IS NOT NULL LIMIT 1",
+            (draft_id, int(revision)),
+        ).fetchone()
+        added = pages - self._draft_pages(draft_id, int(revision) - 1)
+        return Draft(draft_id, pages, added, records, int(revision), sent is None)
 
     def _draft_pages(self, draft_id: int, revision: int) -> int:
         row = self.conn.execute(

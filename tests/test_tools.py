@@ -402,7 +402,7 @@ class Drafts:
 def test_make_pdf_changes_a_draft_for_the_person_and_the_message_the_turn_answers(box):
     issue(box.conn, OWNER, "run-1")
     box.drafts = drafts = Drafts()
-    result = box.call("make_pdf", signed("make_pdf", {"draft": 7, "order": [2, 1], "add": ["ev3"]}))
+    result = box.call("make_pdf", signed("make_pdf", {"draft": 7, "order": [2, 1], "add": ["ev3"], "revision": 2}))
     assert result == {"draft": 7, "pages": 2, "records": ["ev1", "ev2"]}
     message_id = box.conn.execute("SELECT message_id FROM host_message").fetchone()[0]
     assert drafts.asked == [
@@ -410,7 +410,7 @@ def test_make_pdf_changes_a_draft_for_the_person_and_the_message_the_turn_answer
             "owner",
             OWNER,
             ("shared", "personal:owner"),
-            {"draft_id": 7, "order": [2, 1], "add": ["ev3"], "reply_to": message_id},
+            {"draft_id": 7, "order": [2, 1], "add": ["ev3"], "reply_to": message_id, "revision": 2},
         )
     ]
 

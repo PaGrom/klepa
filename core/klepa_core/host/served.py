@@ -57,6 +57,8 @@ class Draft:
     pages: int  # in all, once the batch's images were added
     added: int  # of them, the batch's: all for a draft it made, none when they were its pages already
     records: tuple[str, ...] = ()  # its pages' records, in their order: the model's numbers for make_pdf
+    revision: int = 1  # the revision those numbers belong to
+    waits: bool = True  # its sheet waits for the model's answer; False: it went out already
 
 
 def clean(text: str) -> str:
@@ -173,8 +175,14 @@ def _draft(draft: Draft) -> str:
     else:
         what = f"the images above joined it as {draft.added} more pages, {draft.pages} in all"
     numbers = ", ".join(f"{number} record {record}" for number, record in enumerate(draft.records, 1))
+    if not draft.waits:
+        return (
+            f"{what}: {numbers}; Core sent the person a sheet of its pages, numbered, with the buttons Done, Change "
+            f"the order and Not a document; change the pages with {MAKE_PDF}"
+        )
     return (
         f"{what}: {numbers}; once you have answered, Core sends the person a sheet of its pages, numbered, with the "
         "buttons Done, Change the order and Not a document. If what the pages say shows another order, pass it to "
-        f"{MAKE_PDF} first, by these numbers; the person still confirms with Done"
+        f"{MAKE_PDF} first, every number once, with revision {draft.revision}; never name these numbers to the "
+        "person, who confirms with Done"
     )

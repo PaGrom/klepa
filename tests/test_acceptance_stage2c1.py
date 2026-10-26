@@ -153,7 +153,9 @@ class Reader(Model):
             numbered = re.findall(r"(\d+) record (ev\w+)", text)  # the mark's numbers, in the order they came
             rank = {"one": 1, "two": 2, "three": 3}
             order = [int(n) for n, record in sorted(numbered, key=lambda pair: rank[words[pair[1]]])]
-            result = await tool("make_pdf", {"draft": self.drafts[-1], "order": order})
+            await asyncio.sleep(3)  # the review's I3: a model takes its time; the hold, not a race, keeps one sheet
+            revision = int(re.search(r"with revision (\d+)", text).group(1))
+            result = await tool("make_pdf", {"draft": self.drafts[-1], "order": order, "revision": revision})
             return f"Put {result['pages']} pages in order by what they say."
         return await super().__call__(text, tool)
 
@@ -176,6 +178,7 @@ async def test_the_model_puts_an_album_in_the_order_its_pages_show_and_one_sheet
         assert reply_to(sheet) == first["message"]["message_id"]
         fake_tg.press(OWNER, sheet["message"], buttons(sheet)[0])
         await wait_until(lambda: fake_tg.documents, timeout=30)
+    assert query(cfg, "SELECT COUNT(*) AS n FROM draft_sheet")[0]["n"] == 1  # one sheet was ever drawn
     kept = [pages.without_metadata(photo) for photo in (one, two, three)]
     data = fake_tg.documents[0]["data"]
     assert data.index(kept[0]) < data.index(kept[1]) < data.index(kept[2])

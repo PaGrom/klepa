@@ -18,11 +18,15 @@ from klepa_core.host.queue import HostQueue
 from klepa_core.processing.readers import OutputTooLarge, ReaderFailed
 
 SPACES = ("shared", "personal:owner")
-WAITS = (  # the end of a mark of a draft the batch made or joined
-    "once you have answered, Core sends the person a sheet of its pages, numbered, with the buttons Done, Change the "
-    "order and Not a document. If what the pages say shows another order, pass it to klepa__make_pdf first, by these "
-    "numbers; the person still confirms with Done⟧"
-)
+
+
+def waits(revision):
+    """The end of a mark of a draft the batch made or joined, while its sheet waits for the model's answer."""
+    return (
+        "once you have answered, Core sends the person a sheet of its pages, numbered, with the buttons Done, Change "
+        "the order and Not a document. If what the pages say shows another order, pass it to klepa__make_pdf first, "
+        f"every number once, with revision {revision}; never name these numbers to the person, who confirms with Done⟧"
+    )
 
 
 class Renderer:
@@ -228,7 +232,7 @@ async def test_the_batch_waits_for_the_host_until_it_was_looked_at_and_its_text_
     draft = draft_of(d, message)
     assert update["message"]["text"].endswith(
         f"⟦document draft {draft} · 2 pages made from the images above, in the order they came: 1 record ev10, 2 "
-        f"record ev11; {WAITS}"
+        f"record ev11; {waits(1)}"
     )
 
 
@@ -266,7 +270,7 @@ async def test_a_photo_sent_soon_after_joins_the_open_draft_and_a_repeat_adds_no
     texts = [update["message"]["text"] for update in d.queue.serve(None, 100, lambda *_: True)]
     assert texts[1].endswith(
         f"⟦document draft {draft} · the images above joined it as 1 more pages, 3 in all: 1 record ev10, 2 record "
-        f"ev11, 3 record ev20; {WAITS}"
+        f"ev11, 3 record ev20; {waits(2)}"
     )
     assert texts[2].endswith(
         f"⟦document draft {draft} · the images above are among its 3 pages already: nothing changed⟧"
@@ -850,7 +854,7 @@ async def test_the_sheet_waits_for_the_models_answer_and_comes_once_in_the_order
     draft = draft_of(d, message)
     await d.drafts.run_once()
     assert d.renderer.calls == []  # no sheet before the model has answered
-    d.drafts.change("owner", OWNER, SPACES, draft_id=draft, order=[3, 1, 2], add=None, reply_to=10)
+    d.drafts.change("owner", OWNER, SPACES, draft_id=draft, order=[3, 1, 2], add=None, reply_to=None, revision=1)
     await d.drafts.run_once()
     assert d.renderer.calls == []
     d.queue.mark_answered(OWNER, prefer=message)
@@ -860,7 +864,7 @@ async def test_the_sheet_waits_for_the_models_answer_and_comes_once_in_the_order
     assert outbound(d, f"draft_sheet:{draft}:2")[2]["reply_to"] == 10  # a reply to the first photo still
 
 
-async def test_a_sheet_the_model_never_answers_for_comes_after_two_minutes(d):
+async def test_a_sheet_the_model_never_answers_for_comes_after_ten_minutes(d):
     d.drafts.hold = HOLD_SECONDS
     message = album(d, b"one", b"two")
     d.drafts.tick()
@@ -873,7 +877,7 @@ async def test_a_sheet_the_model_never_answers_for_comes_after_two_minutes(d):
     assert outbound(d, f"draft_sheet:{draft_of(d, message)}:1") is not None
 
 
-async def test_a_sheet_waits_at_most_two_minutes_for_a_host_that_has_not_taken_the_batch(d):
+async def test_a_sheet_waits_at_most_ten_minutes_for_a_host_that_has_not_taken_the_batch(d):
     d.drafts.hold = HOLD_SECONDS
     album(d, b"one", b"two")
     d.drafts.tick()  # looked at, never served: the host is on hold
@@ -895,3 +899,70 @@ async def test_a_change_the_person_asks_for_later_gets_its_sheet_at_once(d):
     d.drafts.change("owner", OWNER, SPACES, draft_id=draft, order=[2, 1], add=None, reply_to=40)
     await d.drafts.run_once()
     assert d.renderer.calls[-1] == ("sheet", [b"two", b"one"])
+
+
+async def test_the_hold_is_ten_minutes_and_lasts_while_the_models_run_on_the_batch_is_alive(d):
+    """The review's I2 and the owner's word: a model ordering many pages of small text, or a provider OpenClaw retries,
+    may take long; while its run on the batch is alive, no sheet in the order they came goes out."""
+    assert HOLD_SECONDS == 600.0
+    d.drafts.hold = HOLD_SECONDS
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    served(d)
+    d.conn.execute(
+        "INSERT INTO host_run(run_id, boot_id, chat_id, sender_id, prompt_built_at, host_message_id, registered_at, "
+        "expires_at) VALUES ('run-1', 'boot', ?, ?, ?, ?, ?, ?)",
+        (OWNER, OWNER, d.clock(), message, d.clock(), d.clock() + HOLD_SECONDS + 300),
+    )
+    d.clock.advance(HOLD_SECONDS + 1)
+    await d.drafts.run_once()
+    assert d.renderer.calls == []  # the run is alive
+    d.clock.advance(300)
+    await d.drafts.run_once()
+    assert d.renderer.calls == [("sheet", [b"one", b"two"])]
+
+
+async def test_numbers_of_an_older_revision_are_refused_with_the_draft_as_it_is(d):
+    """The review's I1: a photo joined while the model read the album, or the turn was retried after a restart."""
+    message = album(d, b"one", b"two", b"three")
+    d.drafts.tick()
+    draft = draft_of(d, message)
+    album(d, b"four", first=20)
+    d.drafts.tick()  # revision 2: four pages
+    with pytest.raises(DraftRefused) as refused:
+        d.drafts.change("owner", OWNER, SPACES, draft_id=draft, order=[3, 1, 2], add=None, reply_to=None, revision=1)
+    assert str(refused.value) == (
+        "the draft has changed: it is revision 2 now, its pages 1 record ev10, 2 record ev11, 3 record ev12, "
+        "4 record ev20"
+    )
+    result = d.drafts.change(
+        "owner", OWNER, SPACES, draft_id=draft, order=[4, 3, 1, 2], add=None, reply_to=None, revision=2
+    )
+    assert result["records"] == ["ev20", "ev12", "ev10", "ev11"]
+
+
+async def test_before_the_first_sheet_an_order_lists_every_page_once(d):
+    """The review's M1: ordering on its own, the model must not drop a page it cannot place."""
+    message = album(d, b"one", b"two", b"three")
+    d.drafts.tick()
+    draft = draft_of(d, message)
+    with pytest.raises(DraftRefused, match=r"^before the first sheet, order lists every page once: 1 to 3$"):
+        d.drafts.change("owner", OWNER, SPACES, draft_id=draft, order=[2, 1], add=None, reply_to=None)
+    await d.drafts.run_once()  # the sheet goes out
+    result = d.drafts.change("owner", OWNER, SPACES, draft_id=draft, order=[2, 1], add=None, reply_to=None)
+    assert result["pages"] == 2  # the person's own words may drop one
+
+
+async def test_a_mark_served_after_its_sheet_went_out_says_the_sheet_was_sent(d):
+    """The review's I4: the host took the batch only after the sheet went out (it was on hold for ten minutes)."""
+    d.drafts.hold = HOLD_SECONDS
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    d.clock.advance(HOLD_SECONDS + 1)
+    await d.drafts.run_once()
+    [update] = served(d)
+    assert update["message"]["text"].endswith(
+        f"⟦document draft {draft_of(d, message)} · 2 pages made from the images above, in the order they came: 1 "
+        "record ev10, 2 record ev11; Core sent the person a sheet of its pages, numbered, with the buttons Done, "
+        "Change the order and Not a document; change the pages with klepa__make_pdf⟧"
+    )
