@@ -12,12 +12,17 @@ from helpers import MEMBER, OWNER, Clock, host_peers, wait_until
 from klepa_core.events import EventLog
 from klepa_core.evidence import EvidenceStore
 from klepa_core.gatekeeper import drafts as drafts_module
-from klepa_core.gatekeeper.drafts import JOIN_SECONDS, DraftRefused, Drafts
+from klepa_core.gatekeeper.drafts import HOLD_SECONDS, JOIN_SECONDS, DraftRefused, Drafts
 from klepa_core.gatekeeper.outbox import Outbox
 from klepa_core.host.queue import HostQueue
 from klepa_core.processing.readers import OutputTooLarge, ReaderFailed
 
 SPACES = ("shared", "personal:owner")
+WAITS = (  # the end of a mark of a draft the batch made or joined
+    "once you have answered, Core sends the person a sheet of its pages, numbered, with the buttons Done, Change the "
+    "order and Not a document. If what the pages say shows another order, pass it to klepa__make_pdf first, by these "
+    "numbers; the person still confirms with Done⟧"
+)
 
 
 class Renderer:
@@ -59,6 +64,7 @@ def d(core_db):
         events,
         jobs_dir=cfg.jobs_dir,
         drafts_dir=cfg.drafts_dir,
+        hold_seconds=0.0,  # the sheet waits for the model's answer in the tests about that only
         clock=clock,
     )
     return SimpleNamespace(
@@ -221,9 +227,8 @@ async def test_the_batch_waits_for_the_host_until_it_was_looked_at_and_its_text_
     [update] = serve()
     draft = draft_of(d, message)
     assert update["message"]["text"].endswith(
-        f"⟦document draft {draft} · 2 pages made from the images above, in their order; Core sent the person a sheet "
-        "of its pages, numbered, with the buttons Done, Change the order and Not a document; change the pages with "
-        "klepa__make_pdf⟧"
+        f"⟦document draft {draft} · 2 pages made from the images above, in the order they came: 1 record ev10, 2 "
+        f"record ev11; {WAITS}"
     )
 
 
@@ -260,9 +265,8 @@ async def test_a_photo_sent_soon_after_joins_the_open_draft_and_a_repeat_adds_no
     assert d.conn.execute("SELECT revision FROM draft WHERE id=?", (draft,)).fetchone()[0] == 2  # nothing new
     texts = [update["message"]["text"] for update in d.queue.serve(None, 100, lambda *_: True)]
     assert texts[1].endswith(
-        f"⟦document draft {draft} · the images above joined it as 1 more pages, 3 in all; Core sent the person a sheet "
-        "of its pages, numbered, with the buttons Done, Change the order and Not a document; change the pages with "
-        "klepa__make_pdf⟧"
+        f"⟦document draft {draft} · the images above joined it as 1 more pages, 3 in all: 1 record ev10, 2 record "
+        f"ev11, 3 record ev20; {WAITS}"
     )
     assert texts[2].endswith(
         f"⟦document draft {draft} · the images above are among its 3 pages already: nothing changed⟧"
@@ -829,3 +833,65 @@ def test_the_heic_sides_are_the_renderers_page_and_twice_a_thumbnail():
     from klepa_core.processing import pages as renderer
 
     assert (drafts.PDF_SIDE, drafts.SHEET_SIDE) == (renderer.MAX_SIDE, 2 * renderer.THUMB)
+
+
+# ---- the order the model reads in the pages --------------------------------------------------------------------------
+def served(d):
+    return d.queue.serve(None, 100, lambda *_: True)
+
+
+async def test_the_sheet_waits_for_the_models_answer_and_comes_once_in_the_order_it_set(d):
+    """The owner's choice of 2026-10-26: the model puts the pages in the order their content shows, and the person
+    gets one sheet, already in that order."""
+    d.drafts.hold = HOLD_SECONDS
+    message = album(d, b"one", b"two", b"three")
+    d.drafts.tick()
+    served(d)  # the host has the batch
+    draft = draft_of(d, message)
+    await d.drafts.run_once()
+    assert d.renderer.calls == []  # no sheet before the model has answered
+    d.drafts.change("owner", OWNER, SPACES, draft_id=draft, order=[3, 1, 2], add=None, reply_to=10)
+    await d.drafts.run_once()
+    assert d.renderer.calls == []
+    d.queue.mark_answered(OWNER, prefer=message)
+    await d.drafts.run_once()
+    assert d.renderer.calls == [("sheet", [b"three", b"one", b"two"])]
+    assert outbound(d, f"draft_sheet:{draft}:1") is None
+    assert outbound(d, f"draft_sheet:{draft}:2")[2]["reply_to"] == 10  # a reply to the first photo still
+
+
+async def test_a_sheet_the_model_never_answers_for_comes_after_two_minutes(d):
+    d.drafts.hold = HOLD_SECONDS
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    served(d)
+    await d.drafts.run_once()
+    assert d.renderer.calls == []
+    d.clock.advance(HOLD_SECONDS + 1)
+    await d.drafts.run_once()
+    assert d.renderer.calls == [("sheet", [b"one", b"two"])]
+    assert outbound(d, f"draft_sheet:{draft_of(d, message)}:1") is not None
+
+
+async def test_a_sheet_waits_at_most_two_minutes_for_a_host_that_has_not_taken_the_batch(d):
+    d.drafts.hold = HOLD_SECONDS
+    album(d, b"one", b"two")
+    d.drafts.tick()  # looked at, never served: the host is on hold
+    await d.drafts.run_once()
+    assert d.renderer.calls == []
+    d.clock.advance(HOLD_SECONDS + 1)
+    await d.drafts.run_once()
+    assert d.renderer.calls == [("sheet", [b"one", b"two"])]
+
+
+async def test_a_change_the_person_asks_for_later_gets_its_sheet_at_once(d):
+    d.drafts.hold = HOLD_SECONDS
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    served(d)
+    d.queue.mark_answered(OWNER, prefer=message)
+    await d.drafts.run_once()
+    draft = draft_of(d, message)
+    d.drafts.change("owner", OWNER, SPACES, draft_id=draft, order=[2, 1], add=None, reply_to=40)
+    await d.drafts.run_once()
+    assert d.renderer.calls[-1] == ("sheet", [b"two", b"one"])

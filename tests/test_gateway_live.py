@@ -657,7 +657,8 @@ def page_photo(text, colour):
 
 async def test_the_model_reorders_a_draft_of_photos_through_cores_signed_tool(stand_args, fake_model, tmp_path):
     """make_pdf through the real gateway: the list of page numbers reaches Core as the model wrote it, signed by the
-    plugin over exactly that list, and Core draws the new sheet; the person's Done builds the PDF in that order."""
+    plugin over exactly that list; the one sheet comes after the model's answer, in its order, and the person's Done
+    builds the PDF in that order."""
 
     def script(request):
         draft = re.search(r"⟦document draft (\d+) ·", request.human)
@@ -673,10 +674,11 @@ async def test_the_model_reorders_a_draft_of_photos_through_cores_signed_tool(st
         await wait_until(lambda: live.state() == "RUNNING", timeout=90)
         live.telegram.add_photo(MEMBER, first, media_group_id="album")
         live.telegram.add_photo(MEMBER, second, media_group_id="album")
-        await wait_until(lambda: len(live.telegram.photos) == 2, timeout=90)  # the sheet, then the new order's
+        await wait_until(lambda: live.telegram.photos, timeout=90)
         assert query(live.cfg, "SELECT tool FROM host_tool_call")[0]["tool"] == "make_pdf"
         await wait_until(lambda: "DRAFT: 2 pages" in live.sent(), timeout=30)
-        sheet = live.telegram.photos[1]
+        await asyncio.sleep(2)
+        [sheet] = live.telegram.photos  # one sheet, already in the model's order
         done = sheet["markup"]["inline_keyboard"][0][0]["callback_data"]
         live.telegram.press(MEMBER, sheet["message"], done)
         await wait_until(lambda: live.telegram.documents, timeout=60)

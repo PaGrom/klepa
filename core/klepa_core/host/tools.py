@@ -421,12 +421,15 @@ TOOLS = (
     Tool(
         "make_pdf",
         "Change a person's document draft, or start one from photos. Two or more photos sent at once make a draft: "
-        "Core sends the person a sheet of the pages as numbered thumbnails with the buttons Done, Change the order and "
-        "Not a document, and makes the PDF from the originals only when they press Done; a photo they send alone soon "
-        "after joins it. When the person asks in words to reorder, drop or add pages, call this with the draft: order "
-        "lists the pages to keep by their numbers on the latest sheet, in the new order; add lists records of more "
-        "photos, put after them. Without a draft, add starts a new one. Core then sends a new sheet to check. A PDF "
-        "over 50 MB is not made: if the person says so, split the pages into two drafts. Never show the draft's id.",
+        "Core sends the person a sheet of the pages as numbered thumbnails with the buttons Done, Change the order "
+        "and Not a document, and makes the PDF from the originals only when they press Done; a photo they send alone "
+        "soon after joins it. When Core's mark names a draft its images made or joined, before you answer, put the "
+        "pages in the order their content shows (how a text runs on, headings, signatures, page numbers), if it "
+        "differs: the sheet goes out once you have answered. When the person asks in words to reorder, drop or add "
+        "pages, call this with the draft: order lists the pages to keep by their numbers on the latest sheet, in the "
+        "new order; add lists records of more photos, put after them. Without a draft, add starts a new one. Core "
+        "then sends a new sheet to check. A PDF over 50 MB is not made: if the person says so, split the pages into "
+        "two drafts. Never show the draft's id.",
         {
             "draft": {"type": "integer", "description": "The draft to change; none for a new one."},
             "order": {

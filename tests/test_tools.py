@@ -466,3 +466,8 @@ def test_make_pdf_tells_the_model_of_the_50_mb_limit_and_the_way_round_it(box):
     assert (
         "A PDF over 50 MB is not made: if the person says so, split the pages into two drafts." in spec["description"]
     )
+
+
+def test_make_pdf_tells_the_model_to_set_the_order_by_content_before_the_first_sheet(box):
+    [spec] = [tool for tool in box.specs() if tool["name"] == "make_pdf"]
+    assert "before you answer, put the pages in the order their content shows" in spec["description"]

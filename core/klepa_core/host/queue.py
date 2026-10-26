@@ -275,7 +275,14 @@ class HostQueue:
             revision = self.conn.execute("SELECT revision FROM draft WHERE id=?", (draft_id,)).fetchone()[0]
             return Draft(draft_id, self._draft_pages(draft_id, int(revision)), 0)
         pages = self._draft_pages(draft_id, int(revision))
-        return Draft(draft_id, pages, pages - self._draft_pages(draft_id, int(revision) - 1))
+        records = tuple(
+            str(row[0])
+            for row in self.conn.execute(
+                "SELECT evidence_id FROM draft_page WHERE draft_id=? AND revision=? ORDER BY position",
+                (draft_id, int(revision)),
+            )
+        )
+        return Draft(draft_id, pages, pages - self._draft_pages(draft_id, int(revision) - 1), records)
 
     def _draft_pages(self, draft_id: int, revision: int) -> int:
         row = self.conn.execute(

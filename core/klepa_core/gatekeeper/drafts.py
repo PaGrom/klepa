@@ -40,6 +40,7 @@ from ..processing.sandbox import ProcessingStopped
 from .outbox import Outbox
 
 MIN_PAGES = 2  # images in one batch that make a draft
+HOLD_SECONDS = 120.0  # a sheet waits at most this long for the model's answer to its batch (the order it reads)
 JOIN_SECONDS = 600.0  # a photo sent alone this soon after a draft's last change is one more of its pages
 MAX_PAGES = 100  # pages of one draft, as Core's renderer draws them (processing.pages.MAX_PAGES)
 SHEET_SIDE = 720  # pixels: a HEIC page for the sheet, twice its thumbnail
@@ -136,6 +137,7 @@ class Drafts:
         jobs_dir: Path,
         drafts_dir: Path,
         album_quiet_seconds: float = 60.0,
+        hold_seconds: float = HOLD_SECONDS,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.conn = conn
@@ -148,6 +150,7 @@ class Drafts:
         self.jobs_dir = jobs_dir
         self.drafts_dir = drafts_dir
         self.album_quiet = album_quiet_seconds  # a late item may still make an album personal (#15)
+        self.hold = hold_seconds
         self.clock = clock
         # Each loop's own wake-up (2b-2's M1): deciding never waits for drawing, which may take a minute.
         self.wake = asyncio.Event()  # deciding: batches to look at, sheets to take buttons off
@@ -411,13 +414,15 @@ class Drafts:
 
     # ---- the sheet --------------------------------------------------------------------------------------------------
     async def _sheets(self) -> None:
-        """Each open draft's current revision gets its sheet, once."""
+        """Each open draft's current revision gets its sheet, once, when no batch of it waits for the model's answer."""
         due = self.conn.execute(
             "SELECT d.* FROM draft d LEFT JOIN draft_sheet s ON s.draft_id = d.id AND s.revision = d.revision "
             "WHERE d.state = 'open' AND s.draft_id IS NULL ORDER BY d.id"
         ).fetchall()
         for draft in due:
             draft_id, revision = int(draft["id"]), int(draft["revision"])
+            if self._held(draft):
+                continue
             try:
                 await self._sheet(draft_id, revision)
             except Exception as exc:  # one draft must not stop the others; its error's type names it
@@ -464,6 +469,19 @@ class Drafts:
                 "INSERT INTO draft_sheet(draft_id, revision, outbound_key) VALUES (?, ?, ?)", (draft_id, revision, key)
             )
         self.events.log("draft_sheet", {"draft": draft_id, "revision": revision, "pages": len(pages)})
+
+    def _held(self, draft: sqlite3.Row) -> bool:
+        """A batch that made or joined the draft is with the model, which puts the pages in the order their content
+        shows before it answers (the owner's choice of 2026-10-26): the person gets one sheet, in that order. The wait
+        ends with the answer, or HOLD_SECONDS after the host took the batch, or after the draft's last change while
+        the host has not taken it: no person is left without a sheet."""
+        row = self.conn.execute(
+            "SELECT 1 FROM host_message m LEFT JOIN host_update u ON u.host_message_id = m.id "
+            "WHERE m.draft_id = ? AND m.answered_at IS NULL AND m.cancelled_at IS NULL "
+            "AND COALESCE(u.issued_at, ?) > ? LIMIT 1",
+            (draft["id"], draft["updated_at"], self.clock() - self.hold),
+        ).fetchone()
+        return row is not None
 
     def _keep(self, draft_id: int, name: str, data: bytes) -> Path:
         """A sheet as the outbox sends it, durably: a crash before it leaves must not lose it."""

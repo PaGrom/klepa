@@ -3,6 +3,7 @@ end-to-end example of the forum's #77177 (3)). The host is the fake one of tests
 that calls Core's tools; the readers are the stand-ins of fakereaders.py, and Core's renderer draws the sheets and
 PDFs, both in the real sandbox."""
 
+import asyncio
 import io
 import json
 import re
@@ -140,6 +141,44 @@ async def test_photos_out_of_order_become_a_pdf_in_the_confirmed_order_across_a_
     copied = query(cfg, copies)  # both versions, in the documents folder
     assert (cfg.documents_dir / copied[1]["documents_path"]).read_bytes() == fake_tg.documents[1]["data"]
     assert not list(cfg.jobs_dir.iterdir())  # every drawing's folder went
+
+
+class Reader(Model):
+    """A model that reads the pages: on a draft's mark it orders them by the word each page's text ends with."""
+
+    async def __call__(self, text, tool):
+        if found := DRAFT.search(text):
+            self.drafts.append(int(found.group(1)))
+            words = dict(re.findall(r"record (ev\w+) · its text:⟧\nphoto text \(eng\): .* (\w+)\n", text))
+            numbered = re.findall(r"(\d+) record (ev\w+)", text)  # the mark's numbers, in the order they came
+            rank = {"one": 1, "two": 2, "three": 3}
+            order = [int(n) for n, record in sorted(numbered, key=lambda pair: rank[words[pair[1]]])]
+            result = await tool("make_pdf", {"draft": self.drafts[-1], "order": order})
+            return f"Put {result['pages']} pages in order by what they say."
+        return await super().__call__(text, tool)
+
+
+async def test_the_model_puts_an_album_in_the_order_its_pages_show_and_one_sheet_comes(cfg, fake_tg):
+    """The owner's choice of 2026-10-26: the model reads the order in the pages, and the person gets one sheet, already
+    in that order, after the model's answer."""
+    one, two, three = page("lease page one", "red"), page("lease page two", "green"), page("lease page three", "blue")
+    model = Reader()
+    async with stand(cfg) as s:
+        s.host.agent = model
+        await running(cfg)
+        first = fake_tg.add_photo(OWNER, two, media_group_id="album")
+        fake_tg.add_photo(OWNER, three, media_group_id="album")
+        fake_tg.add_photo(OWNER, one, media_group_id="album")
+        await wait_until(lambda: fake_tg.photos, timeout=30)
+        assert "Put 3 pages in order by what they say." in texts(fake_tg)  # the answer came first
+        await asyncio.sleep(2)
+        [sheet] = fake_tg.photos
+        assert reply_to(sheet) == first["message"]["message_id"]
+        fake_tg.press(OWNER, sheet["message"], buttons(sheet)[0])
+        await wait_until(lambda: fake_tg.documents, timeout=30)
+    kept = [pages.without_metadata(photo) for photo in (one, two, three)]
+    data = fake_tg.documents[0]["data"]
+    assert data.index(kept[0]) < data.index(kept[1]) < data.index(kept[2])
 
 
 async def test_two_people_each_keep_their_own_draft_and_a_page_s_words_stay_data(cfg, fake_tg):
