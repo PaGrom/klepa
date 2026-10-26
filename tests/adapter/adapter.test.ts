@@ -234,6 +234,26 @@ test("the turn hooks report the run and pass on Core's decision", async () => {
   }
 });
 
+test("before_agent_run reports its prompt's digest and length to Core, never its text", async () => {
+  const answers: Record<string, unknown>[] = [{ ok: true, instruction: "I", tools_allow: [] }, { outcome: "pass" }];
+  const core = fakeCore(() => answers.shift() ?? { outcome: "pass" });
+  const { link: one, cleanup } = link(core.post);
+  try {
+    const hooks = hookHandlers(one, () => {});
+    const ctx = { runId: "run-1", chatId: "222222", senderId: "222222", sessionKey: "agent:main:telegram:direct:222222" };
+    const prompt = "caf\u00e9 \u{1F600}";
+    await hooks.before_prompt_build({}, ctx);
+    assert.deepEqual(await hooks.before_agent_run({ prompt } as never, ctx), { outcome: "pass" });
+    await hooks.before_agent_run({}, ctx);
+    assert.equal(core.seen[1]?.prompt_sha256, createHash("sha256").update(prompt, "utf8").digest("hex"));
+    assert.equal(core.seen[1]?.prompt_units, 7);
+    assert.ok(!JSON.stringify(core.seen[1]).includes("caf"));
+    assert.equal(core.seen[2]?.prompt_sha256, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
 test("a run whose prompt lacks Core's instruction never reaches the model, whatever Core says next", async () => {
   // Core answered prompt_built after the plugin gave up waiting, or without an instruction: Core may have marked the
   // run, but its prompt has no instruction, so the plugin blocks it without asking.

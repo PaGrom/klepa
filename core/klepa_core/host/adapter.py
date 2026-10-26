@@ -37,7 +37,7 @@ from .instruction import TOOLS
 from .queue import HostQueue
 from .supervisor import PROBE_BLOCK, Supervisor
 from .tools import ToolBox, ToolRefused, parse_call
-from .turns import Turn, TurnRegistry
+from .turns import Prompt, Turn, TurnRegistry
 
 SIGNATURE_HEADER = "X-Klepa-Signature"
 MAX_MESSAGE_BYTES = 64 * 1024
@@ -61,6 +61,16 @@ def as_id(value: object) -> int | None:
     if isinstance(value, str) and re.fullmatch(r"-?\d{1,20}", value):
         return int(value)
     return None
+
+
+def _prompt(message: dict[str, Any]) -> Prompt | None:
+    """The run's prompt as the plugin reports it, or None: then the turn takes its chat's oldest message."""
+    sha, units = message.get("prompt_sha256"), message.get("prompt_units")
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+        return None
+    if isinstance(units, bool) or not isinstance(units, int) or units < 0:
+        return None
+    return Prompt(sha, units)
 
 
 class BootSequence:
@@ -258,7 +268,7 @@ class AdapterServer:
         if not isinstance(run_id, str) or not _RUN_ID.match(run_id):
             turn = Turn(False, "no_run_id")
         else:
-            turn = self.turns.start(run_id, boot_id, chat_id, sender_id, message.get("session_key"))
+            turn = self.turns.start(run_id, boot_id, chat_id, sender_id, message.get("session_key"), _prompt(message))
         self.events.log(
             "turn_registered" if turn.registered else "turn_refused",
             {"reason": turn.reason, "chat_id": chat_id, "probe": turn.probe, "model_probe": turn.model_probe},

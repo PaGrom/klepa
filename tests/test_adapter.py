@@ -12,7 +12,7 @@ from klepa_core.events import EventLog
 from klepa_core.host.adapter import AdapterServer, BootSequence, sign_body
 from klepa_core.host.instruction import TOOLS, instruction
 from klepa_core.host.peers import probe_peer
-from klepa_core.host.queue import HostQueue
+from klepa_core.host.queue import HostQueue, text_digest
 from klepa_core.host.supervisor import PROBE_BLOCK, HostTiming, Supervisor
 from klepa_core.host.tools import ToolBox, signature
 from klepa_core.host.turns import TurnRegistry
@@ -60,8 +60,8 @@ async def server(core_db, short_dir):
     await asyncio.wait_for(task, 5)
 
 
-def issue(adapter_server, journal, update_id, sender, message_id):
-    message = {"message_id": message_id, "date": 1, "chat": {"id": sender}, "from": {"id": sender}, "text": "hi"}
+def issue(adapter_server, journal, update_id, sender, message_id, text="hi"):
+    message = {"message_id": message_id, "date": 1, "chat": {"id": sender}, "from": {"id": sender}, "text": text}
     journal.append_batch([{"update_id": update_id, "message": message}], "t")
     adapter_server.queue.enqueue(update_id, sender, message_id, sender, 1)
     adapter_server.queue.serve(None, 100, everything)
@@ -146,6 +146,29 @@ async def test_a_registered_turn_reaches_the_model(server):
     assert (status, turn["outcome"]) == (200, "pass")
     assert conn.execute("SELECT host_message_id FROM host_run WHERE run_id='run-1'").fetchone()[0] is not None
     assert "turn_registered" in EventLog(conn).kinds()
+
+
+@pytest.mark.parametrize(
+    ("facts", "taken"),
+    [
+        ("the second", 1),
+        ({"prompt_sha256": "not hex", "prompt_units": 10}, 0),
+        ({"prompt_sha256": "0" * 64, "prompt_units": -1}, 0),
+        ({"prompt_sha256": "0" * 64, "prompt_units": True}, 0),
+    ],
+)
+async def test_a_turn_takes_the_message_its_prompt_reports(server, facts, taken):
+    adapter_server, adapter, conn, journal = server
+    issue(adapter_server, journal, 1, MEMBER, 10, "the first")
+    issue(adapter_server, journal, 2, MEMBER, 11, "the second")
+    if isinstance(facts, str):
+        sha, units = text_digest(facts)
+        facts = {"prompt_sha256": sha, "prompt_units": units}
+    await adapter.prompt_built("run-1", H_MEMBER)
+    status, turn = await adapter.turn_start("run-1", H_MEMBER, **facts)
+    assert (status, turn["outcome"]) == (200, "pass")
+    ids = [row[0] for row in conn.execute("SELECT id FROM host_message ORDER BY id")]
+    assert conn.execute("SELECT host_message_id FROM host_run WHERE run_id='run-1'").fetchone()[0] == ids[taken]
 
 
 async def test_a_turn_on_hold_is_blocked_with_the_hold_text(server):

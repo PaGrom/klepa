@@ -46,6 +46,8 @@ MIN_PAGES = 2  # images in one batch that make a draft
 # the model's run on the batch is alive, and at most this long after the host took it (the owner's word, 2026-10-26:
 # many pages of small text take a model long; ten minutes is also when Core alerts the owner to a silent model).
 HOLD_SECONDS = 600.0
+# The live run of 2026-10-26: the model told the person a sheet was sent that went out only after its answer.
+SHEET_NOTE = "Core sends the person a sheet of these pages after your answer: say it is coming, never that it was sent"
 JOIN_SECONDS = 600.0  # a photo sent alone this soon after a draft's last change is one more of its pages
 MAX_PAGES = 100  # pages of one draft, as Core's renderer draws them (processing.pages.MAX_PAGES)
 SHEET_SIDE = 720  # pixels: a HEIC page for the sheet, twice its thumbnail
@@ -377,6 +379,7 @@ class Drafts:
         notes += [f"{lost} photo(s) no longer the person's to use"] if lost else []
         if notes:
             result["left_out"] = "; ".join(notes)
+        result["sheet"] = SHEET_NOTE
         return result
 
     def _all_read(self, draft_id: int, revision: int) -> bool:
@@ -534,13 +537,16 @@ class Drafts:
         """A batch that made or joined the draft is with the model, which puts the pages in the order their content
         shows before it answers (the owner's choice of 2026-10-26): the person gets one sheet, in that order. The wait
         ends with the answer, or when the model's run on the batch is over and HOLD_SECONDS have passed since the
-        host took it (or since the draft's last change while the host has not): no person is left without a sheet."""
+        host took it (or since the draft's last change while the host has not): no person is left without a sheet.
+        The run on the batch may be one on a later message of its chat: the gateway joins a long text with the next
+        message, and that run's answer answers both."""
         now = self.clock()
         row = self.conn.execute(
             "SELECT 1 FROM host_message m LEFT JOIN host_update u ON u.host_message_id = m.id "
             "WHERE m.draft_id = ? AND m.answered_at IS NULL AND m.cancelled_at IS NULL "
-            "AND (COALESCE(u.issued_at, ?) > ? OR EXISTS (SELECT 1 FROM host_run r WHERE r.host_message_id = m.id "
-            "AND r.expires_at > ?)) LIMIT 1",
+            "AND (COALESCE(u.issued_at, ?) > ? OR EXISTS (SELECT 1 FROM host_run r JOIN host_message rm "
+            "ON rm.id = r.host_message_id WHERE rm.chat_id = m.chat_id AND rm.id >= m.id AND r.expires_at > ?)) "
+            "LIMIT 1",
             (draft["id"], draft["updated_at"], now - self.hold, now),
         ).fetchone()
         return row is not None

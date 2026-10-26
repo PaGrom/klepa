@@ -20,6 +20,10 @@ from klepa_core.processing.readers import OutputTooLarge, ReaderFailed
 SPACES = ("shared", "personal:owner")
 
 
+# The live run of 2026-10-26: the model told the person a sheet was sent that went out only after its answer.
+SHEET_NOTE = "Core sends the person a sheet of these pages after your answer: say it is coming, never that it was sent"
+
+
 def waits(revision, made=True):
     """The end of a mark of a draft the batch made or joined, while its sheet waits for the model's answer."""
     sheet = (
@@ -458,7 +462,7 @@ async def test_a_new_order_is_a_new_revision_with_its_own_sheet_and_the_old_one_
     draft = draft_of(d, message)
     sent(d, f"draft_sheet:{draft}:1", 500)
     result = d.drafts.change("owner", OWNER, SPACES, draft_id=draft, order=[3, 1], add=None, reply_to=41)
-    assert result == {"draft": draft, "pages": 2, "records": ["ev12", "ev10"]}
+    assert result == {"draft": draft, "pages": 2, "records": ["ev12", "ev10"], "sheet": SHEET_NOTE}
     await d.drafts.run_once()
     assert d.renderer.calls[-1] == ("sheet", [b"three", b"one"])
     method, _, payload = outbound(d, f"draft_sheet:{draft}:2")
@@ -492,6 +496,7 @@ async def test_photos_are_added_after_the_pages_and_a_new_draft_starts_from_phot
         "pages": 3,
         "records": ["ev10", "ev11", "ev30"],
         "left_out": "1 photo(s) already in the draft",
+        "sheet": SHEET_NOTE,
     }
     fresh = d.drafts.change("owner", OWNER, SPACES, draft_id=None, order=None, add=["ev31", "ev30"], reply_to=50)
     assert fresh["draft"] != draft
@@ -840,6 +845,7 @@ async def test_a_change_leaves_out_a_page_no_longer_the_persons_to_use(d):
         "pages": 1,
         "records": ["ev10"],
         "left_out": "1 photo(s) no longer the person's to use",
+        "sheet": SHEET_NOTE,
     }
 
 
@@ -929,6 +935,34 @@ async def test_the_hold_is_ten_minutes_and_lasts_while_the_models_run_on_the_bat
     await d.drafts.run_once()
     assert d.renderer.calls == []  # the run is alive
     d.clock.advance(300)
+    await d.drafts.run_once()
+    assert d.renderer.calls == [("sheet", [b"one", b"two"])]
+
+
+async def test_the_hold_lasts_while_a_run_on_a_later_message_of_the_chat_is_alive(d):
+    """The gateway may join the batch's long text and the person's next message in one run, paired with the later
+    message: its answer answers the batch too, so the sheet waits for it."""
+    d.drafts.hold = HOLD_SECONDS
+    album(d, b"one", b"two")
+    d.drafts.tick()
+    served(d)
+    later = d.conn.execute(
+        "INSERT INTO host_message(kind, chat_id, message_id, sender_id, date, created_at) "
+        "VALUES ('text', ?, 99, ?, 1, ?)",
+        (OWNER, OWNER, d.clock()),
+    ).lastrowid
+    d.conn.execute(
+        "INSERT INTO host_update(update_id, host_message_id, issued_at) VALUES (9999, ?, ?)", (later, d.clock())
+    )
+    d.conn.execute(
+        "INSERT INTO host_run(run_id, boot_id, chat_id, sender_id, prompt_built_at, host_message_id, registered_at, "
+        "expires_at) VALUES ('run-1', 'boot', ?, ?, ?, ?, ?, ?)",
+        (OWNER, OWNER, d.clock(), later, d.clock(), d.clock() + HOLD_SECONDS + 300),
+    )
+    d.clock.advance(HOLD_SECONDS + 1)
+    await d.drafts.run_once()
+    assert d.renderer.calls == []  # the run that answers the batch is alive
+    d.queue.mark_answered(OWNER, prefer=later)
     await d.drafts.run_once()
     assert d.renderer.calls == [("sheet", [b"one", b"two"])]
 

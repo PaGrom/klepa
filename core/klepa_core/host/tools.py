@@ -432,9 +432,9 @@ TOOLS = (
         "differs: the sheet goes out once you have answered; if they are no document, pass not_a_document instead, "
         "and no sheet goes out. When the person asks in words to reorder, drop or add "
         "pages, call this with the draft: order lists the pages to keep by their numbers as the draft is now, in the "
-        "new order; add lists records of more photos, put after them. Without a draft, add starts a new one. Core "
-        "then sends a new sheet to check. A PDF over 50 MB is not made: if the person says so, split the pages into "
-        "two drafts. Never show the draft's id.",
+        "new order; add lists records of more photos, put after them. Without a draft, add starts a new one. Once "
+        "you have answered, Core sends a new sheet to check. A PDF over 50 MB is not made: if the person says so, "
+        "split the pages into two drafts. Never show the draft's id.",
         {
             "draft": {"type": "integer", "description": "The draft to change; none for a new one."},
             "order": {

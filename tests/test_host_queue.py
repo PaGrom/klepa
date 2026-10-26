@@ -152,17 +152,31 @@ def test_a_conversation_stays_open_ten_minutes_after_the_answer(setup):
     assert not queue.conversation_open(MEMBER)
 
 
-def test_an_answer_goes_to_the_turns_message_else_to_the_oldest(setup):
+def test_an_answer_goes_to_the_oldest_without_a_turn(setup):
     queue, journal, _, _ = setup
     enqueue(queue, journal, 1, OWNER, 10)
     enqueue(queue, journal, 2, OWNER, 11)
     queue.serve(None, 100, everything)
-    newest = queue.oldest_unanswered(OWNER, exclude={queue.oldest_unanswered(OWNER)["id"]})["id"]
-    assert queue.mark_answered(OWNER, prefer=newest) == newest
-    oldest = queue.mark_answered(OWNER)
-    assert oldest is not None
-    assert oldest != newest
+    oldest = queue.oldest_unanswered(OWNER)["id"]
+    assert queue.mark_answered(OWNER) == oldest
+    assert queue.mark_answered(OWNER) == oldest + 1
     assert queue.mark_answered(OWNER) is None
+
+
+def test_a_turns_answer_closes_the_older_messages_but_one_a_live_turn_answers(setup):
+    """The gateway runs a chat's messages in order: an older one with no turn of its own never gets one."""
+    queue, journal, _, clock = setup
+    for n in range(3):
+        enqueue(queue, journal, n + 1, OWNER, 10 + n)
+    queue.serve(None, 100, everything)
+    _, second, third = (int(row["id"]) for row in queue.unanswered(OWNER))
+    queue.conn.execute(
+        "INSERT INTO host_run(run_id, boot_id, chat_id, sender_id, host_message_id, expires_at) "
+        "VALUES ('run-2', 'b', ?, ?, ?, ?)",
+        (OWNER, OWNER, second, clock() + 60),
+    )
+    assert queue.mark_answered(OWNER, prefer=third) == third
+    assert [int(row["id"]) for row in queue.unanswered(OWNER)] == [second]
 
 
 def test_oldest_unanswered_skips_other_senders_and_busy_messages(setup):

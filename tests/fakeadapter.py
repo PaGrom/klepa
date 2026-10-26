@@ -75,9 +75,10 @@ class FakeAdapter:
             "prompt_built", run_id=run_id, sender_id=str(peer), chat_id=str(peer), session_key=session_key(peer)
         )
 
-    async def turn_start(self, run_id: str, peer: int) -> tuple[int, dict[str, Any]]:
+    async def turn_start(self, run_id: str, peer: int, **prompt: Any) -> tuple[int, dict[str, Any]]:
+        """`prompt` as the plugin reports the run's prompt: prompt_sha256 and prompt_units."""
         return await self.send(
-            "turn_start", run_id=run_id, sender_id=str(peer), chat_id=str(peer), session_key=session_key(peer)
+            "turn_start", run_id=run_id, sender_id=str(peer), chat_id=str(peer), session_key=session_key(peer), **prompt
         )
 
     async def turn_reply(

@@ -11,6 +11,7 @@ round.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 import time
@@ -35,6 +36,14 @@ PROBE_KINDS = ("probe", "model_probe")
 FORWARDED_MARK = "[forwarded message]"
 
 MayServe = Callable[[int, str], bool]
+FRAGMENT_CHARS = 4000  # a text this long is joined with the next message (OpenClaw 2026.9.4, its Telegram ingress)
+KEEP_DIGESTS = 1000
+
+
+def text_digest(text: str) -> tuple[str, int]:
+    """What Core keeps of a served text to know the turn that is its answer: its SHA-256, and its length as the
+    gateway's JavaScript counts it, in UTF-16 code units."""
+    return hashlib.sha256(text.encode()).hexdigest(), len(text.encode("utf-16-le")) // 2
 
 
 class HostQueue:
@@ -57,6 +66,9 @@ class HostQueue:
         self.clock = clock
         self.drafts = False  # True once Core makes drafts of documents: a batch waits until it was looked at for one
         self.changed = asyncio.Event()
+        # The digests of served texts, by message, in memory only: core.db never holds what people wrote, nor a
+        # digest a short text could be guessed from. After a restart a turn takes its chat's oldest message.
+        self.digests: dict[int, tuple[str, int]] = {}
 
     def wake(self) -> None:
         """Something may have become servable: a waiting getUpdates looks again."""
@@ -167,6 +179,7 @@ class HostQueue:
                     continue  # a gateway that has not passed the start gate gets nothing, not even repeats
                 message = self._message(row)
                 if message is not None:
+                    self._keep_digest(int(row["id"]), message)
                     updates.append({"update_id": int(row["update_id"]), "message": message})
             behind: set[int] = set()  # chats whose oldest waiting message is not served now: the rest wait behind it
             for row in self._waiting():
@@ -185,8 +198,14 @@ class HostQueue:
                     "INSERT INTO host_update(update_id, host_message_id, issued_at) VALUES (?, ?, ?)",
                     (update_id, row["id"], now),
                 )
+                self._keep_digest(int(row["id"]), message)
                 updates.append({"update_id": update_id, "message": message})
         return updates
+
+    def _keep_digest(self, host_message_id: int, message: dict[str, Any]) -> None:
+        self.digests[host_message_id] = text_digest(str(message.get("text", "")))
+        while len(self.digests) > KEEP_DIGESTS:
+            del self.digests[next(iter(self.digests))]
 
     def _waiting(self) -> list[sqlite3.Row]:
         return self.conn.execute(
@@ -351,23 +370,33 @@ class HostQueue:
         ).fetchone()
         return row is not None
 
-    def oldest_unanswered(
+    def unanswered(
         self, chat_id: int, sender_id: int | None = None, exclude: Collection[int] = ()
-    ) -> sqlite3.Row | None:
-        """The oldest issued message of a chat that has no answer yet."""
+    ) -> list[sqlite3.Row]:
+        """The issued messages of a chat that have no answer yet, oldest first."""
         rows: list[sqlite3.Row] = self.conn.execute(
             "SELECT m.* FROM host_message m JOIN host_update u ON u.host_message_id = m.id "
             "WHERE m.chat_id=? AND m.answered_at IS NULL ORDER BY m.id",
             (chat_id,),
         ).fetchall()
-        for row in rows:
-            if (sender_id is None or row["sender_id"] == sender_id) and row["id"] not in exclude:
-                return row
-        return None
+        return [
+            row for row in rows if (sender_id is None or row["sender_id"] == sender_id) and row["id"] not in exclude
+        ]
+
+    def oldest_unanswered(
+        self, chat_id: int, sender_id: int | None = None, exclude: Collection[int] = ()
+    ) -> sqlite3.Row | None:
+        """The oldest issued message of a chat that has no answer yet."""
+        rows = self.unanswered(chat_id, sender_id, exclude)
+        return rows[0] if rows else None
 
     def mark_answered(self, chat_id: int, prefer: int | None = None) -> int | None:
         """Record that the host wrote to a chat: the answer belongs to the message of the turn that wrote it, and
-        without a turn (stage 1 answers in before_dispatch) to the oldest message still waiting for one."""
+        without a turn (stage 1 answers in before_dispatch) to the oldest message still waiting for one.
+
+        The turn's answer closes its chat's older issued messages too, but for one a live turn of its own answers:
+        the gateway runs a chat's messages in order, so an older one without a turn was joined to this turn, or never
+        gets one (the live run of 2026-10-26)."""
         now = self.clock()
         if prefer is not None:
             row = self.conn.execute(
@@ -376,6 +405,12 @@ class HostQueue:
             if row is not None:
                 if row["answered_at"] is None:
                     self.conn.execute("UPDATE host_message SET answered_at=? WHERE id=?", (now, prefer))
+                self.conn.execute(
+                    "UPDATE host_message SET answered_at=? WHERE chat_id=? AND id<? AND answered_at IS NULL "
+                    "AND id IN (SELECT host_message_id FROM host_update) AND NOT EXISTS (SELECT 1 FROM host_run r "
+                    "WHERE r.host_message_id = host_message.id AND r.expires_at > ? AND r.ended_at IS NULL)",
+                    (now, chat_id, prefer, now),
+                )
                 return prefer
         oldest = self.oldest_unanswered(chat_id)
         if oldest is None:

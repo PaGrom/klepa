@@ -87,6 +87,7 @@ export interface HookFacts {
   toolName?: unknown;
   params?: unknown;
   systemPrompt?: unknown;
+  prompt?: unknown;
   payload?: unknown;
 }
 
@@ -312,6 +313,14 @@ function turnFacts(event: HookFacts | undefined, ctx: HookFacts | undefined): Re
   };
 }
 
+/** What Core learns of a run's prompt, the text of the message it answers: its digest and its length, never the
+ * text. Core takes the message it served that text in; the gateway may join two messages in one run. */
+function promptFacts(event: HookFacts | undefined): Record<string, Json | undefined> {
+  const prompt = event?.prompt;
+  if (typeof prompt !== "string") return {};
+  return { prompt_sha256: createHash("sha256").update(prompt, "utf8").digest("hex"), prompt_units: prompt.length };
+}
+
 const FAILURE = Symbol.for("klepa-adapter.failure");
 
 /** Core's text for a turn that failed, as Core last sent it: the hooks of both registrations see one. */
@@ -405,7 +414,7 @@ export function hookHandlers(link: CoreLink, warn: (reason: string) => void) {
           warn("turn_start: no instruction from Core");
           return { outcome: "block", reason: "klepa-unreachable", message: UNREACHABLE };
         }
-        const answer = await link.send("turn_start", facts);
+        const answer = await link.send("turn_start", { ...facts, ...promptFacts(event) });
         if (answer.outcome === "pass") {
           remember(passedRuns(), facts.run_id);
           return { outcome: "pass" };

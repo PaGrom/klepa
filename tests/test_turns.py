@@ -1,8 +1,8 @@
 import pytest
 
 from helpers import HOST_MEMBER, HOST_OWNER, MEMBER, OWNER, Clock, host_peers, job_of, record
-from klepa_core.host.queue import HostQueue
-from klepa_core.host.turns import TURN_TTL_SECONDS, TurnRegistry, session_of
+from klepa_core.host.queue import HostQueue, text_digest
+from klepa_core.host.turns import TURN_TTL_SECONDS, Prompt, TurnRegistry, session_of
 
 PEER = 2**51 + 7
 BOOT = "boot-aaaaaaaa"
@@ -20,11 +20,19 @@ def setup(core_db):
     return TurnRegistry(conn, queue, clock=clock), queue, journal, clock
 
 
-def issue(queue, journal, update_id, sender, message_id):
-    message = {"message_id": message_id, "date": 1, "chat": {"id": sender}, "from": {"id": sender}, "text": "hi"}
+def issue(queue, journal, update_id, sender, message_id, text="hi"):
+    """The text the host got for the message, as Core served it."""
+    message = {"message_id": message_id, "date": 1, "chat": {"id": sender}, "from": {"id": sender}, "text": text}
     journal.append_batch([{"update_id": update_id, "message": message}], "t")
     queue.enqueue(update_id, sender, message_id, sender, 1)
-    queue.serve(None, 100, everything)
+    served = [update["message"]["text"] for update in queue.serve(None, 100, everything)]
+    return served[-1] if served else None
+
+
+def prompt_of(*texts):
+    """What before_agent_run gets as the prompt of a run of these texts: the gateway joins the fragments of a long
+    text with nothing between them."""
+    return Prompt(*text_digest("".join(texts)))
 
 
 def key(peer):
@@ -32,10 +40,10 @@ def key(peer):
     return f"agent:main:telegram:direct:{ {OWNER: HOST_OWNER, MEMBER: HOST_MEMBER}.get(peer, peer) }"
 
 
-def start(turns, run_id, peer=OWNER, *, prompt=True):
+def start(turns, run_id, peer=OWNER, *, prompt=True, text=None):
     if prompt:
         turns.prompt_built(run_id, BOOT, peer, peer)
-    return turns.start(run_id, BOOT, peer, peer, key(peer))
+    return turns.start(run_id, BOOT, peer, peer, key(peer), text)
 
 
 def test_a_turn_that_answers_an_issued_message_registers(setup):
@@ -195,3 +203,64 @@ def test_a_turn_on_a_read_attachment_is_its_senders_like_any_message(setup, core
     turn = start(turns, "run-1")
     assert (turn.registered, turn.reason) == (True, "registered")
     assert turns.active_message(OWNER) == turn.host_message_id
+
+
+def answered(queue, *ids):
+    rows = queue.conn.execute(
+        f"SELECT id FROM host_message WHERE answered_at IS NOT NULL AND id IN ({','.join('?' * len(ids))})", ids
+    ).fetchall()
+    return {int(row[0]) for row in rows}
+
+
+def test_a_turn_takes_the_message_its_prompt_is_and_its_answer_closes_the_older_ones(setup):
+    """The live run of 2026-10-26: a chat one message behind since a run that answered two. A turn takes the message
+    its prompt is, not the chat's oldest, and its answer closes every older one: they get no turn of their own."""
+    turns, queue, journal, _ = setup
+    issue(queue, journal, 1, OWNER, 10, "left behind")
+    text = issue(queue, journal, 2, OWNER, 11, "the album")
+    turn = start(turns, "run-1", text=prompt_of(text))
+    stale, album = (int(row[0]) for row in queue.conn.execute("SELECT id FROM host_message ORDER BY id"))
+    assert turn.host_message_id == album
+    queue.mark_answered(OWNER, prefer=album)
+    assert answered(queue, stale, album) == {stale, album}
+
+
+def test_a_turn_of_a_long_text_and_the_next_one_takes_the_newer(setup):
+    """The gateway joins a text of 4000 characters or more with the next message, as fragments of one long text
+    (OpenClaw 2026.9.4, its Telegram ingress): one turn for two messages."""
+    turns, queue, journal, _ = setup
+    long = issue(queue, journal, 1, OWNER, 10, "L" * 4090)
+    short = issue(queue, journal, 2, OWNER, 11, "beta two")
+    first, second = (int(row[0]) for row in queue.conn.execute("SELECT id FROM host_message ORDER BY id"))
+    turn = start(turns, "run-1", text=prompt_of(long, short))
+    assert turn.host_message_id == second
+    queue.mark_answered(OWNER, prefer=second)
+    assert answered(queue, first, second) == {first, second}
+
+
+def test_a_prompt_core_cannot_match_takes_the_oldest_as_before(setup):
+    turns, queue, journal, _ = setup
+    issue(queue, journal, 1, OWNER, 10, "first")
+    issue(queue, journal, 2, OWNER, 11, "second")
+    oldest = int(queue.conn.execute("SELECT MIN(id) FROM host_message").fetchone()[0])
+    assert start(turns, "run-1", text=prompt_of("something the gateway made")).host_message_id == oldest
+    assert start(turns, "run-2", text=None).host_message_id == oldest + 1
+
+
+def test_two_messages_of_one_text_are_taken_in_turn(setup):
+    turns, queue, journal, _ = setup
+    one = issue(queue, journal, 1, OWNER, 10, "ok")
+    issue(queue, journal, 2, OWNER, 11, "ok")
+    first = start(turns, "run-1", text=prompt_of(one))
+    second = start(turns, "run-2", text=prompt_of(one))
+    assert second.host_message_id == first.host_message_id + 1
+
+
+def test_an_answer_leaves_an_older_message_whose_own_turn_runs(setup):
+    turns, queue, journal, _ = setup
+    one = issue(queue, journal, 1, OWNER, 10, "first")
+    two = issue(queue, journal, 2, OWNER, 11, "second")
+    first = start(turns, "run-1", text=prompt_of(one))
+    second = start(turns, "run-2", text=prompt_of(two))
+    queue.mark_answered(OWNER, prefer=second.host_message_id)
+    assert answered(queue, first.host_message_id, second.host_message_id) == {second.host_message_id}

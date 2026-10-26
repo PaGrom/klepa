@@ -11,12 +11,21 @@ import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from ..db import transaction
-from .queue import HostQueue
+from .queue import FRAGMENT_CHARS, HostQueue
 
 TURN_TTL_SECONDS = 600.0  # a registration is short-lived (spec 4.5)
 KEEP_RUNS_SECONDS = 7 * 24 * 3600
+
+
+class Prompt(NamedTuple):
+    """What before_agent_run reports of its prompt, the text of the turn's message: its SHA-256 and its length in
+    UTF-16 code units."""
+
+    sha256: str
+    units: int
 
 
 @dataclass(frozen=True)
@@ -57,7 +66,15 @@ class TurnRegistry:
             (run_id, boot_id, chat_id, sender_id, self.clock()),
         )
 
-    def start(self, run_id: str, boot_id: str, chat_id: int | None, sender_id: int | None, session_key: object) -> Turn:
+    def start(
+        self,
+        run_id: str,
+        boot_id: str,
+        chat_id: int | None,
+        sender_id: int | None,
+        session_key: object,
+        prompt: Prompt | None = None,
+    ) -> Turn:
         if sender_id is None:
             return Turn(False, "no_sender")
         if chat_id != sender_id:
@@ -93,15 +110,39 @@ class TurnRegistry:
                     (now, boot_id),
                 )
             }
-            message = self.queue.oldest_unanswered(chat_id, sender_id, exclude=busy)
-            if message is None:
+            waiting = self.queue.unanswered(chat_id, sender_id, exclude=busy)
+            if not waiting:
                 return Turn(False, "no_issued_message")
+            message = waiting[self._taken(waiting, prompt)]
             self.conn.execute(
                 "UPDATE host_run SET boot_id=?, host_message_id=?, registered_at=?, expires_at=? WHERE run_id=?",
                 (boot_id, message["id"], now, now + TURN_TTL_SECONDS, run_id),
             )
             kind = message["kind"]
             return Turn(True, "registered", int(message["id"]), kind == "probe", kind == "model_probe")
+
+    def _taken(self, waiting: list[sqlite3.Row], prompt: Prompt | None) -> int:
+        """Which waiting message a turn answers: the first whose text its prompt is; else the last of a long text's
+        fragments it joins (the gateway's own rule: a text of 4000 characters or more and what follows it); else, as
+        a turn whose prompt Core cannot tell, the oldest."""
+        if prompt is None:
+            return 0
+        digests = [self.queue.digests.get(int(row["id"])) for row in waiting]
+        for index, digest in enumerate(digests):
+            if digest is not None and digest[0] == prompt.sha256:
+                return index
+        for first, digest in enumerate(digests):
+            if digest is None or digest[1] < FRAGMENT_CHARS:
+                continue
+            units = digest[1]
+            for index in range(first + 1, len(digests)):
+                following = digests[index]
+                if following is None:
+                    break
+                units += following[1]
+                if units == prompt.units:
+                    return index
+        return 0
 
     def replied(self, run_id: str, ok: bool) -> tuple[str, int] | None:
         """A turn that reached the model replied, with the model's answer or with its error: the kind and the id of the
