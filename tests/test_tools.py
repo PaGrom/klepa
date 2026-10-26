@@ -410,7 +410,14 @@ def test_make_pdf_changes_a_draft_for_the_person_and_the_message_the_turn_answer
             "owner",
             OWNER,
             ("shared", "personal:owner"),
-            {"draft_id": 7, "order": [2, 1], "add": ["ev3"], "reply_to": message_id, "revision": 2},
+            {
+                "draft_id": 7,
+                "order": [2, 1],
+                "add": ["ev3"],
+                "reply_to": message_id,
+                "revision": 2,
+                "not_a_document": False,
+            },
         )
     ]
 
@@ -471,3 +478,19 @@ def test_make_pdf_tells_the_model_of_the_50_mb_limit_and_the_way_round_it(box):
 def test_make_pdf_tells_the_model_to_set_the_order_by_content_before_the_first_sheet(box):
     [spec] = [tool for tool in box.specs() if tool["name"] == "make_pdf"]
     assert "before you answer, put the pages in the order their content shows" in spec["description"]
+
+
+def test_make_pdf_takes_not_a_document_as_a_boolean_and_passes_it_on(box):
+    issue(box.conn, OWNER, "run-1")
+    box.drafts = drafts = Drafts()
+    box.call("make_pdf", signed("make_pdf", {"draft": 7, "not_a_document": True}))
+    assert drafts.asked[0][3]["not_a_document"] is True
+    with pytest.raises(ToolRefused, match="not_a_document must be a boolean"):
+        box.call("make_pdf", signed("make_pdf", {"draft": 7, "not_a_document": "yes"}, call_id="call-2"))
+    with pytest.raises(ToolRefused, match="draft must be a integer"):
+        box.call("make_pdf", signed("make_pdf", {"draft": True}, call_id="call-3"))
+
+
+def test_make_pdf_tells_the_model_that_no_document_gets_no_sheet(box):
+    [spec] = [tool for tool in box.specs() if tool["name"] == "make_pdf"]
+    assert "if they are no document, pass not_a_document instead, and no sheet goes out" in spec["description"]

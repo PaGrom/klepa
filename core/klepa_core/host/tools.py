@@ -135,6 +135,8 @@ def _typed(value: Any, schema: Mapping[str, Any]) -> bool:
         return isinstance(value, str)
     if kind == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "boolean":
+        return isinstance(value, bool)
     if kind == "array":
         return isinstance(value, list) and all(_typed(item, schema["items"]) for item in value)
     return False
@@ -378,6 +380,7 @@ def _make_pdf(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
             add=params.get("add"),
             reply_to=caller.message_id,
             revision=params.get("revision"),
+            not_a_document=bool(params.get("not_a_document", False)),
         )
     except DraftRefused as exc:
         raise ToolRefused(str(exc)) from None
@@ -426,7 +429,8 @@ TOOLS = (
         "and Not a document, and makes the PDF from the originals only when they press Done; a photo they send alone "
         "soon after joins it. When Core's mark names a draft its images made or joined, before you answer, put the "
         "pages in the order their content shows (how a text runs on, headings, signatures, page numbers), if it "
-        "differs: the sheet goes out once you have answered. When the person asks in words to reorder, drop or add "
+        "differs: the sheet goes out once you have answered; if they are no document, pass not_a_document instead, "
+        "and no sheet goes out. When the person asks in words to reorder, drop or add "
         "pages, call this with the draft: order lists the pages to keep by their numbers as the draft is now, in the "
         "new order; add lists records of more photos, put after them. Without a draft, add starts a new one. Core "
         "then sends a new sheet to check. A PDF over 50 MB is not made: if the person says so, split the pages into "
@@ -445,6 +449,12 @@ TOOLS = (
                 "since is refused with its pages as they are.",
             },
             "add": {"type": "array", "items": {"type": "string"}, "description": "Record ids of photos to add."},
+            "not_a_document": {
+                "type": "boolean",
+                "description": "True when the draft's images are no document (people, places, things; no text, or "
+                "text only by chance): the draft closes, and a sheet not sent yet never goes out. Alone, with the "
+                "draft and its revision.",
+            },
         },
         (),
         _make_pdf,

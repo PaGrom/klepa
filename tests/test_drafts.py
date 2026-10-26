@@ -24,8 +24,10 @@ def waits(revision):
     """The end of a mark of a draft the batch made or joined, while its sheet waits for the model's answer."""
     return (
         "once you have answered, Core sends the person a sheet of its pages, numbered, with the buttons Done, Change "
-        "the order and Not a document. If what the pages say shows another order, pass it to klepa__make_pdf first, "
-        f"every number once, with revision {revision}; never name these numbers to the person, who confirms with Done⟧"
+        "the order and Not a document. If the images are no document (people, places, things; no text, or text only "
+        "by chance), pass not_a_document to klepa__make_pdf instead, and no sheet goes out. If what the pages say "
+        f"shows another order, pass it to klepa__make_pdf first, every number once, with revision {revision}; never "
+        "name these numbers to the person, who confirms with Done⟧"
     )
 
 
@@ -966,3 +968,69 @@ async def test_a_mark_served_after_its_sheet_went_out_says_the_sheet_was_sent(d)
         "record ev10, 2 record ev11; Core sent the person a sheet of its pages, numbered, with the buttons Done, "
         "Change the order and Not a document; change the pages with klepa__make_pdf⟧"
     )
+
+
+# ---- the model tells a document from photos of the family ----------------------------------------------------------
+async def test_photos_the_model_finds_no_document_get_no_sheet(d):
+    """The owner's choice of 2026-10-26: holiday photos get no sheet; the model reads that they are no document."""
+    d.drafts.hold = HOLD_SECONDS
+    message = album(d, b"beach", b"mountains")
+    d.drafts.tick()
+    served(d)
+    draft = draft_of(d, message)
+    result = d.drafts.change(
+        "owner", OWNER, SPACES, draft_id=draft, order=None, add=None, reply_to=None, revision=1, not_a_document=True
+    )
+    assert result == {"draft": draft, "not_a_document": True}
+    d.queue.mark_answered(OWNER, prefer=message)
+    await d.drafts.run_once()
+    d.clock.advance(HOLD_SECONDS + 1)
+    await d.drafts.run_once()
+    assert d.renderer.calls == []  # no sheet, ever
+    assert d.conn.execute("SELECT state FROM draft").fetchone()[0] == "declined"
+    assert d.conn.execute("SELECT COUNT(*) FROM outbound").fetchone()[0] == 0  # nothing said either
+    event = d.conn.execute("SELECT data FROM event_log WHERE kind='draft_declined'").fetchone()[0]
+    assert json.loads(event) == {"by": "model", "draft": draft, "revision": 1}
+    lone = album(d, b"three", first=30)
+    d.drafts.tick()
+    assert draft_of(d, lone) is None  # a declined draft takes no more photos
+
+
+async def test_a_sheet_already_sent_loses_its_buttons_when_the_model_finds_no_document(d):
+    message = album(d, b"one", b"two")
+    await d.drafts.run_once()
+    draft = draft_of(d, message)
+    sent(d, f"draft_sheet:{draft}:1", 500)
+    d.drafts.change("owner", OWNER, SPACES, draft_id=draft, order=None, add=None, reply_to=None, not_a_document=True)
+    await d.drafts.run_once()
+    assert outbound(d, f"draft_unbutton:{draft}:1")[2] == {"message_id": 500}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "refusal"),
+    [
+        ({"order": [2, 1]}, "not_a_document goes alone: no order, no add"),
+        ({"add": ["ev10"]}, "not_a_document goes alone: no order, no add"),
+        ({"draft_id": None}, "not_a_document needs a draft"),
+        ({"revision": 5}, "the draft has changed: it is revision 1 now, its pages 1 record ev10, 2 record ev11"),
+    ],
+)
+async def test_not_a_document_is_refused_with_anything_else(d, kwargs, refusal):
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    change = {"draft_id": draft_of(d, message), "order": None, "add": None, "revision": None} | kwargs
+    with pytest.raises(DraftRefused) as refused:
+        d.drafts.change("owner", OWNER, SPACES, reply_to=None, not_a_document=True, **change)
+    assert str(refused.value) == refusal
+
+
+async def test_a_document_being_built_or_built_is_a_document(d):
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    draft = draft_of(d, message)
+    for state, refusal in (("building", "its PDF is being made: try again in a moment"), ("done", "its PDF is made")):
+        d.conn.execute("UPDATE draft SET state=?", (state,))
+        with pytest.raises(DraftRefused, match=f"^{refusal}"):
+            d.drafts.change(
+                "owner", OWNER, SPACES, draft_id=draft, order=None, add=None, reply_to=None, not_a_document=True
+            )

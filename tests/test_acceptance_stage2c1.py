@@ -147,6 +147,11 @@ class Reader(Model):
     """A model that reads the pages: on a draft's mark it orders them by the word each page's text ends with."""
 
     async def __call__(self, text, tool):
+        if (found := DRAFT.search(text)) and "holiday" in text:  # photos of a trip: no document
+            self.drafts.append(int(found.group(1)))
+            revision = int(re.search(r"with revision (\d+)", text).group(1))
+            await tool("make_pdf", {"draft": self.drafts[-1], "not_a_document": True, "revision": revision})
+            return "Nice photos of your trip."
         if found := DRAFT.search(text):
             self.drafts.append(int(found.group(1)))
             words = dict(re.findall(r"record (ev\w+) · its text:⟧\nphoto text \(eng\): .* (\w+)\n", text))
@@ -182,6 +187,21 @@ async def test_the_model_puts_an_album_in_the_order_its_pages_show_and_one_sheet
     kept = [pages.without_metadata(photo) for photo in (one, two, three)]
     data = fake_tg.documents[0]["data"]
     assert data.index(kept[0]) < data.index(kept[1]) < data.index(kept[2])
+
+
+async def test_photos_that_are_no_document_get_an_answer_and_no_sheet(cfg, fake_tg):
+    """The owner's choice of 2026-10-26: the model reads that an album of a trip is no document; no sheet comes."""
+    model = Reader()
+    async with stand(cfg) as s:
+        s.host.agent = model
+        await running(cfg)
+        fake_tg.add_photo(OWNER, page("holiday at the beach", "red"), media_group_id="trip")
+        fake_tg.add_photo(OWNER, page("holiday in the mountains", "green"), media_group_id="trip")
+        await wait_until(lambda: "Nice photos of your trip." in texts(fake_tg), timeout=30)
+        await asyncio.sleep(2)
+        assert fake_tg.photos == []
+    assert query(cfg, "SELECT state FROM draft")[0]["state"] == "declined"
+    assert query(cfg, "SELECT COUNT(*) AS n FROM draft_sheet")[0]["n"] == 0
 
 
 async def test_two_people_each_keep_their_own_draft_and_a_page_s_words_stay_data(cfg, fake_tg):

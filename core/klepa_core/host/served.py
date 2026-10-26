@@ -182,7 +182,8 @@ def _draft(draft: Draft) -> str:
         )
     return (
         f"{what}: {numbers}; once you have answered, Core sends the person a sheet of its pages, numbered, with the "
-        "buttons Done, Change the order and Not a document. If what the pages say shows another order, pass it to "
-        f"{MAKE_PDF} first, every number once, with revision {draft.revision}; never name these numbers to the "
-        "person, who confirms with Done"
+        "buttons Done, Change the order and Not a document. If the images are no document (people, places, things; "
+        f"no text, or text only by chance), pass not_a_document to {MAKE_PDF} instead, and no sheet goes out. If "
+        f"what the pages say shows another order, pass it to {MAKE_PDF} first, every number once, with revision "
+        f"{draft.revision}; never name these numbers to the person, who confirms with Done"
     )

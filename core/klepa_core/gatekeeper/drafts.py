@@ -289,11 +289,17 @@ class Drafts:
         add: Sequence[str] | None,
         reply_to: int | None,
         revision: int | None = None,
+        not_a_document: bool = False,
     ) -> dict[str, Any]:
         """A new revision of the person's own draft, or a new draft from images they may see. `order`: the pages to
         keep, by their numbers as the draft is now (before its first sheet, every one), in their new order; `add`:
         records of images to put after them; `revision`: the revision the numbers belong to. Core then sends a new
-        sheet, and the PDF still waits for the person's Done."""
+        sheet, and the PDF still waits for the person's Done. `not_a_document`: the model read that the images are no
+        document (the owner's choice of 2026-10-26): the draft is closed, and a sheet not sent yet never goes out."""
+        if not_a_document and (order is not None or add):
+            raise DraftRefused("not_a_document goes alone: no order, no add")
+        if not_a_document and draft_id is None:
+            raise DraftRefused("not_a_document needs a draft")
         if len(add or ()) > MAX_PAGES:
             raise DraftRefused(f"a document has at most {MAX_PAGES} pages")
         added = [self._addable(record, spaces) for record in add or ()]
@@ -320,6 +326,16 @@ class Drafts:
                     raise DraftRefused(
                         f"the draft has changed: it is revision {draft['revision']} now, its pages {pages_now}"
                     )
+                if not_a_document:
+                    if draft["state"] == "done":
+                        raise DraftRefused("its PDF is made already")
+                    self.conn.execute(
+                        "UPDATE draft SET state = 'declined', updated_at = ? WHERE id = ?", (self.clock(), draft_id)
+                    )
+                    declined = {"draft": draft_id, "revision": int(draft["revision"]), "by": "model"}
+                    self.events.log("draft_declined", declined)
+                    self.wake.set()  # a sheet sent already loses its buttons
+                    return {"draft": draft_id, "not_a_document": True}
                 kept = current
                 if order is not None:
                     if not all(1 <= number <= len(current) for number in order):
