@@ -41,13 +41,6 @@ TEXT_KEYS = (
     "label_photo",
     "label_video",
     "label_file",
-    "draft_sheet",
-    "draft_done_button",
-    "draft_order_button",
-    "draft_no_button",
-    "draft_order_hint",
-    "draft_declined",
-    "draft_building",
     "draft_built",
     "draft_failed",
     "draft_too_large",
@@ -56,7 +49,6 @@ TEXT_KEYS = (
 )
 TEXT_FIELDS: dict[str, tuple[str, ...]] = {
     "original_failed": ("name",),
-    "draft_sheet": ("n",),
     "draft_built": ("n",),
     "draft_name": ("date",),
     "draft_name_version": ("date", "version"),

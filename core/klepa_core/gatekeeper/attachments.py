@@ -65,7 +65,7 @@ class Attachments:
         self.interim_after = interim_after
         # The family may write in any of the languages Klepa speaks: a cancel word of each of them counts.
         self.words = frozenset().union(*(load_locale(code).cancel_words for code in available_locales()))
-        self.drafts: Drafts | None = None  # the buttons of a draft's sheet are Core's too (spec 6.1 item 4)
+        self.drafts: Drafts | None = None  # the buttons of an old sheet of a draft are Core's too
         self.wake = asyncio.Event()
 
     # ---- what is being read -----------------------------------------------------------------------------------------

@@ -31,13 +31,6 @@ label_voice = "label_voice text"
 label_photo = "label_photo text"
 label_video = "label_video text"
 label_file = "label_file text"
-draft_sheet = "pages: {n}"
-draft_done_button = "draft_done_button text"
-draft_order_button = "draft_order_button text"
-draft_no_button = "draft_no_button text"
-draft_order_hint = "draft_order_hint text"
-draft_declined = "draft_declined text"
-draft_building = "draft_building text"
 draft_built = "built: {n}"
 draft_failed = "draft_failed text"
 draft_too_large = "draft_too_large text"
@@ -228,9 +221,3 @@ def test_incomplete_service_texts_are_refused(tmp_path, mutation, message):
     (tmp_path / "xx.toml").write_text(mutation(COMPLETE), encoding="utf-8")
     with pytest.raises(LocaleError, match=message):
         load_locale("xx", directory=tmp_path)
-
-
-def test_every_language_s_dialog_of_change_the_order_fits_a_press_answer():
-    """Telegram shows at most 200 characters of the answer to a press."""
-    for code in available_locales():
-        assert len(load_locale(code).text("draft_order_hint")) <= 200, code

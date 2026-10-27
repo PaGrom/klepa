@@ -424,24 +424,24 @@ TOOLS = (
     ),
     Tool(
         "make_pdf",
-        "Change a person's document draft, or start one from photos. Two or more photos sent at once make a draft: "
-        "Core sends the person a sheet of the pages as numbered thumbnails with the buttons Done, Change the order "
-        "and Not a document, and makes the PDF from the originals only when they press Done; a photo they send alone "
-        "soon after joins it. When Core's mark names a draft its images made or joined, before you answer, put the "
-        "pages in the order their content shows (how a text runs on, headings, signatures, page numbers), if it "
-        "differs: the sheet goes out once you have answered; if they are no document, pass not_a_document instead, "
-        "and no sheet goes out. When the person asks in words to reorder, drop or add "
-        "pages, call this with the draft: order lists the pages to keep by their numbers as the draft is now, in the "
-        "new order; add lists records of more photos, put after them. Without a draft, add starts a new one. Once "
-        "you have answered, Core sends a new sheet to check. A PDF over 50 MB is not made: if the person says so, "
-        "split the pages into two drafts. Never show the draft's id.",
+        "Make a PDF of a person's photos of a document, or change one. Two or more photos sent at once make a draft, "
+        "which Core's mark names with its pages by number: before you answer, pass the draft, its revision and order, "
+        "the pages in the order their content shows (how a text runs on, headings, signatures, page numbers), each "
+        "page once, leaving out a photo that shows the same page as another; Core sends the person the PDF of the "
+        "originals once you have answered. Say in your answer which photos you left out as repeats and which page "
+        "seems missing. If they are no document, pass not_a_document instead, and no PDF is made. When the person asks "
+        "in words to reorder, drop or add pages, or sends a page that was missing, call this with the draft: add lists "
+        "records of more photos, numbered after the draft's pages, and order lists the pages to keep by number in "
+        "their new order; Core sends the new PDF, a new version, once you have answered. Without a draft, add starts a "
+        "new one. A PDF over 50 MB is not made: if the person says so, split the pages into two drafts. Never show the "
+        "draft's id.",
         {
             "draft": {"type": "integer", "description": "The draft to change; none for a new one."},
             "order": {
                 "type": "array",
                 "items": {"type": "integer"},
-                "description": "Page numbers as the draft is now (in Core's mark, or on the latest sheet), in the new "
-                "order; pages left out are dropped.",
+                "description": "Page numbers as Core's mark names them, then the photos in add after them, in the "
+                "new order; pages left out are dropped. None: every page, the added ones last.",
             },
             "revision": {
                 "type": "integer",
@@ -452,9 +452,9 @@ TOOLS = (
             "not_a_document": {
                 "type": "boolean",
                 "description": "True when what was read of the draft's images shows people, places or things and "
-                "the person's words do not ask for a document (little text is no sign; when unsure, keep the draft): "
-                "the draft closes, and no sheet goes out. Only with the draft and its revision, before its first "
-                "sheet; make_pdf with the draft and an order opens it again.",
+                "the person's words do not ask for a document (little text is no sign; when unsure, make the PDF): "
+                "the draft closes, and no PDF is made. Only with the draft and its revision, before its first PDF; "
+                "make_pdf with the draft and an order opens it again.",
             },
         },
         (),

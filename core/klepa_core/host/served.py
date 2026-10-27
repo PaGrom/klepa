@@ -51,14 +51,13 @@ class Item:
 
 @dataclass(frozen=True)
 class Draft:
-    """The draft of a document that the batch's images made or joined (spec 6.1 item 4)."""
+    """The draft of a document that the batch's images made, or that its one photo is offered to (spec 6.1 item 4)."""
 
     id: int
-    pages: int  # in all, once the batch's images were added
-    added: int  # of them, the batch's: all for a draft it made, none when they were its pages already
-    records: tuple[str, ...] = ()  # its pages' records, in their order: the model's numbers for make_pdf
-    revision: int = 1  # the revision those numbers belong to
-    waits: bool = True  # its sheet waits for the model's answer; False: it went out already
+    records: tuple[str, ...]  # its pages' records, in their order: the model's numbers for make_pdf
+    revision: int  # the revision those numbers belong to
+    made: bool = True  # the batch's images made it; False: the batch's one photo may be a page of it
+    waits: bool = True  # the model has neither ordered it nor closed it since
     closed: bool = False  # the model closed it as no document
 
 
@@ -169,36 +168,32 @@ def attachment_text(
 
 
 def _draft(draft: Draft) -> str:
-    if draft.added == 0:
-        return f"the images above are among its {draft.pages} pages already: nothing changed"
-    if draft.added == draft.pages:
-        what = f"{draft.pages} pages made from the images above, in the order they came"
-    else:
-        what = f"the images above joined it as {draft.added} more pages, {draft.pages} in all"
+    """The owner's choice of 2026-10-27: no sheet to check; the model orders the pages, leaves out repeats, says what
+    is missing, and Core sends the PDF after its answer."""
     numbers = ", ".join(f"{number} record {record}" for number, record in enumerate(draft.records, 1))
+    never = "never name these numbers or records to the person"
+    if not draft.made:
+        return (
+            f"the chat's latest document, of {len(draft.records)} pages: {numbers}; revision {draft.revision}. If the "
+            "image above is a page of it, as the person's words or what it shows say (a page that was missing, say), "
+            f"pass {MAKE_PDF} with the draft, revision {draft.revision}, add with the image's record, and order with "
+            f"every page in the order their content shows, the image's number being {len(draft.records) + 1}; Core "
+            f"then sends the new PDF after your answer. Otherwise leave the draft as it is; {never}"
+        )
+    what = f"{len(draft.records)} pages made from the images above, in the order they came: {numbers}"
     if draft.closed:  # the review's M4: a turn retried after the model closed it
         return (
-            f"{what}: {numbers}; it is closed as no document, and no sheet goes out; {MAKE_PDF} with the draft and an "
-            "order opens it again"
+            f"{what}; it is closed as no document, and no PDF is made; {MAKE_PDF} with the draft and an order opens it"
         )
     if not draft.waits:
-        return (
-            f"{what}: {numbers}; Core sent the person a sheet of its pages, numbered, with the buttons Done, Change "
-            f"the order and Not a document; change the pages with {MAKE_PDF}"
-        )
-    sheet = (
-        f"{what}: {numbers}; once you have answered, Core sends the person a sheet of its pages, numbered, with the "
-        "buttons Done, Change the order and Not a document. "
-    )
-    never = "never name these numbers to the person, who confirms with Done"
-    if draft.added != draft.pages:  # the review's I1: a photo joined a document: its pages are not the model's to drop
-        return sheet + (
-            f"Pass the order the pages' content shows to {MAKE_PDF}, with revision {draft.revision}, leaving out an "
-            f"image above that is no part of the document; {never}"
-        )
-    return sheet + (
-        "If what was read shows people, places or things, and the person's words do not ask for a document, pass "
-        f"not_a_document to {MAKE_PDF} instead, with revision {draft.revision}, and no sheet goes out; little or no "
-        "text is no sign of that, and when unsure, keep the draft. If what the pages say shows another order, pass "
-        f"it to {MAKE_PDF} first, every number once, with revision {draft.revision}; {never}"
+        return f"{what}; you have ordered it already, and Core sends the PDF after your answer; {never}"
+    return (
+        f"{what}; revision {draft.revision}. Pass {MAKE_PDF} with the draft, revision {draft.revision} and order: the "
+        "numbers of the pages in the order their content shows (how a text runs on, headings, signatures, page "
+        "numbers), each page once, leaving out a photo that shows the same page as another; Core sends the person the "
+        "PDF after your answer. In your answer say which photos you left out as repeats, and if what the pages say "
+        "shows a page is missing (a gap in the page numbers, a text that breaks off), say which, so the person can "
+        "send it. If the images show people, places or things, and the person's words do not ask for a document, pass "
+        f"not_a_document with revision {draft.revision} instead, and no PDF is made; little or no text is no sign of "
+        f"that, and when unsure, make the PDF; {never}"
     )

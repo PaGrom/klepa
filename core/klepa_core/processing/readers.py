@@ -433,9 +433,9 @@ class Readers:
             await self._step([*convert, "-vf", fit, "-y", target], job, 60)
 
     async def pages(self, action: str, inputs: Sequence[Path], job: Path, *, max_bytes: int) -> bytes:
-        """Core's own renderer of a document's pages (processing.pages) in the sandbox, like a reader: the sheet of
-        numbered thumbnails ("sheet") or the PDF ("pdf"), at most `max_bytes` of it."""
-        output = job / ("sheet.jpg" if action == "sheet" else "document.pdf")
+        """Core's own renderer of a document's pages (processing.pages) in the sandbox, like a reader: the PDF
+        ("pdf"), at most `max_bytes` of it."""
+        output = job / "document.pdf"
         argv = [sys.executable, "-I", "-m", "klepa_core.processing.pages", action, "--max-bytes", max_bytes, output]
         try:
             await self._step([*argv, *inputs], job, PAGES_SECONDS, name="pages")

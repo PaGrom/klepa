@@ -673,15 +673,20 @@ def page_photo(text, colour):
     return buffer.getvalue()
 
 
-async def test_the_model_reorders_a_draft_of_photos_through_cores_signed_tool(stand_args, fake_model, tmp_path):
+async def test_the_model_orders_a_draft_of_photos_through_cores_signed_tool_and_the_pdf_follows(
+    stand_args, fake_model, tmp_path
+):
     """make_pdf through the real gateway: the list of page numbers reaches Core as the model wrote it, signed by the
-    plugin over exactly that list; the one sheet comes after the model's answer, in its order, and the person's Done
-    builds the PDF in that order."""
+    plugin over exactly that list; the PDF, in the model's order, comes after its answer (the owner's choice of
+    2026-10-27: no sheet, no button)."""
 
     def script(request):
         draft = re.search(r"⟦document draft (\d+) ·", request.human)
         if draft is not None and not request.tool_results:
-            return fakemodel.Call("klepa__make_pdf", {"draft": int(draft.group(1)), "order": [2, 1]})
+            revision = int(re.search(r"revision (\d+)", request.human).group(1))
+            return fakemodel.Call(
+                "klepa__make_pdf", {"draft": int(draft.group(1)), "order": [2, 1], "revision": revision}
+            )
         pages = json.loads(request.tool_results[-1])["pages"] if request.tool_results else 0
         return fakemodel.Say(f"DRAFT: {pages} pages")
 
@@ -692,29 +697,25 @@ async def test_the_model_reorders_a_draft_of_photos_through_cores_signed_tool(st
         await wait_until(lambda: live.state() == "RUNNING", timeout=90)
         live.telegram.add_photo(MEMBER, first, media_group_id="album")
         live.telegram.add_photo(MEMBER, second, media_group_id="album")
-        await wait_until(lambda: live.telegram.photos, timeout=90)
+        await wait_until(lambda: live.telegram.documents, timeout=90)
         assert query(live.cfg, "SELECT tool FROM host_tool_call")[0]["tool"] == "make_pdf"
-        await wait_until(lambda: "DRAFT: 2 pages" in live.sent(), timeout=30)
-        await asyncio.sleep(2)
-        [sheet] = live.telegram.photos  # one sheet, already in the model's order
-        done = sheet["markup"]["inline_keyboard"][0][0]["callback_data"]
-        live.telegram.press(MEMBER, sheet["message"], done)
-        await wait_until(lambda: live.telegram.documents, timeout=60)
+        assert "DRAFT: 2 pages" in live.sent()  # the answer came first
         document = live.telegram.documents[0]["data"]
         from klepa_core.processing.pages import without_metadata  # each goes in but for its comment, the OCR's words
 
         assert document.index(without_metadata(second)) < document.index(without_metadata(first))
         assert int(live.telegram.documents[0]["params"]["chat_id"]) == MEMBER
+        assert live.telegram.photos == []
 
 
 async def test_the_model_closes_a_draft_of_photos_that_are_no_document(stand_args, fake_model, tmp_path):
     """make_pdf's boolean through the real gateway: the model reads an album of a trip as no document, the plugin
-    signs `not_a_document: true` as Core reads it, and no sheet goes out."""
+    signs `not_a_document: true` as Core reads it, and no PDF is made."""
 
     def script(request):
         draft = re.search(r"⟦document draft (\d+) ·", request.human)
         if draft is not None and not request.tool_results:
-            revision = int(re.search(r"with revision (\d+)", request.human).group(1))
+            revision = int(re.search(r"revision (\d+)", request.human).group(1))
             params = {"draft": int(draft.group(1)), "not_a_document": True, "revision": revision}
             return fakemodel.Call("klepa__make_pdf", params)
         return fakemodel.Say("TRIP: " + ("closed" if request.tool_results else "none"))
@@ -727,7 +728,7 @@ async def test_the_model_closes_a_draft_of_photos_that_are_no_document(stand_arg
         live.telegram.add_photo(MEMBER, page_photo("holiday in the mountains", "blue"), media_group_id="trip")
         await wait_until(lambda: "TRIP: closed" in live.sent(), timeout=90)
         await asyncio.sleep(3)
-        assert live.telegram.photos == []
+        assert (live.telegram.photos, live.telegram.documents) == ([], [])
         assert query(live.cfg, "SELECT state FROM draft")[0]["state"] == "declined"
 
 

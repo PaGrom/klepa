@@ -276,6 +276,10 @@ SCHEMA_V7 = (
     "CREATE INDEX host_message_unchecked ON host_message(id) WHERE kind = 'attachment' AND draft_checked = 0",
 )
 
+# Stage 2c-1 reworked (the owner, 2026-10-27): no sheet to check; the PDF of the revision the model ordered goes out
+# after its answer.
+SCHEMA_V8 = ("ALTER TABLE draft ADD COLUMN ordered INTEGER",)
+
 
 def migrate(conn: sqlite3.Connection) -> int:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
@@ -322,6 +326,12 @@ def migrate(conn: sqlite3.Connection) -> int:
                 conn.execute(statement)
             conn.execute("INSERT INTO schema_version(version) VALUES (7)")
         current = 7
+    if current < 8:
+        with transaction(conn):
+            for statement in SCHEMA_V8:
+                conn.execute(statement)
+            conn.execute("INSERT INTO schema_version(version) VALUES (8)")
+        current = 8
     return current
 
 

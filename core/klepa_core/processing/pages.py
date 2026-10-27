@@ -1,8 +1,7 @@
-"""The pages of a document made from photos (spec 6.1 item 4, `make_pdf`): a sheet of numbered thumbnails, on which
-the person checks the order, and the PDF itself.
+"""The PDF of a document made from photos (spec 6.1 item 4, `make_pdf`).
 
 Core runs this module in the sandbox, like its readers:
-`python -I -m klepa_core.processing.pages sheet|pdf [--max-bytes N] <output> <page>...`. With `--max-bytes` it stops
+`python -I -m klepa_core.processing.pages pdf [--max-bytes N] <output> <page>...`. With `--max-bytes` it stops
 once the output would pass that size: a PDF as it adds its pages, before it holds them all.
 Every page is an image that came from a person, and Core never decodes one itself. A JPEG's image goes into the PDF
 byte for byte as it came, without what says where, when and with what it was taken, unless its EXIF orientation asks
@@ -14,22 +13,16 @@ always give the same file.
 from __future__ import annotations
 
 import io
-import math
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 MAX_PIXELS = 100_000_000  # as the readers: a larger image is not unpacked (spec 8)
 MAX_PAGES = 100
-THUMB = 360  # the longest side of a thumbnail, in pixels
-COLUMNS = 3  # at least; more for a long document, so the sheet stays within Telegram's 10,000 pixels of width and
-# height together: a hundred pages make ten rows of ten
-GAP = 24
-BADGE = 30  # the radius of a page number's circle
 A4 = (595.28, 841.89)  # points: a page of the PDF is its image fitted into A4, upright or across as the image is
-JPEG_QUALITY = 92  # of a page encoded anew; a sheet is smaller
+JPEG_QUALITY = 92  # of a page encoded anew
 MAX_SIDE = 3508  # pixels: the longest side of A4 at 300 dpi; a page encoded anew is no larger (the final review's I3)
 # When the pages as they came would not fit --max-bytes, every page is encoded anew, smaller at each try.
 FALLBACK = ((3508, 85), (2480, 80))
@@ -74,37 +67,6 @@ def _flat(image: Image.Image) -> Image.Image:
         paper.paste(rgba, mask=rgba.getchannel("A"))
         return paper
     return upright.convert("RGB")
-
-
-def sheet(output: Path, pages: Sequence[Path], max_bytes: int | None = None) -> None:
-    """The pages' thumbnails in a grid, each with its number, as one JPEG."""
-    if not 1 <= len(pages) <= MAX_PAGES:
-        raise PageError(TOO_LARGE, f"a sheet holds 1 to {MAX_PAGES} pages")
-    columns = min(len(pages), max(COLUMNS, math.ceil(math.sqrt(len(pages)))))
-    rows = math.ceil(len(pages) / columns)
-    cell = THUMB + GAP
-    canvas = Image.new("RGB", (columns * cell + GAP, rows * cell + GAP), "white")
-    draw = ImageDraw.Draw(canvas)
-    font = ImageFont.load_default(size=BADGE + 8)
-    for index, path in enumerate(pages):
-        with _open(path) as image:
-            thumb = _flat(image)
-            thumb.thumbnail((THUMB, THUMB))
-        left = GAP + (index % columns) * cell + (THUMB - thumb.width) // 2
-        top = GAP + (index // columns) * cell + (THUMB - thumb.height) // 2
-        canvas.paste(thumb, (left, top))
-        draw.rectangle((left - 1, top - 1, left + thumb.width, top + thumb.height), outline="#999999")
-        centre = (left + BADGE + 6, top + BADGE + 6)
-        draw.ellipse(
-            (centre[0] - BADGE, centre[1] - BADGE, centre[0] + BADGE, centre[1] + BADGE),
-            fill="#1f6feb",
-            outline="white",
-            width=3,
-        )
-        draw.text(centre, str(index + 1), fill="white", font=font, anchor="mm")
-    canvas.save(output, "JPEG", quality=85, optimize=True)
-    if max_bytes is not None and output.stat().st_size > max_bytes:
-        raise _too_large(output, max_bytes)
 
 
 def without_metadata(data: bytes) -> bytes | None:
@@ -232,16 +194,15 @@ def main(argv: Sequence[str]) -> int:
     max_bytes = None
     if len(args) >= 3 and args[1] == "--max-bytes":
         if not args[2].isdigit():
-            print("usage: pages sheet|pdf [--max-bytes N] <output> <page>...", file=sys.stderr)
+            print("usage: pages pdf [--max-bytes N] <output> <page>...", file=sys.stderr)
             return 2
         max_bytes = int(args[2])
         del args[1:3]
-    if len(args) < 3 or args[0] not in ("sheet", "pdf"):
-        print("usage: pages sheet|pdf [--max-bytes N] <output> <page>...", file=sys.stderr)
+    if len(args) < 3 or args[0] != "pdf":
+        print("usage: pages pdf [--max-bytes N] <output> <page>...", file=sys.stderr)
         return 2
-    action = sheet if args[0] == "sheet" else pdf
     try:
-        action(Path(args[1]), [Path(page) for page in args[2:]], max_bytes)
+        pdf(Path(args[1]), [Path(page) for page in args[2:]], max_bytes)
     except PageError as exc:
         print(str(exc), file=sys.stderr)
         return exc.code

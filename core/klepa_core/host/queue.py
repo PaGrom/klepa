@@ -290,34 +290,23 @@ class HostQueue:
         return attachment_text(captions, self._items(int(row["id"])), forwarded_mark=mark, draft=self._draft(row))
 
     def _draft(self, row: sqlite3.Row) -> Draft | None:
-        """The draft the batch's images made or joined, with the revision they made: their pages then."""
+        """The draft the batch's images made, at the revision they made; or the one its photo is offered to, as it
+        is now."""
         if row["draft_id"] is None:
             return None
-        draft_id, revision = int(row["draft_id"]), row["draft_revision"]
-        if revision is None:  # its pages already: the draft as it is
-            revision = self.conn.execute("SELECT revision FROM draft WHERE id=?", (draft_id,)).fetchone()[0]
-            return Draft(draft_id, self._draft_pages(draft_id, int(revision)), 0)
-        pages = self._draft_pages(draft_id, int(revision))
+        draft_id = int(row["draft_id"])
+        draft = self.conn.execute("SELECT * FROM draft WHERE id=?", (draft_id,)).fetchone()
+        made = row["draft_revision"] is not None
+        revision = int(row["draft_revision"]) if made else int(draft["revision"])
         records = tuple(
-            str(row[0])
-            for row in self.conn.execute(
+            str(page[0])
+            for page in self.conn.execute(
                 "SELECT evidence_id FROM draft_page WHERE draft_id=? AND revision=? ORDER BY position",
-                (draft_id, int(revision)),
+                (draft_id, revision),
             )
         )
-        sent = self.conn.execute(  # the review's I4: the host took the batch only after its sheet went out
-            "SELECT 1 FROM draft_sheet WHERE draft_id=? AND revision>=? AND outbound_key IS NOT NULL LIMIT 1",
-            (draft_id, int(revision)),
-        ).fetchone()
-        added = pages - self._draft_pages(draft_id, int(revision) - 1)
-        state = self.conn.execute("SELECT state FROM draft WHERE id=?", (draft_id,)).fetchone()[0]
-        return Draft(draft_id, pages, added, records, int(revision), sent is None, state == "declined")
-
-    def _draft_pages(self, draft_id: int, revision: int) -> int:
-        row = self.conn.execute(
-            "SELECT COUNT(*) FROM draft_page WHERE draft_id=? AND revision=?", (draft_id, revision)
-        ).fetchone()
-        return int(row[0])
+        waits = draft["state"] == "open" and draft["revision"] == revision and draft["ordered"] is None
+        return Draft(draft_id, records, revision, made, waits, draft["state"] == "declined")
 
     def _next_update_id(self, now: float) -> int:
         last = self.conn.execute("SELECT COALESCE(MAX(update_id), 0) FROM host_update").fetchone()[0]

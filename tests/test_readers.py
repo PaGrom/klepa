@@ -412,7 +412,7 @@ def test_a_crafted_suffix_never_reaches_a_readers_arguments(setup):
     assert "deu" not in args
 
 
-def test_cores_renderer_draws_a_sheet_and_a_pdf_of_the_pages_in_the_sandbox(setup):
+def test_cores_renderer_draws_a_pdf_of_the_pages_in_the_sandbox(setup):
     processing, runner, tmp_path = setup
     job = tmp_path / "jobs" / "draft"
     job.mkdir(parents=True)
@@ -420,8 +420,6 @@ def test_cores_renderer_draws_a_sheet_and_a_pdf_of_the_pages_in_the_sandbox(setu
     Image.new("RGB", (60, 80), "blue").save(job / "page-2.png")
     inputs = [job / "page-1.jpg", job / "page-2.png"]
     renderer = Readers(processing, runner)
-    sheet = asyncio.run(renderer.pages("sheet", inputs, job, max_bytes=10 << 20))
-    assert sheet.startswith(b"\xff\xd8")  # a JPEG
     document = asyncio.run(renderer.pages("pdf", inputs, job, max_bytes=10 << 20))
     assert document.startswith(b"%PDF-1.4")
     assert (job / "page-1.jpg").read_bytes() in document  # the JPEG as it came
@@ -434,8 +432,6 @@ def test_what_the_renderer_cannot_draw_or_draws_too_large_is_refused(setup):
     Image.new("RGB", (60, 80), "red").save(job / "page-1.jpg")
     (job / "page-2.jpg").write_bytes(b"not an image")
     renderer = Readers(processing, runner)
-    with pytest.raises(OutputTooLarge, match=r"^sheet\.jpg is larger than 0 MB$"):
-        asyncio.run(renderer.pages("sheet", [job / "page-1.jpg"], job, max_bytes=100))
     with pytest.raises(OutputTooLarge, match=r"^document\.pdf is larger than 0 MB$"):
         asyncio.run(renderer.pages("pdf", [job / "page-1.jpg"], job, max_bytes=100))
     with pytest.raises(ReaderFailed, match=r"^pages exited with 3$"):

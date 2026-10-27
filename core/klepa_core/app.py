@@ -355,7 +355,6 @@ def _drafts(
         cfg.locale,
         events,
         jobs_dir=cfg.jobs_dir,
-        drafts_dir=cfg.drafts_dir,
         album_quiet_seconds=cfg.album_quiet_seconds,
     )
     host.queue.drafts = True

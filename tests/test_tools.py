@@ -475,9 +475,15 @@ def test_make_pdf_tells_the_model_of_the_50_mb_limit_and_the_way_round_it(box):
     )
 
 
-def test_make_pdf_tells_the_model_to_set_the_order_by_content_before_the_first_sheet(box):
+def test_make_pdf_tells_the_model_to_order_drop_repeats_and_name_gaps_before_the_pdf(box):
+    """The owner's choice of 2026-10-27: no sheet to check; the PDF comes after the model's answer."""
     [spec] = [tool for tool in box.specs() if tool["name"] == "make_pdf"]
-    assert "before you answer, put the pages in the order their content shows" in spec["description"]
+    description = spec["description"]
+    assert "before you answer, pass the draft, its revision and order" in description
+    assert "leaving out a photo that shows the same page as another" in description
+    assert "which page seems missing" in description
+    assert "sheet" not in description
+    assert "button" not in description
 
 
 def test_make_pdf_takes_not_a_document_as_a_boolean_and_passes_it_on(box):
@@ -491,6 +497,6 @@ def test_make_pdf_takes_not_a_document_as_a_boolean_and_passes_it_on(box):
         box.call("make_pdf", signed("make_pdf", {"draft": True}, call_id="call-3"))
 
 
-def test_make_pdf_tells_the_model_that_no_document_gets_no_sheet(box):
+def test_make_pdf_tells_the_model_that_no_document_gets_no_pdf(box):
     [spec] = [tool for tool in box.specs() if tool["name"] == "make_pdf"]
-    assert "if they are no document, pass not_a_document instead, and no sheet goes out" in spec["description"]
+    assert "If they are no document, pass not_a_document instead, and no PDF is made" in spec["description"]
