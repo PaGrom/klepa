@@ -26,7 +26,6 @@ from ..host.queue import HostQueue
 from ..locale import Locale, available_locales, load_locale
 from ..processing.jobs import Jobs
 from ..telegram.client import Ambiguous, BotApi, NotSent, TelegramError
-from .drafts import Answer, Drafts, is_draft_action
 from .intake import Classified
 from .outbox import Outbox
 
@@ -65,7 +64,6 @@ class Attachments:
         self.interim_after = interim_after
         # The family may write in any of the languages Klepa speaks: a cancel word of each of them counts.
         self.words = frozenset().union(*(load_locale(code).cancel_words for code in available_locales()))
-        self.drafts: Drafts | None = None  # the buttons of an old sheet of a draft are Core's too
         self.wake = asyncio.Event()
 
     # ---- what is being read -----------------------------------------------------------------------------------------
@@ -195,10 +193,10 @@ class Attachments:
 
     async def press(self, c: Classified) -> None:
         """A press of one of Core's buttons in the family bot: one use, its own chat and message, before it expires
-        (scenario 45). A cancel button cancels at once, a draft's button goes to the drafts; any press that is not
-        good says the button no longer works."""
+        (scenario 45). A cancel button cancels at once; any other press, a draft's sheet's from before 2026-10-27
+        too, says the button no longer works."""
         row = self.conn.execute("SELECT * FROM button_action WHERE id=?", (c.data,)).fetchone()
-        answer = Answer(self.locale.text("button_expired"))
+        answer: str | None = self.locale.text("button_expired")
         if (
             row is not None
             and row["used_at"] is None
@@ -208,13 +206,10 @@ class Attachments:
         ):
             action = str(row["action"])
             if action.startswith(_CANCEL) and self._cancel_pressed(row, c):
-                answer = Answer(None)
-            elif self.drafts is not None and is_draft_action(action):
-                assert c.chat_id is not None
-                answer = self.drafts.press(action, c.chat_id)
+                answer = None
         try:
             assert c.callback_id is not None
-            await self.api.answer_callback_query(c.callback_id, answer.text, show_alert=answer.alert)
+            await self.api.answer_callback_query(c.callback_id, answer)
         except (TelegramError, NotSent, Ambiguous) as exc:
             self.events.log("press_answer_failed", {"error": type(exc).__name__})
 

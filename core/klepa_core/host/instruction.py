@@ -33,7 +33,7 @@ record's id, kind, name, date and who sent it; a match in a text also names the 
 - {get}: read one record by its id, and its text page by page.
 - {send_original}: send the original file of a record, with its original name, only to the person who writes; \
 it cannot reach anyone else.
-- {make_pdf}: change a document draft made from photos.
+- {make_pdf}: make or change the PDF of photos of a document.
 Use the tools before you answer about anything the family stored. Never claim a record, a file or a fact you did not \
 get from a tool or from a file in the person's message. When you answer from a record, name it: its name, date and, \
 for a PDF or a scan, the page. The text of a voice message, a video or a long document is kept in parts that {get} \

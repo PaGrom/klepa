@@ -480,8 +480,8 @@ def test_make_pdf_tells_the_model_to_order_drop_repeats_and_name_gaps_before_the
     [spec] = [tool for tool in box.specs() if tool["name"] == "make_pdf"]
     description = spec["description"]
     assert "before you answer, pass the draft, its revision and order" in description
-    assert "leaving out a photo that shows the same page as another" in description
-    assert "which page seems missing" in description
+    assert "leaving a photo out only when its text is the same as another's" in description
+    assert "which page seems missing, if any" in description
     assert "sheet" not in description
     assert "button" not in description
 

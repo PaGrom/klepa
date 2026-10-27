@@ -21,7 +21,6 @@ import re
 import sqlite3
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -42,37 +41,22 @@ MIN_PAGES = 2  # images in one batch that make a draft
 # model's run is alive, and at most this long after the host took the batch (the owner's word, 2026-10-26: many pages
 # of small text take a model long; ten minutes is also when Core alerts the owner to a silent model).
 HOLD_SECONDS = 600.0
-OFFER_SECONDS = 3600.0  # a photo sent alone this soon after the chat's draft changed is offered to it as a page
 MAX_PAGES = 100  # pages of one draft, as Core's renderer draws them (processing.pages.MAX_PAGES)
 PDF_SIDE = 3508  # pixels: a HEIC page for the PDF, A4 at 300 dpi (processing.pages.MAX_SIDE)
 MAX_PDF_BYTES = 50 << 20  # what Telegram takes from a bot as a document
 TICK_SECONDS = 0.5
 USABLE = ("stored", "processing", "processed", "failed")  # the records whose original Core keeps
-# The buttons of the sheets Core sent before 2026-10-27: a press on one says it no longer works.
-_ACTION = re.compile(r"(draft_done|draft_order|draft_no):(\d{1,18}):(\d{1,9})")
 _HEIC = frozenset({".heic", ".heif"})
 _SUFFIX = re.compile(r"\.[a-z0-9]{1,8}")
 _RENDER_ERRORS = (ReaderFailed, ReaderMissing, ProcessingStopped, OSError)
 NOTE = (
     "Core sends the person the PDF of these pages after your answer: say it is coming, never that it was sent; say "
-    "which photos you left out as repeats, and which page seems missing"
+    "which photos you left out as repeats, if any, and which page seems missing, if any"
 )
 
 
 class DraftRefused(Exception):
     """A change make_pdf does not make. Its text goes back to the model and never carries a record's content."""
-
-
-@dataclass(frozen=True)
-class Answer:
-    """What a press is answered with: a toast (None: none), or a dialog the person closes."""
-
-    text: str | None
-    alert: bool = False
-
-
-def is_draft_action(action: str) -> bool:
-    return _ACTION.fullmatch(action) is not None
 
 
 def _image(row: sqlite3.Row) -> bool:
@@ -188,21 +172,8 @@ class Drafts:
         self.queue.wake()
 
     def _offered(self, chat_id: int, person_id: str) -> sqlite3.Row | None:
-        row: sqlite3.Row | None = self.conn.execute(
-            "SELECT * FROM draft WHERE chat_id = ? AND person_id = ? AND state IN ('open', 'done') AND updated_at >= ? "
-            "ORDER BY id DESC LIMIT 1",
-            (chat_id, person_id, self.clock() - OFFER_SECONDS),
-        ).fetchone()
-        return row
-
-    def _rows(self, records: Sequence[str]) -> list[sqlite3.Row]:
-        rows = {
-            str(row["id"]): row
-            for row in self.conn.execute(
-                f"SELECT * FROM evidence WHERE id IN ({','.join('?' * len(records))})", list(records)
-            )
-        }
-        return [rows[record] for record in records]
+        row = self.queue.latest_document(chat_id)
+        return row if row is not None and row["person_id"] == person_id else None
 
     def _looked_at(self, host_message_id: int, draft_id: int | None, revision: int | None) -> None:
         """The batch was looked at for a draft: the one it made, with its revision, or the one its photo is offered
@@ -222,13 +193,20 @@ class Drafts:
         return _distinct([row for row in rows if _image(row)])[:MAX_PAGES]
 
     def _create(
-        self, chat_id: int, person_id: str, reply_to: int | None, records: Sequence[str], *, ordered: bool = False
+        self,
+        chat_id: int,
+        person_id: str,
+        reply_to: int | None,
+        records: Sequence[str],
+        *,
+        ordered: bool = False,
+        by: int | None = None,
     ) -> int:
         now = self.clock()
         cursor = self.conn.execute(
-            "INSERT INTO draft(chat_id, person_id, state, revision, reply_to, created_at, updated_at, ordered) "
-            "VALUES (?, ?, 'open', 1, ?, ?, ?, ?)",
-            (chat_id, person_id, reply_to, now, now, 1 if ordered else None),
+            "INSERT INTO draft(chat_id, person_id, state, revision, reply_to, created_at, updated_at, ordered, "
+            "ordered_by) VALUES (?, ?, 'open', 1, ?, ?, ?, ?, ?)",
+            (chat_id, person_id, reply_to, now, now, 1 if ordered else None, by),
         )
         assert cursor.lastrowid is not None
         self._set_pages(cursor.lastrowid, 1, records)
@@ -240,15 +218,26 @@ class Drafts:
             [(draft_id, revision, position, record) for position, record in enumerate(records, 1)],
         )
 
-    def _revise(self, draft_id: int, revision: int, records: Sequence[str], reply_to: int | None) -> None:
+    def _revise(
+        self, draft_id: int, revision: int, records: Sequence[str], reply_to: int | None, by: int | None
+    ) -> None:
         """A new revision the model ordered: its pages, and its PDF to come as a reply to `reply_to` (None: where the
-        last went)."""
+        last went) once the turn's message `by` is answered."""
         self._set_pages(draft_id, revision, records)
         self.conn.execute(
-            "UPDATE draft SET revision = ?, ordered = ?, state = 'open', reply_to = COALESCE(?, reply_to), "
-            "updated_at = ? WHERE id = ?",
-            (revision, revision, reply_to, self.clock(), draft_id),
+            "UPDATE draft SET revision = ?, ordered = ?, ordered_by = ?, state = 'open', "
+            "reply_to = COALESCE(?, reply_to), updated_at = ? WHERE id = ?",
+            (revision, revision, by, reply_to, self.clock(), draft_id),
         )
+
+    def _caller(self, chat_id: int, message_id: int | None) -> sqlite3.Row | None:
+        """The issued message the turn calling make_pdf answers."""
+        if message_id is None:
+            return None
+        row: sqlite3.Row | None = self.conn.execute(
+            "SELECT * FROM host_message WHERE chat_id = ? AND message_id = ?", (chat_id, message_id)
+        ).fetchone()
+        return row
 
     def _pages(self, draft_id: int, revision: int) -> list[sqlite3.Row]:
         return self.conn.execute(
@@ -286,13 +275,16 @@ class Drafts:
             raise DraftRefused(f"a document has at most {MAX_PAGES} pages")
         added = [self._addable(record, spaces) for record in add or ()]
         with transaction(self.conn):
+            caller = self._caller(chat_id, reply_to)
+            by = None if caller is None else int(caller["id"])
             if draft_id is None:
                 if order is not None:
                     raise DraftRefused("order needs a draft; for a new one, give its photos in add")
                 pages = _distinct(added)
                 if not pages:
                     raise DraftRefused("give the photos of the new document in add")
-                draft_id = self._create(chat_id, person_id, reply_to, [str(page["id"]) for page in pages], ordered=True)
+                records = [str(page["id"]) for page in pages]
+                draft_id = self._create(chat_id, person_id, reply_to, records, ordered=True, by=by)
                 revision, lost, repeated = 1, 0, len(added) - len(pages)
             else:
                 draft = self.conn.execute(
@@ -300,8 +292,6 @@ class Drafts:
                 ).fetchone()
                 if draft is None:
                     raise DraftRefused("no such draft")
-                if draft["state"] == "building":
-                    raise DraftRefused("its PDF is being made: try again in a moment")
                 current = self._pages(draft_id, int(draft["revision"]))
                 if revision is not None and revision != draft["revision"]:  # the review's I1: numbers of another one
                     pages_now = ", ".join(f"{n} record {page['id']}" for n, page in enumerate(current, 1))
@@ -309,8 +299,12 @@ class Drafts:
                         f"the draft has changed: it is revision {draft['revision']} now, its pages {pages_now}"
                     )
                 if not_a_document:
-                    if draft["state"] == "done" or self._built(draft_id):
+                    if draft["state"] in ("done", "building") or self._built(draft_id):
                         raise DraftRefused("its PDF is made already")
+                    if draft["ordered"] is not None:  # the review's I2: the model said it is a document
+                        raise DraftRefused("it was put in order already: it is a document")
+                    if caller is None or caller["draft_id"] != draft_id or caller["draft_revision"] is None:
+                        raise DraftRefused("only the turn on the photos that made the draft closes it")
                     if not self._all_read(draft_id, int(draft["revision"])):  # the review's I2: no text, no sign
                         raise DraftRefused("a page was not read: make the PDF, and the person decides")
                     self.conn.execute(
@@ -339,10 +333,15 @@ class Drafts:
                 if len(pages) > MAX_PAGES:
                     raise DraftRefused(f"a document has at most {MAX_PAGES} pages")
                 revision = int(draft["revision"]) + 1
-                self._revise(draft_id, revision, [str(page["id"]) for page in pages], reply_to)
+                self._revise(draft_id, revision, [str(page["id"]) for page in pages], reply_to, by)
         self.events.log("draft_changed", {"draft": draft_id, "revision": revision, "pages": len(pages)})
         self.drawing.set()  # its PDF is built once the model has answered
-        result: dict[str, Any] = {"draft": draft_id, "pages": len(pages), "records": [str(p["id"]) for p in pages]}
+        result: dict[str, Any] = {
+            "draft": draft_id,
+            "revision": revision,
+            "pages": len(pages),
+            "records": [str(p["id"]) for p in pages],
+        }
         notes = [f"{repeated} photo(s) of the same bytes as another page"] if repeated else []
         notes += [f"{lost} photo(s) no longer the person's to use"] if lost else []
         if notes:
@@ -375,11 +374,6 @@ class Drafts:
             raise DraftRefused("only photos and images can be pages")
         return row
 
-    # ---- the old sheets' buttons ------------------------------------------------------------------------------------
-    def press(self, action: str, chat_id: int) -> Answer:
-        """A press on a sheet Core sent before 2026-10-27, when the person checked a draft's pages: no longer works."""
-        return Answer(self.locale.text("button_expired"))
-
     # ---- the PDF's time ---------------------------------------------------------------------------------------------
     async def _due(self) -> None:
         """A draft the model ordered gets its PDF once the model has answered: no batch of it waits for the answer,
@@ -394,10 +388,11 @@ class Drafts:
                 "UPDATE draft SET state = 'building', updated_at = ? WHERE id = ? AND state = 'open' AND revision = ?",
                 (self.clock(), draft["id"], draft["revision"]),
             )
-            self.events.log("draft_done", {"draft": int(draft["id"]), "revision": int(draft["revision"])})
+            self.events.log("draft_due", {"draft": int(draft["id"]), "revision": int(draft["revision"])})
 
     def _held(self, draft: sqlite3.Row) -> bool:
-        """A batch of the draft is with the model, or a run of the model in the draft's chat is alive: the person
+        """A batch of the draft, or the message whose turn ordered it, waits for the model's answer, or a run of the
+        model in the draft's chat is alive: the person
         gets the PDF after its answer (the owner's choice of 2026-10-26). The wait ends with the answer, or when the
         runs are over and HOLD_SECONDS have passed since the host took the batch (or since the draft's last change
         while the host has not): no person is left without a PDF. The gateway may join a long text with the next
@@ -412,11 +407,11 @@ class Drafts:
             return True
         row = self.conn.execute(
             "SELECT 1 FROM host_message m LEFT JOIN host_update u ON u.host_message_id = m.id "
-            "WHERE m.draft_id = ? AND m.answered_at IS NULL AND m.cancelled_at IS NULL "
+            "WHERE (m.draft_id = ? OR m.id = ?) AND m.answered_at IS NULL AND m.cancelled_at IS NULL "
             "AND (COALESCE(u.issued_at, ?) > ? OR EXISTS (SELECT 1 FROM host_run r JOIN host_message rm "
             "ON rm.id = r.host_message_id WHERE rm.chat_id = m.chat_id AND rm.id >= m.id AND r.expires_at > ?)) "
             "LIMIT 1",
-            (draft["id"], draft["updated_at"], now - self.hold, now),
+            (draft["id"], draft["ordered_by"], draft["updated_at"], now - self.hold, now),
         ).fetchone()
         return row is not None
 
@@ -470,25 +465,30 @@ class Drafts:
             "caption": self.locale.text("draft_built").format(n=len(pages)),
         }
         with transaction(self.conn):
-            self.conn.execute(
-                "INSERT OR IGNORE INTO document_version(draft_id, version, revision, evidence_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (draft_id, version, revision, record["id"], self.clock()),
-            )
-            # Only the latest version is found by search; get still reads the older ones.
-            self.conn.execute(
-                "DELETE FROM evidence_fts WHERE evidence_id IN "
-                "(SELECT evidence_id FROM document_version WHERE draft_id = ? AND version < ?)",
-                (draft_id, version),
-            )
             built = self.conn.execute(
                 "UPDATE draft SET state = 'done', updated_at = ? WHERE id = ? AND revision = ? AND state = 'building'",
                 (self.clock(), draft_id, revision),
             ).rowcount
-            if built:
+            if not built:  # the review's I3: the draft changed while it was built; its new revision is built next
+                self.conn.execute("DELETE FROM evidence_fts WHERE evidence_id = ?", (record["id"],))
+            else:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO document_version(draft_id, version, revision, evidence_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (draft_id, version, revision, record["id"], self.clock()),
+                )
+                # Only the latest version is found by search; get still reads the older ones.
+                self.conn.execute(
+                    "DELETE FROM evidence_fts WHERE evidence_id IN "
+                    "(SELECT evidence_id FROM document_version WHERE draft_id = ? AND version < ?)",
+                    (draft_id, version),
+                )
                 self.outbox.enqueue_document(
                     f"draft_pdf:{draft_id}:{version}", int(draft["chat_id"]), document, reply_to=reply_to
                 )
+        if not built:
+            self.events.log("draft_superseded", {"draft": draft_id, "revision": revision})
+            return
         self.events.log(
             "draft_built",
             {

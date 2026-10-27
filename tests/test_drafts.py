@@ -12,12 +12,17 @@ import pytest
 from helpers import MEMBER, OWNER, Clock, host_peers, wait_until
 from klepa_core.events import EventLog
 from klepa_core.evidence import EvidenceStore
-from klepa_core.gatekeeper.drafts import HOLD_SECONDS, NOTE, OFFER_SECONDS, DraftRefused, Drafts
+from klepa_core.gatekeeper.drafts import HOLD_SECONDS, NOTE, DraftRefused, Drafts
 from klepa_core.gatekeeper.outbox import Outbox
-from klepa_core.host.queue import HostQueue
+from klepa_core.host.queue import OFFER_SECONDS, HostQueue
 from klepa_core.processing.readers import OutputTooLarge, ReaderFailed
 
 SPACES = ("shared", "personal:owner")
+
+
+NEVER = (
+    "never name record or draft ids to the person; to name a photo, say which one it was in the order they were sent"
+)
 
 
 def asks(revision):
@@ -25,12 +30,28 @@ def asks(revision):
     return (
         f"revision {revision}. Pass klepa__make_pdf with the draft, revision {revision} and order: the numbers of the "
         "pages in the order their content shows (how a text runs on, headings, signatures, page numbers), each page "
-        "once, leaving out a photo that shows the same page as another; Core sends the person the PDF after your "
-        "answer. In your answer say which photos you left out as repeats, and if what the pages say shows a page is "
+        "once, leaving a photo out only when its text is the same as another's (a second photo of one page); a page "
+        "with little or no text is never a repeat, and when unsure, keep both. Core sends the person the PDF after "
+        "your answer. In your answer say which photos you left out, if any, and if what the pages say shows a page is "
         "missing (a gap in the page numbers, a text that breaks off), say which, so the person can send it. If the "
         "images show people, places or things, and the person's words do not ask for a document, pass not_a_document "
         f"with revision {revision} instead, and no PDF is made; little or no text is no sign of that, and when unsure, "
-        "make the PDF; never name these numbers or records to the person⟧"
+        f"make the PDF; {NEVER}⟧"
+    )
+
+
+def declined(d, draft, *, revision=1, message_id=10):
+    """The model's not_a_document, in the turn on the batch whose first photo is `message_id`."""
+    return d.drafts.change(
+        "owner",
+        OWNER,
+        SPACES,
+        draft_id=draft,
+        order=None,
+        add=None,
+        reply_to=message_id,
+        revision=revision,
+        not_a_document=True,
     )
 
 
@@ -284,7 +305,7 @@ async def test_a_photo_sent_alone_later_is_offered_to_the_draft_and_the_model_ad
         "If the image above is a page of it, as the person's words or what it shows say (a page that was missing, "
         "say), pass klepa__make_pdf with the draft, revision 2, add with the image's record, and order with every page "
         "in the order their content shows, the image's number being 3; Core then sends the new PDF after your answer. "
-        "Otherwise leave the draft as it is; never name these numbers or records to the person⟧"
+        f"Otherwise leave the draft as it is, and never pass not_a_document for it; {NEVER}⟧"
     )
     result = ordered(d, draft, [1, 3, 2], revision=2, add=["ev20"], reply_to=20)
     assert result["records"] == ["ev10", "ev20", "ev11"]
@@ -328,7 +349,7 @@ async def test_the_pdf_of_the_order_the_model_set_follows_its_answer_as_a_reply_
     await d.drafts.run_once()
     assert d.renderer.calls == []  # the model has not ordered it
     result = ordered(d, draft, [3, 1, 2], revision=1)
-    assert result == {"draft": draft, "pages": 3, "records": ["ev12", "ev10", "ev11"], "pdf": NOTE}
+    assert result == {"draft": draft, "revision": 2, "pages": 3, "records": ["ev12", "ev10", "ev11"], "pdf": NOTE}
     await d.drafts.run_once()
     assert d.renderer.calls == []  # the model has not answered
     d.queue.mark_answered(OWNER, prefer=message)
@@ -482,16 +503,6 @@ async def test_a_pdf_that_cannot_be_drawn_tells_the_person_and_keeps_the_photos(
     assert json.loads(event) == {"draft": draft, "revision": 2, "stage": "pdf", "error": "pages exited with 3"}
 
 
-async def test_a_button_of_a_sheet_sent_before_no_longer_works(d):
-    """The sheets Core sent before 2026-10-27 keep their buttons on the person's screen."""
-    message = album(d, b"one", b"two")
-    d.drafts.tick()
-    draft = draft_of(d, message)
-    for what in ("draft_done", "draft_order", "draft_no"):
-        assert d.drafts.press(f"{what}:{draft}:1", OWNER).text == "This button no longer works."
-    assert state(d, draft) == "open"
-
-
 # ---- make_pdf -------------------------------------------------------------------------------------------------------
 async def test_photos_added_are_numbered_after_the_pages_and_a_new_draft_starts_from_photos(d):
     message = album(d, b"one", b"two")
@@ -502,6 +513,7 @@ async def test_photos_added_are_numbered_after_the_pages_and_a_new_draft_starts_
     result = ordered(d, draft, None, add=["ev30", "ev10"])
     assert result == {
         "draft": draft,
+        "revision": 2,
         "pages": 3,
         "records": ["ev10", "ev11", "ev30"],
         "left_out": "1 photo(s) of the same bytes as another page",
@@ -541,7 +553,7 @@ async def test_changes_that_cannot_be_made_are_refused(d, kwargs, refusal):
     assert d.conn.execute("SELECT MAX(revision) FROM draft").fetchone()[0] == 1
 
 
-async def test_another_persons_draft_and_a_draft_being_built_are_not_changed(d):
+async def test_another_persons_draft_is_not_changed(d):
     message = album(d, b"one", b"two")
     d.drafts.tick()
     draft = draft_of(d, message)
@@ -549,9 +561,6 @@ async def test_another_persons_draft_and_a_draft_being_built_are_not_changed(d):
         d.drafts.change(
             "member", MEMBER, ("shared", "personal:member"), draft_id=draft, order=[1], add=None, reply_to=None
         )
-    d.conn.execute("UPDATE draft SET state='building'")
-    with pytest.raises(DraftRefused, match="being made"):
-        ordered(d, draft, [1])
 
 
 async def test_numbers_of_an_older_revision_are_refused_with_the_draft_as_it_is(d):
@@ -818,6 +827,7 @@ async def test_a_change_leaves_out_a_page_no_longer_the_persons_to_use(d):
     result = ordered(d, draft["draft"], [2, 1], reply_to=51)
     assert result == {
         "draft": draft["draft"],
+        "revision": 2,
         "pages": 1,
         "records": ["ev10"],
         "left_out": "1 photo(s) no longer the person's to use",
@@ -834,8 +844,7 @@ async def test_a_mark_served_after_the_model_ordered_the_draft_says_so(d):
     [update] = served(d)
     assert update["message"]["text"].endswith(
         f"⟦document draft {draft} · 2 pages made from the images above, in the order they came: 1 record ev10, 2 "
-        "record ev11; you have ordered it already, and Core sends the PDF after your answer; never name these numbers "
-        "or records to the person⟧"
+        f"record ev11; you have ordered it already, and Core sends the PDF after your answer; {NEVER}⟧"
     )
 
 
@@ -847,9 +856,7 @@ async def test_photos_the_model_finds_no_document_get_no_pdf(d):
     d.drafts.tick()
     served(d)
     draft = draft_of(d, message)
-    result = d.drafts.change(
-        "owner", OWNER, SPACES, draft_id=draft, order=None, add=None, reply_to=None, revision=1, not_a_document=True
-    )
+    result = declined(d, draft)
     assert result == {
         "draft": draft,
         "not_a_document": True,
@@ -874,17 +881,7 @@ async def test_a_draft_with_a_page_not_read_is_never_closed_as_no_document(d):
     d.drafts.tick()
     d.conn.execute("UPDATE job SET state='failed' WHERE evidence_id='ev11'")
     with pytest.raises(DraftRefused, match=r"^a page was not read: make the PDF, and the person decides$"):
-        d.drafts.change(
-            "owner",
-            OWNER,
-            SPACES,
-            draft_id=draft_of(d, message),
-            order=None,
-            add=None,
-            reply_to=None,
-            revision=1,
-            not_a_document=True,
-        )
+        declined(d, draft_of(d, message))
 
 
 async def test_a_draft_closed_as_no_document_opens_again_with_an_order(d):
@@ -892,9 +889,7 @@ async def test_a_draft_closed_as_no_document_opens_again_with_an_order(d):
     message = album(d, b"one", b"two")
     d.drafts.tick()
     draft = draft_of(d, message)
-    d.drafts.change(
-        "owner", OWNER, SPACES, draft_id=draft, order=None, add=None, reply_to=None, revision=1, not_a_document=True
-    )
+    declined(d, draft)
     ordered(d, draft, [1, 2], revision=1)
     await d.drafts.run_once()
     assert state(d, draft) == "done"
@@ -906,9 +901,7 @@ async def test_a_mark_served_after_the_model_closed_the_draft_says_so(d):
     message = album(d, b"one", b"two")
     d.drafts.tick()
     draft = draft_of(d, message)
-    d.drafts.change(
-        "owner", OWNER, SPACES, draft_id=draft, order=None, add=None, reply_to=None, revision=1, not_a_document=True
-    )
+    declined(d, draft)
     [update] = served(d)
     assert update["message"]["text"].endswith(
         f"⟦document draft {draft} · 2 pages made from the images above, in the order they came: 1 record ev10, 2 "
@@ -932,7 +925,7 @@ async def test_not_a_document_is_refused_with_anything_else(d, kwargs, refusal):
     d.drafts.tick()
     change = {"draft_id": draft_of(d, message), "order": None, "add": None, "revision": None} | kwargs
     with pytest.raises(DraftRefused) as refused:
-        d.drafts.change("owner", OWNER, SPACES, reply_to=None, not_a_document=True, **change)
+        d.drafts.change("owner", OWNER, SPACES, reply_to=10, not_a_document=True, **change)
     assert str(refused.value) == refusal
 
 
@@ -940,20 +933,112 @@ async def test_a_document_being_built_or_built_is_a_document(d):
     message = album(d, b"one", b"two")
     d.drafts.tick()
     draft = draft_of(d, message)
-    for draft_state, refusal in (
-        ("building", "its PDF is being made: try again in a moment"),
-        ("done", "its PDF is made"),
-    ):
+    for draft_state in ("building", "done"):
         d.conn.execute("UPDATE draft SET state=?", (draft_state,))
-        with pytest.raises(DraftRefused, match=f"^{refusal}"):
-            d.drafts.change(
-                "owner",
-                OWNER,
-                SPACES,
-                draft_id=draft,
-                order=None,
-                add=None,
-                reply_to=None,
-                revision=1,
-                not_a_document=True,
-            )
+        with pytest.raises(DraftRefused, match=r"^its PDF is made already$"):
+            declined(d, draft)
+
+
+async def test_a_draft_the_model_ordered_or_another_turn_offers_is_never_closed(d):
+    """The review's I2: a selfie sent while the model reads a contract is offered to its draft; the model must not
+    close the contract from that turn, nor once it put the pages in order."""
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    draft = draft_of(d, message)
+    selfie = album(d, b"me", first=20)
+    d.drafts.tick()
+    assert draft_of(d, selfie) == draft  # offered: its batch is still with the model
+    with pytest.raises(DraftRefused, match=r"^only the turn on the photos that made the draft closes it$"):
+        declined(d, draft, message_id=20)
+    ordered(d, draft, [1, 2], revision=1, reply_to=10)
+    with pytest.raises(DraftRefused, match=r"^it was put in order already: it is a document$"):
+        declined(d, draft, revision=2)
+    assert state(d, draft) == "open"
+
+
+async def test_a_photo_is_never_offered_to_an_album_the_model_said_nothing_of(d):
+    """The review's I1: holiday photos the model neither ordered nor closed are no document a later photo joins."""
+    message = album(d, b"beach", b"sea")
+    d.drafts.tick()
+    served(d)
+    d.queue.mark_answered(OWNER, prefer=message)  # answered without make_pdf
+    lone = album(d, b"more sea", first=20)
+    d.drafts.tick()
+    assert draft_of(d, lone) is None
+
+
+async def test_a_page_sent_while_the_pdf_is_built_makes_the_next_version_and_the_old_build_goes_unsent(d):
+    """The review's I3: the person sends the missing page while a long PDF is drawn; the model adds it, and the
+    PDF that was being drawn, now out of date, is never sent nor kept as a version."""
+    message = album(d, b"one", b"three")
+    d.drafts.tick()
+    draft = draft_of(d, message)
+    ordered(d, draft, [1, 2], revision=1)
+    original = d.renderer.pages
+
+    async def page_meanwhile(action, inputs, job, *, max_bytes):
+        d.renderer.pages = original
+        later = album(d, b"two", first=20)
+        d.drafts.tick()
+        assert draft_of(d, later) == draft  # offered while building
+        ordered(d, draft, [1, 3, 2], revision=2, add=["ev20"], reply_to=20)
+        return await original(action, inputs, job, max_bytes=max_bytes)
+
+    d.renderer.pages = page_meanwhile
+    await d.drafts.run_once()
+    assert d.conn.execute("SELECT COUNT(*) FROM document_version").fetchone()[0] == 0
+    assert outbound(d, f"draft_pdf:{draft}:1") is None
+    await d.drafts.run_once()
+    assert d.renderer.calls[-1] == ("pdf", [b"one", b"two", b"three"])
+    assert outbound(d, f"draft_pdf:{draft}:1")[2]["reply_to"] == 20
+    indexed = {row[0] for row in d.conn.execute("SELECT DISTINCT evidence_id FROM evidence_fts")}
+    stale = d.conn.execute("SELECT id FROM evidence WHERE ingest_key=?", (f"draft:{draft}:2",)).fetchone()[0]
+    assert stale not in indexed
+
+
+async def test_a_change_for_the_persons_words_waits_for_the_answer_to_them(d):
+    """The review's M1: the person's words carry no draft; the PDF waits until the turn on them is answered."""
+    d.drafts.hold = HOLD_SECONDS
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    served(d)
+    draft = draft_of(d, message)
+    ordered(d, draft, [1, 2], revision=1, reply_to=10)
+    d.queue.mark_answered(OWNER, prefer=message)
+    await d.drafts.run_once()
+    words = d.conn.execute(
+        "INSERT INTO host_message(kind, chat_id, message_id, sender_id, date, created_at) "
+        "VALUES ('text', ?, 60, ?, 1, ?)",
+        (OWNER, OWNER, d.clock()),
+    ).lastrowid
+    d.conn.execute(
+        "INSERT INTO host_update(update_id, host_message_id, issued_at) VALUES (9999, ?, ?)", (words, d.clock())
+    )
+    ordered(d, draft, [2, 1], reply_to=60)
+    await d.drafts.run_once()
+    assert outbound(d, f"draft_pdf:{draft}:2") is None  # the turn on the words has not answered
+    d.queue.mark_answered(OWNER, prefer=words)
+    await d.drafts.run_once()
+    assert outbound(d, f"draft_pdf:{draft}:2")[2]["reply_to"] == 60
+
+
+async def test_an_album_sent_after_the_first_is_offered_to_its_document_and_makes_nothing_if_added(d):
+    """The review's I5: Telegram sends at most ten photos an album, so a long document comes as several; the mark of
+    the next one names the chat's document, and the model adds its photos there."""
+    first = album(d, b"one", b"two")
+    d.drafts.tick()
+    draft = draft_of(d, first)
+    second = album(d, b"three", b"four", first=20)
+    d.drafts.tick()
+    other = draft_of(d, second)
+    texts = [update["message"]["text"] for update in served(d)]
+    assert texts[1].endswith(
+        "make the PDF. If instead these images continue the chat's latest document, draft "
+        f"{draft} of 2 pages (1 record ev10, 2 record ev11; revision 1), as their content or the person's words say, "
+        f"pass klepa__make_pdf with draft {draft}, revision 1, add with these images' records, and order with every "
+        f"page, these numbered after its pages; this draft then makes nothing; {NEVER}⟧"
+    )
+    ordered(d, draft, [1, 2, 3, 4], revision=1, add=["ev20", "ev21"])
+    await d.drafts.run_once()
+    assert d.renderer.calls == [("pdf", [b"one", b"two", b"three", b"four"])]
+    assert state(d, other) == "open"  # never ordered: it makes nothing

@@ -386,7 +386,6 @@ def _attachments(
         jobs=None if processing is None else processing.jobs,
         stop_reading=None if processing is None or not workers else processing.stop_reading,
     )
-    attachments.drafts = drafts
     queue = host.queue
 
     def ended() -> None:  # a job ended: its batch may make a draft, go to the host, have its interim answer edited

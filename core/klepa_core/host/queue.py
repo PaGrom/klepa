@@ -36,6 +36,7 @@ PROBE_KINDS = ("probe", "model_probe")
 FORWARDED_MARK = "[forwarded message]"
 
 MayServe = Callable[[int, str], bool]
+OFFER_SECONDS = 3600.0  # photos sent this soon after the chat's document draft changed are offered to it as pages
 FRAGMENT_CHARS = 4000  # a text this long is joined with the next message (OpenClaw 2026.9.4, its Telegram ingress)
 KEEP_DIGESTS = 1000
 
@@ -289,24 +290,53 @@ class HostQueue:
         mark = FORWARDED_MARK if row["forwarded"] else None
         return attachment_text(captions, self._items(int(row["id"])), forwarded_mark=mark, draft=self._draft(row))
 
+    def latest_document(self, chat_id: int, before: int | None = None) -> sqlite3.Row | None:
+        """The chat's latest draft that is a document, changed less than an hour ago (older than draft `before`):
+        the model ordered it, or a batch of it is still with the model (the review's I1: never an album the model said
+        nothing of)."""
+        row: sqlite3.Row | None = self.conn.execute(
+            "SELECT * FROM draft d WHERE chat_id = ? AND id < ? AND state IN ('open', 'building', 'done') "
+            "AND updated_at >= ? AND (ordered IS NOT NULL OR EXISTS (SELECT 1 FROM host_message m WHERE m.draft_id = "
+            "d.id AND m.draft_revision IS NOT NULL AND m.answered_at IS NULL AND m.cancelled_at IS NULL)) "
+            "ORDER BY id DESC LIMIT 1",
+            (chat_id, before if before is not None else 2**62, self.clock() - OFFER_SECONDS),
+        ).fetchone()
+        return row
+
     def _draft(self, row: sqlite3.Row) -> Draft | None:
-        """The draft the batch's images made, at the revision they made; or the one its photo is offered to, as it
-        is now."""
+        """The draft the batch's images made, at the revision they made, with the chat's document they may continue;
+        or the one its photo is offered to, as it is now."""
         if row["draft_id"] is None:
             return None
-        draft_id = int(row["draft_id"])
-        draft = self.conn.execute("SELECT * FROM draft WHERE id=?", (draft_id,)).fetchone()
+        draft = self.conn.execute("SELECT * FROM draft WHERE id=?", (int(row["draft_id"]),)).fetchone()
         made = row["draft_revision"] is not None
         revision = int(row["draft_revision"]) if made else int(draft["revision"])
-        records = tuple(
+        previous = self.latest_document(int(draft["chat_id"]), int(draft["id"])) if made else None
+        return Draft(
+            int(draft["id"]),
+            self._draft_records(int(draft["id"]), revision),
+            revision,
+            made,
+            draft["state"] == "open" and draft["revision"] == revision and draft["ordered"] is None,
+            str(draft["state"]),
+            None
+            if previous is None
+            else Draft(
+                int(previous["id"]),
+                self._draft_records(int(previous["id"]), int(previous["revision"])),
+                int(previous["revision"]),
+                made=False,
+            ),
+        )
+
+    def _draft_records(self, draft_id: int, revision: int) -> tuple[str, ...]:
+        return tuple(
             str(page[0])
             for page in self.conn.execute(
                 "SELECT evidence_id FROM draft_page WHERE draft_id=? AND revision=? ORDER BY position",
                 (draft_id, revision),
             )
         )
-        waits = draft["state"] == "open" and draft["revision"] == revision and draft["ordered"] is None
-        return Draft(draft_id, records, revision, made, waits, draft["state"] == "declined")
 
     def _next_update_id(self, now: float) -> int:
         last = self.conn.execute("SELECT COALESCE(MAX(update_id), 0) FROM host_update").fetchone()[0]

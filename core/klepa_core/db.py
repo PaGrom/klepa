@@ -232,10 +232,10 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     conn.execute("COMMIT")
 
 
-# Stage 2c-1: a document made from photos (spec 6.1 item 4, make_pdf). A draft holds a person's pages in an order they
-# check on a sheet of numbered thumbnails; each change is a revision with its own pages and sheet, and Done builds the
-# PDF of the current revision as a version of the document: a record Core derived, which names its sources. A batch is
-# looked at once for a draft; the batches closed before this stage are not.
+# Stage 2c-1: a document made from photos (spec 6.1 item 4, make_pdf). A draft holds a person's pages; each change is a
+# revision with its own pages, and its PDF a version of the document: a record Core derived, which names its sources.
+# A batch is looked at once for a draft; the batches closed before this stage are not. Version 7's sheets and buttons
+# are no longer used since version 8 (draft_sheet stays, unused).
 SCHEMA_V7 = (
     """CREATE TABLE draft (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -278,7 +278,10 @@ SCHEMA_V7 = (
 
 # Stage 2c-1 reworked (the owner, 2026-10-27): no sheet to check; the PDF of the revision the model ordered goes out
 # after its answer.
-SCHEMA_V8 = ("ALTER TABLE draft ADD COLUMN ordered INTEGER",)
+SCHEMA_V8 = (
+    "ALTER TABLE draft ADD COLUMN ordered INTEGER",  # the revision the model ordered
+    "ALTER TABLE draft ADD COLUMN ordered_by INTEGER REFERENCES host_message(id)",  # the turn's message that did
+)
 
 
 def migrate(conn: sqlite3.Connection) -> int:

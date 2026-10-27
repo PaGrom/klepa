@@ -427,14 +427,14 @@ TOOLS = (
         "Make a PDF of a person's photos of a document, or change one. Two or more photos sent at once make a draft, "
         "which Core's mark names with its pages by number: before you answer, pass the draft, its revision and order, "
         "the pages in the order their content shows (how a text runs on, headings, signatures, page numbers), each "
-        "page once, leaving out a photo that shows the same page as another; Core sends the person the PDF of the "
-        "originals once you have answered. Say in your answer which photos you left out as repeats and which page "
-        "seems missing. If they are no document, pass not_a_document instead, and no PDF is made. When the person asks "
-        "in words to reorder, drop or add pages, or sends a page that was missing, call this with the draft: add lists "
-        "records of more photos, numbered after the draft's pages, and order lists the pages to keep by number in "
-        "their new order; Core sends the new PDF, a new version, once you have answered. Without a draft, add starts a "
-        "new one. A PDF over 50 MB is not made: if the person says so, split the pages into two drafts. Never show the "
-        "draft's id.",
+        "page once, leaving a photo out only when its text is the same as another's; Core sends the person the PDF of "
+        "the originals once you have answered. Say in your answer which photos you left out, if any, and which page "
+        "seems missing, if any. If they are no document, pass not_a_document instead, and no PDF is made. When the "
+        "person asks in words to reorder, drop or add pages, or sends a page that was missing, call this with the "
+        "draft: add lists records of more photos, numbered after the draft's pages, and order lists the pages to keep "
+        "by number in their new order; Core sends the new PDF, a new version, once you have answered. Without a draft,"
+        " add starts a new one. A PDF over 50 MB is not made: if the person says so, split the pages into two drafts. "
+        "Never show the draft's id.",
         {
             "draft": {"type": "integer", "description": "The draft to change; none for a new one."},
             "order": {

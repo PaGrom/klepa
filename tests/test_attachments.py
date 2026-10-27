@@ -8,7 +8,6 @@ import pytest
 from helpers import MEMBER, OWNER, Clock, host_peers, job_of, record
 from klepa_core.events import EventLog
 from klepa_core.gatekeeper.attachments import Attachments
-from klepa_core.gatekeeper.drafts import Answer
 from klepa_core.gatekeeper.intake import Classified
 from klepa_core.gatekeeper.outbox import Outbox
 from klepa_core.host.queue import HostQueue
@@ -342,33 +341,15 @@ def test_the_edit_never_says_read_when_a_file_of_the_batch_has_no_reader(setup):
     assert outbound(conn, f"interim_edit:{message}")[2]["text"] == "I couldn't read it. The file is saved."
 
 
-class Drafts:
-    """The drafts' side of a press: what they were given, and their answer."""
-
-    def __init__(self):
-        self.pressed = []
-
-    def press(self, action, chat_id):
-        self.pressed.append((action, chat_id))
-        return Answer("how to change the order", alert=True)
-
-
-async def test_a_drafts_button_goes_to_the_drafts_only_once_its_checks_pass(setup):
+async def test_a_button_of_a_drafts_old_sheet_no_longer_works(setup):
+    """The sheets of drafts Core sent before 2026-10-27 keep their buttons on the person's screen."""
     attachments, _, conn, clock, api, _ = setup
-    attachments.drafts = drafts = Drafts()
     attachments.outbox.enqueue_text("draft_sheet:1:1", OWNER, "a sheet")
     confirm(conn, "draft_sheet:1:1", 500)
     conn.execute(
         "INSERT INTO button_action(id, action, chat_id, outbound_key, expires_at) VALUES (?, ?, ?, ?, ?)",
-        ("b" * 32, "draft_order:1:1", OWNER, "draft_sheet:1:1", clock() + 60),
+        ("b" * 32, "draft_done:1:1", OWNER, "draft_sheet:1:1", clock() + 60),
     )
     press = Classified("press", chat_id=OWNER, from_id=OWNER, message_id=500, callback_id="cb", data="b" * 32)
     await attachments.press(press)
-    assert drafts.pressed == [("draft_order:1:1", OWNER)]
-    assert api.answered == [("cb", "how to change the order", "alert")]
-    elsewhere = Classified("press", chat_id=OWNER, from_id=OWNER, message_id=501, callback_id="cb2", data="b" * 32)
-    await attachments.press(elsewhere)
-    clock.advance(61)
-    await attachments.press(press)
-    assert drafts.pressed == [("draft_order:1:1", OWNER)]  # on another message, then expired: never theirs
-    assert api.answered[1:] == [("cb2", "This button no longer works."), ("cb", "This button no longer works.")]
+    assert api.answered == [("cb", "This button no longer works.")]
