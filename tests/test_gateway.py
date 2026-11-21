@@ -381,3 +381,20 @@ def test_preparing_keeps_the_folder_out_of_time_machine_every_time(setup):
     assert excluded == [layout.host_dir, layout.host_dir]
     assert warnings == ["the gateway's folder is not excluded from Time Machine: tmutil refused"] * 2
     assert stat.S_IMODE(layout.home.stat().st_mode) == 0o700
+
+
+async def test_a_token_that_cannot_be_read_while_the_gateway_runs_does_not_stop_it(setup):
+    port = free_port()
+    runner = await health_server(port, "started", True)
+    try:
+        assert await control(setup, FakeLaunchd(), port=port, token=None).ready() is None
+    finally:
+        await runner.cleanup()
+
+
+async def test_the_model_token_is_checked_before_the_gateway_starts(setup):
+    """While the gateway is down its state is free to read: a missing token is named before launchd loads it."""
+    launchd = FakeLaunchd()
+    problem = await control(setup, launchd, token=False).start()
+    assert problem == "no model token: run klepa-core host login"
+    assert not any(call[1] == "bootstrap" for call in launchd.calls)

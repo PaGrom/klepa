@@ -273,3 +273,20 @@ def test_a_failed_openclaw_command_raises_whatever_it_printed(tmp_path):
 
     with pytest.raises(rt.HostRuntimeError, match="unknown method"):
         rt.openclaw_json(runtime, layout, "gateway", "call", "tools.effective", run=failing)
+
+
+def test_a_running_gateway_leaves_the_model_token_unknown_not_missing(tmp_path):
+    """OpenClaw 2026.10 lets nobody read its auth store while a gateway owns the state: that answer is "cannot tell",
+    which must not stop the gateway as if the owner had never logged in."""
+    runtime = rt.Runtime(tmp_path / "runtime")
+    layout = HostLayout(runtime_dir=runtime.root, host_dir=tmp_path / "host")
+
+    def answering(stdout, code=0):
+        return lambda argv, **kwargs: subprocess.CompletedProcess(argv, code, stdout, "")
+
+    owned = '{"error": "operation requires exclusive offline state ownership. No local mutation was attempted."}'
+    assert rt.model_token_stored(runtime, layout, run=answering(owned, 1)) is None
+    listed = '{"profiles": [{"id": "anthropic:klepa", "provider": "anthropic", "type": "token"}]}'
+    assert rt.model_token_stored(runtime, layout, run=answering(listed)) is True
+    assert rt.model_token_stored(runtime, layout, run=answering('{"profiles": []}')) is False
+    assert rt.model_token_stored(runtime, layout, run=answering("not json", 1)) is False
