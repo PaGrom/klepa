@@ -58,7 +58,9 @@ class FakeOpenClaw:
             answer = {"status": "external", "ownership": {"managerId": "klepa-core"}}
             return subprocess.CompletedProcess(argv, 0, json.dumps(answer), "")
         if self.owned and ("list" in tail or "paste-token" in tail):
-            refusal = {"error": "operation requires exclusive offline state ownership. Inspect openclaw gateway status."}
+            refusal = {
+                "error": "operation requires exclusive offline state ownership. Inspect openclaw gateway status."
+            }
             return subprocess.CompletedProcess(argv, 1, json.dumps(refusal), "")
         if "list" in tail:
             answer = {"profiles": [{"id": name, "type": "token"} for name in self.profiles]}

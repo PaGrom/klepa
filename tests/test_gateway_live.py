@@ -250,14 +250,20 @@ async def test_a_members_command_never_reaches_the_host(stand_args):
 
 
 async def test_a_new_token_reaches_the_running_gateway(stand_args):
-    """The owner logs in again while Core runs the gateway: the token is stored, the config stays Core's, and the
-    running gateway is asked to take it at once."""
+    """The owner logs in again while Core runs the gateway: OpenClaw 2026.10 stores a token only while no gateway owns
+    its state, so login stops it; the token is stored, the config stays Core's, and Core starts the gateway again and
+    gates it, without an alert for what the owner did himself."""
     async with live_stand(*stand_args) as live:
         await wait_until(lambda: live.state() == "RUNNING", timeout=90)
         config = (live.cfg.host_dir / "openclaw.json").read_bytes()
+        seen = len(live.states())
         assert await asyncio.to_thread(host.login, live.cfg, DUMMY_TOKEN.replace("x", "y")) is True
         assert (live.cfg.host_dir / "openclaw.json").read_bytes() == config
-        assert live.state() == "RUNNING"
+        await wait_until(lambda: any(s["state"] == "RUNNING" for s in live.states()[seen:]), timeout=120)
+        assert [s["reason"] for s in live.states()[seen:]][0] == "login"
+        live.telegram.add_text(MEMBER, "after the new token")
+        await wait_until(lambda: "STUB: after the new token" in live.sent(), timeout=60)
+        assert [alert for alert in live.alerts.sent if "host" in alert["params"]["text"]] == []
 
 
 async def test_an_unmarked_openclaw_cannot_write_the_gateways_state(stand_args):

@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
@@ -22,6 +23,7 @@ from . import gateway, reference
 from . import runtime as rt
 from .supervisor import GatewayUnknown
 
+OWNERSHIP_TRIES = 20  # seconds host login waits for a stopped gateway to release its state
 PROFILE_ID = reference.MODEL_PROFILE
 SETUP_TOKEN_PREFIX = "sk-ant-oat01-"  # OpenClaw takes only Anthropic's setup-token here, from `claude setup-token`
 SETUP_TOKEN_MIN_LENGTH = 80
@@ -106,10 +108,27 @@ def login(cfg: Config, token: str, *, run: rt.Runner = rt._run) -> bool:
         runtime, "models", "auth", "paste-token", "--provider", "anthropic", "--profile-id", PROFILE_ID
     )
     result = run(argv, env=rt.gateway_env(runtime, layout), input=token + "\n", timeout=120)
+    stopped = False
+    if result.returncode != 0 and rt.OFFLINE_OWNERSHIP in result.stdout + result.stderr:
+        # OpenClaw 2026.10 stores a token only while no gateway owns its state. Core's gateway stops for it, and the
+        # mark tells Core, which starts it again with the token and gates it, that the owner stopped it.
+        rt.write_private(layout.login_mark, b"host login\n")
+        stop = run(["launchctl", "bootout", _agent()], timeout=60)
+        if stop.returncode not in (0, 3, 113):  # 3 and 113: no such service, nothing to stop
+            raise rt.HostRuntimeError(f"the gateway did not stop for the token: {stop.stderr.strip()[-200:]}")
+        stopped = True
+        for _ in range(OWNERSHIP_TRIES):  # the state's ownership is released a moment after the process ends
+            result = run(argv, env=rt.gateway_env(runtime, layout), input=token + "\n", timeout=120)
+            if result.returncode == 0 or rt.OFFLINE_OWNERSHIP not in result.stdout + result.stderr:
+                break
+            time.sleep(1.0)
     if result.returncode != 0 and "externally managed" not in result.stderr:
-        raise rt.HostRuntimeError(f"OpenClaw did not store the token: {result.stderr.strip()[-300:]}")
+        detail = (result.stderr.strip() or result.stdout.strip())[-300:]
+        raise rt.HostRuntimeError(f"OpenClaw did not store the token: {detail}")
     if has_model_access(cfg, run=run) is False:
         raise rt.HostRuntimeError(f"OpenClaw does not list {PROFILE_ID} after storing it")
+    if stopped:
+        return True  # Core starts the gateway again, which reads the token
     params = json.dumps({"refresh": True, "agentId": "main"})
     try:
         rt.openclaw_json(runtime, layout, "gateway", "call", "models.authStatus", "--params", params, run=run)

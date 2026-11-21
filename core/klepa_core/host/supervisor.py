@@ -102,6 +102,9 @@ class GatewayControl(Protocol):
     async def ready(self) -> str | None:
         """None once the gateway reports ready, else the reason it is not."""
 
+    def stopped_for_login(self) -> bool:
+        """Whether the owner's host login stopped the gateway just now (and forget it)."""
+
 
 class NoGatewayControl:
     """A gateway somebody else runs: Core neither starts nor stops it; the heartbeat and the live probe gate it."""
@@ -119,6 +122,9 @@ class NoGatewayControl:
 
     async def ready(self) -> str | None:
         return None
+
+    def stopped_for_login(self) -> bool:
+        return False
 
 
 def _same(a: object, b: object) -> bool:
@@ -342,6 +348,12 @@ class Supervisor:
             process = await self.control.process()
         except GatewayUnknown:
             return False
+        if process is None and self.control.stopped_for_login():
+            self._start_wanted = True  # the owner's own stop, to store a token: no alert, and it is no crash
+            if not self.paused:
+                self.gated_boot = None
+                self._set(GatewayState.STARTING, "login")
+            return True
         if process is None:
             self._exits.append(now)
             while now - self._exits[0] > RESTART_WINDOW_SECONDS:

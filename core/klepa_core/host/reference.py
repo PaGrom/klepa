@@ -167,6 +167,11 @@ class HostLayout:
     def gateway_token(self) -> Path:
         return self.host_dir / "gateway.token"
 
+    @property
+    def login_mark(self) -> Path:
+        """Left by host login when it stopped the gateway to store a token: Core starts it again without an alert."""
+        return self.host_dir / "login.pending"
+
 
 @dataclass(frozen=True)
 class HostSettings:

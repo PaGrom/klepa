@@ -23,6 +23,7 @@ import plistlib
 import re
 import secrets
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,7 @@ from .reference import PLUGIN_ID, HostLayout, render
 from .supervisor import GatewayUnknown
 
 LABEL = "klepa.gateway"
+LOGIN_SECONDS = 120.0  # how long host login's mark explains a stopped gateway
 BOOTSTRAP_ATTEMPTS = 5
 READY_SECONDS = 60.0  # after a long outage of Core the gateway may wait 30 s before it polls again
 LOG_TAIL_BYTES = 16 * 1024 * 1024
@@ -272,6 +274,16 @@ class LaunchdGateway:
             error = result.stderr.strip()
             await asyncio.sleep(self.retry_seconds)
         return f"launchctl bootstrap: {error}"[:200]
+
+    def stopped_for_login(self) -> bool:
+        """host login left its mark when it stopped the gateway for a token, within the last LOGIN_SECONDS."""
+        mark = self.layout.login_mark
+        try:
+            fresh = time.time() - mark.stat().st_mtime < LOGIN_SECONDS
+            mark.unlink()
+        except OSError:
+            return False
+        return fresh
 
     async def stop(self) -> None:
         await self._launchctl("bootout", f"{self.target}/{LABEL}")
