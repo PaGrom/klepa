@@ -108,7 +108,7 @@ def login(cfg: Config, token: str, *, run: rt.Runner = rt._run) -> bool:
     result = run(argv, env=rt.gateway_env(runtime, layout), input=token + "\n", timeout=120)
     if result.returncode != 0 and "externally managed" not in result.stderr:
         raise rt.HostRuntimeError(f"OpenClaw did not store the token: {result.stderr.strip()[-300:]}")
-    if not has_model_access(cfg, run=run):
+    if has_model_access(cfg, run=run) is False:
         raise rt.HostRuntimeError(f"OpenClaw does not list {PROFILE_ID} after storing it")
     params = json.dumps({"refresh": True, "agentId": "main"})
     try:
@@ -118,7 +118,7 @@ def login(cfg: Config, token: str, *, run: rt.Runner = rt._run) -> bool:
     return True
 
 
-def has_model_access(cfg: Config, *, run: rt.Runner = rt._run) -> bool:
+def has_model_access(cfg: Config, *, run: rt.Runner = rt._run) -> bool | None:
     runtime, layout = _parts(cfg)
     return rt.model_token_stored(runtime, layout, run=run)
 
@@ -130,7 +130,10 @@ def status(cfg: Config, *, run: rt.Runner = rt._run, launchctl: gateway.Runner |
     lines = [f"runtime: Node {node or 'missing'}, OpenClaw {openclaw or 'missing'}"]
     lines.append(f"gateway: {_agent_line(launchctl or gateway._run)}")
     if openclaw is not None and layout.config_path.exists():
-        access = "stored" if has_model_access(cfg, run=run) else "missing: run klepa-core host login"
+        stored = has_model_access(cfg, run=run)
+        access = {True: "stored", None: "not readable while the gateway runs"}.get(
+            stored, "missing: run klepa-core host login"
+        )
         lines.append(f"model token ({PROFILE_ID}): {access}")
     lines.append(f"Core: {_core_view(cfg)}")
     return lines

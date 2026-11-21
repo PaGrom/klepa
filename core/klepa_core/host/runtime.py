@@ -38,6 +38,7 @@ NODE_URL = f"https://nodejs.org/dist/v{NODE_VERSION}/{NODE_ARCHIVE}"
 NODE_SHA256 = "6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe"
 NODE_MAX_BYTES = 100 * 1024 * 1024
 OPENCLAW_VERSION = "2026.10.33"
+OFFLINE_OWNERSHIP = "exclusive offline state ownership"  # OpenClaw's refusal while a gateway owns its state
 PROFILE = "klepa"
 OWNERSHIP_MANAGER = "klepa-core"
 ADAPTER_FILES = ("index.ts", "mcp.ts", "openclaw.plugin.json", "package.json")
@@ -314,12 +315,13 @@ def openclaw_json(
     return answer
 
 
-def model_token_stored(runtime: Runtime, layout: HostLayout, *, run: Runner = _run) -> bool:
-    """Whether the gateway's auth store holds the model's profile. Whether the token still works only a call shows."""
+def model_token_stored(runtime: Runtime, layout: HostLayout, *, run: Runner = _run) -> bool | None:
+    """Whether the gateway's auth store holds the model's profile; None when OpenClaw cannot tell now: since 2026.10
+    nothing reads its state while a gateway owns it. Whether the token still works only a call shows."""
     try:
         answer = openclaw_json(runtime, layout, "models", "auth", "list", "--provider", "anthropic", run=run)
-    except HostRuntimeError:
-        return False
+    except HostRuntimeError as exc:
+        return None if OFFLINE_OWNERSHIP in str(exc) else False
     profiles = answer.get("profiles")
     return isinstance(profiles, list) and any(
         isinstance(profile, dict) and profile.get("id") == MODEL_PROFILE for profile in profiles

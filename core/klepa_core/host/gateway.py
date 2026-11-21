@@ -185,7 +185,7 @@ class LaunchdGateway:
         uid: int | None = None,
         ready_seconds: float = READY_SECONDS,
         validate: Callable[[], None] | None = None,
-        model_access: Callable[[], bool] | None = None,
+        model_access: Callable[[], bool | None] | None = None,
     ) -> None:
         self.runtime = runtime
         self.layout = layout
@@ -257,6 +257,9 @@ class LaunchdGateway:
             return None
         if state is None or state.loaded:
             await self.stop()
+        # While the gateway is down its state is free to read (OpenClaw 2026.10 refuses it to others while one runs).
+        if await asyncio.to_thread(self.model_access) is False:
+            return "no model token: run klepa-core host login"
         error = ""
         for _ in range(BOOTSTRAP_ATTEMPTS):
             result = await self._launchctl("bootstrap", self.target, str(self.plist_path))
@@ -295,7 +298,7 @@ class LaunchdGateway:
         problem = await asyncio.to_thread(hook_problem, self.layout.gateway_log)
         if problem is not None:
             return problem
-        if not await asyncio.to_thread(self.model_access):
+        if await asyncio.to_thread(self.model_access) is False:  # None: a running gateway owns the state
             return "no model token: run klepa-core host login"  # OpenClaw refuses every turn before the hooks
         return None
 
