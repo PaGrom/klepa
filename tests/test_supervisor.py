@@ -45,6 +45,11 @@ class FakeControl:
         self.stops = 0
         self.starts = 0
         self.running = None
+        self.login = False  # the owner's host login stopped the gateway
+
+    def stopped_for_login(self):
+        login, self.login = self.login, False
+        return login
 
     async def start(self):
         self.starts += 1
@@ -578,3 +583,18 @@ def test_the_default_budget_outlasts_openclaws_own_retries():
     timing = HostTiming()
     assert timing.model_probe >= 120.0  # OpenClaw gave up on a busy provider after 82 s (finding 17)
     assert timing.model_retries == (30.0,)
+
+
+async def test_a_gateway_the_owners_login_stopped_comes_back_without_an_alert(make):
+    """OpenClaw 2026.10 stores a token only while no gateway runs, so host login stops it: Core starts it again and
+    gates it, and tells the owner nothing he did not do himself."""
+    control = FakeControl(managed=True)
+    supervisor, alerts, _ = make(control=control, timing=managed())
+    async with running(supervisor):
+        await gate(supervisor)
+        control.login = True
+        control.running = None
+        await wait_until(lambda: control.starts == 2)
+        assert (supervisor.state, supervisor.reason) == (GatewayState.STARTING, "login")
+        await gate(supervisor, boot="boot-bbbbbbbb")
+    assert alerts.raised == []

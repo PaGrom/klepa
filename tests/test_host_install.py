@@ -38,6 +38,7 @@ class FakeOpenClaw:
         self.gateway_runs = gateway_runs
         self.paste = paste
         self.calls: list[tuple[list[str], dict | None, str | None]] = []
+        self.owned = False  # OpenClaw 2026.10: a running gateway owns the state, and token commands refuse
 
     def __call__(self, argv, *, env=None, timeout=600.0, input=None):
         argv = [str(part) for part in argv]
@@ -56,6 +57,9 @@ class FakeOpenClaw:
         if "ownership" in tail:
             answer = {"status": "external", "ownership": {"managerId": "klepa-core"}}
             return subprocess.CompletedProcess(argv, 0, json.dumps(answer), "")
+        if self.owned and ("list" in tail or "paste-token" in tail):
+            refusal = {"error": "operation requires exclusive offline state ownership. Inspect openclaw gateway status."}
+            return subprocess.CompletedProcess(argv, 1, json.dumps(refusal), "")
         if "list" in tail:
             answer = {"profiles": [{"id": name, "type": "token"} for name in self.profiles]}
             return subprocess.CompletedProcess(argv, 0, json.dumps(answer), "")
@@ -71,6 +75,9 @@ class FakeOpenClaw:
                 return subprocess.CompletedProcess(argv, 1, "", "gateway closed (1006): connect ECONNREFUSED")
             return subprocess.CompletedProcess(argv, 0, json.dumps({"providers": []}), "")
         if argv[0] == "launchctl":
+            if argv[1] == "bootout" and self.owned:
+                self.owned = False  # the gateway is gone, and with it the state's owner
+                return subprocess.CompletedProcess(argv, 0, "", "")
             return subprocess.CompletedProcess(argv, 113, "", "Could not find service")
         raise AssertionError(argv)
 
@@ -319,3 +326,16 @@ def test_allowed_lists_the_ids_a_gateway_admits_and_whose_each_is(cfg, capsys, t
     assert [int(peer) for peer, _ in listed] == expected
     assert [whose for _, whose in listed] == [*(member.person_id for member in cfg.members), "the live probe"]
     assert not [member for member in cfg.members if str(member.telegram_id) in out]  # never a Telegram id
+
+
+def test_a_running_gateway_is_stopped_for_the_token_and_core_told_why(cfg):
+    """OpenClaw 2026.10 stores a token only while no gateway owns its state: login stops Core's gateway, stores the
+    token, and leaves a mark, so that Core starts the gateway again without an alert."""
+    _, fake = installed(cfg)
+    fake.owned = True
+    assert host.login(cfg, TOKEN, run=fake) is True
+    verbs = [call[0][1] for call in fake.calls if call[0][0] == "launchctl"]
+    assert verbs == ["bootout"]
+    pastes = [call for call in fake.calls if "paste-token" in call[0]]
+    assert len(pastes) == 2  # refused while the gateway ran, stored once it was down
+    assert (cfg.host_dir / "login.pending").exists()
