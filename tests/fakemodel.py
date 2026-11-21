@@ -109,6 +109,7 @@ def provider_table(url: str) -> dict[str, Any]:
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                     "contextWindow": 32000,
                     "maxTokens": 1000,
+                    "api": "openai-completions",  # OpenClaw 2026.10 writes the provider's into each model
                 }
             ],
         },
