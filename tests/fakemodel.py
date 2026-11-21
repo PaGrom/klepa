@@ -18,6 +18,7 @@ from aiohttp import web
 PROVIDER = "klepatest"
 MODEL = f"{PROVIDER}/scripted"
 INTERNAL = "OPENCLAW_INTERNAL_CONTEXT"  # OpenClaw's own context messages are not the person's
+CARRIER = "OpenClaw runtime context:"  # since 2026.10 OpenClaw's context comes as a user message starting so
 
 
 def text_of(content: Any) -> str:
@@ -41,7 +42,8 @@ class Request:
     def human_index(self) -> int:
         for index in range(len(self.messages) - 1, -1, -1):
             message = self.messages[index]
-            if message.get("role") == "user" and INTERNAL not in text_of(message.get("content")):
+            text = text_of(message.get("content"))
+            if message.get("role") == "user" and INTERNAL not in text and not text.lstrip().startswith(CARRIER):
                 return index
         return -1
 
