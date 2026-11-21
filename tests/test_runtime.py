@@ -151,7 +151,7 @@ def test_a_failed_or_wrong_openclaw_install_is_reported(tmp_path):
     with_node(runtime)
     with pytest.raises(rt.HostRuntimeError, match="EINTEGRITY"):
         rt.ensure_openclaw(runtime, run=FakeRunner(runtime, npm_fails=True), say=lambda line: None)
-    with pytest.raises(rt.HostRuntimeError, match=r"not 2026\.9\.4"):
+    with pytest.raises(rt.HostRuntimeError, match=r"not 2026\.10\.33"):
         rt.ensure_openclaw(runtime, run=FakeRunner(runtime, reports="2026.9.5"), say=lambda line: None)
 
 
