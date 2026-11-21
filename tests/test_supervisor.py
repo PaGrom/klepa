@@ -167,8 +167,8 @@ def test_heartbeat_problems_are_named(change, expect, problem):
 
 
 def test_another_openclaw_release_is_a_problem():
-    expect = Expectations(version="2026.9.4")
-    assert check_heartbeat(FULL | {"version": "2026.9.4"}, expect) == []
+    expect = Expectations(version="2026.10.33")
+    assert check_heartbeat(FULL | {"version": "2026.10.33"}, expect) == []
     assert check_heartbeat(FULL | {"version": "2027.1.0"}, expect) == ["version"]
     assert check_heartbeat(FULL, expect) == ["version"]
 

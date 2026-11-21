@@ -50,7 +50,7 @@ class FakeOpenClaw:
             self.runtime.openclaw_entry.write_text("// openclaw\n")
             return subprocess.CompletedProcess(argv, 0, "", "")
         if tail == ["--version"]:
-            return subprocess.CompletedProcess(argv, 0, "OpenClaw 2026.9.4 (3a9d69d)\n", "")
+            return subprocess.CompletedProcess(argv, 0, "OpenClaw 2026.10.33 (3a9d69d)\n", "")
         if "validate" in tail:
             return subprocess.CompletedProcess(argv, 0, json.dumps({"valid": True, "warnings": []}), "")
         if "ownership" in tail:
@@ -195,7 +195,7 @@ def test_status_shows_the_runtime_the_agent_the_model_and_cores_view(cfg):
     conn.close()
     lines = host.status(cfg, run=fake, launchctl=fake)
     assert lines == [
-        "runtime: Node v24.21.0, OpenClaw 2026.9.4",
+        "runtime: Node v24.21.0, OpenClaw 2026.10.33",
         "gateway: not loaded (Core loads it when it runs)",
         "model token (anthropic:klepa): stored",
         "Core: not running; its last state was RUNNING since 2026-10-04T10:00:00Z",

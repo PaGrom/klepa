@@ -325,7 +325,7 @@ test("a heartbeat carries the hooks, the plugin's hash, the policy, the model an
       agents: { defaults: { model: { primary: "anthropic/m" }, models: { "anthropic/m": { agentRuntime: { id: "openclaw" } } } } },
     },
     logger: { warn() {} },
-    runtime: { version: "2026.9.4" },
+    runtime: { version: "2026.10.33" },
     on() {},
     registerService() {},
   };
@@ -336,7 +336,7 @@ test("a heartbeat carries the hooks, the plugin's hash, the policy, the model an
     policy: { "tools.profile": "minimal" },
     model: "anthropic/m",
     runtime: "openclaw",
-    version: "2026.9.4",
+    version: "2026.10.33",
   });
 });
 

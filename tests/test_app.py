@@ -36,7 +36,7 @@ def test_a_launchd_host_gets_cores_own_gateway_held_to_the_reference(make_config
     # The gateway admits the members' stand-ins and the probe peer: never a Telegram id.
     allowed = [str(stand_in(key, "owner")), str(stand_in(key, "member")), str(probe_peer(key))]
     assert expect.policy["channels.telegram.allowFrom"] == allowed
-    assert (expect.model, expect.runtime, expect.version) == ("anthropic/claude-sonnet-5", "openclaw", "2026.9.4")
+    assert (expect.model, expect.runtime, expect.version) == ("anthropic/claude-sonnet-5", "openclaw", "2026.10.33")
 
 
 def test_a_gateway_somebody_else_runs_is_gated_by_its_heartbeat_alone(make_config, short_dir):

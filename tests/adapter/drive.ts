@@ -19,7 +19,7 @@ const api = {
   },
   pluginConfig: { socket, keyFile, policy: ["tools.profile"] },
   logger: { warn: (line: string) => console.error(line) },
-  runtime: { version: "2026.9.4" },
+  runtime: { version: "2026.10.33" },
   on: (name: string, handler: (event: never, ctx: never) => unknown) => {
     hooks.set(name, handler as unknown as Handler);
   },

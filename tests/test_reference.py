@@ -103,17 +103,17 @@ def test_a_table_where_one_key_hides_another_is_refused():
 
 def test_expectations_come_from_the_table():
     table = ref.table(SETTINGS, LAYOUT)
-    expect = ref.expectations(table, "a" * 64, "2026.9.4")
+    expect = ref.expectations(table, "a" * 64, "2026.10.33")
     assert expect.hooks == REQUIRED_HOOKS
     assert expect.plugin_sha256 == "a" * 64
-    assert (expect.model, expect.runtime, expect.version) == ("anthropic/claude-sonnet-5", "openclaw", "2026.9.4")
+    assert (expect.model, expect.runtime, expect.version) == ("anthropic/claude-sonnet-5", "openclaw", "2026.10.33")
     beat = {
         "registrations": sorted(REQUIRED_HOOKS),
         "plugin_sha256": "a" * 64,
         "policy": ref.policy(table),
         "model": "anthropic/claude-sonnet-5",
         "runtime": "openclaw",
-        "version": "2026.9.4",
+        "version": "2026.10.33",
     }
     assert check_heartbeat(beat, expect) == []
     assert check_heartbeat(beat | {"policy": ref.policy(table) | {"tools.profile": "full"}}, expect) == [

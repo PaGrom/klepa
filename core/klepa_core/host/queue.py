@@ -37,7 +37,7 @@ FORWARDED_MARK = "[forwarded message]"
 
 MayServe = Callable[[int, str], bool]
 OFFER_SECONDS = 3600.0  # photos sent this soon after the chat's document draft changed are offered to it as pages
-FRAGMENT_CHARS = 4000  # a text this long is joined with the next message (OpenClaw 2026.9.4, its Telegram ingress)
+FRAGMENT_CHARS = 4000  # a text this long is joined with the next message (OpenClaw 2026.9.4 and later, its Telegram ingress)
 KEEP_DIGESTS = 1000
 
 

@@ -236,7 +236,7 @@ def test_a_new_lockfile_installs_into_a_folder_of_its_own(tmp_path):
     runtime = rt.Runtime(tmp_path / "runtime")
     digest = hashlib.sha256(rt.packaged("runtime", "package-lock.json").read_bytes()).hexdigest()
     assert rt.lock_tag() == digest[:12]
-    assert runtime.openclaw_dir.name == f"openclaw-2026.9.4-{digest[:12]}"
+    assert runtime.openclaw_dir.name == f"openclaw-2026.10.33-{digest[:12]}"
 
 
 def test_private_files_are_replaced_whole_or_not_at_all(tmp_path, monkeypatch):

@@ -1,5 +1,5 @@
 /**
- * Klepa's adapter plugin for OpenClaw 2026.9.4 (spec 4.4–4.6): the gateway's link to Klepa Core.
+ * Klepa's adapter plugin for OpenClaw 2026.10.33 (spec 4.4–4.6): the gateway's link to Klepa Core.
  *
  * Every message to Core is one JSON object POSTed to /v1/message on Core's Unix socket, signed with HMAC-SHA256
  * over its exact bytes. Core's answer is signed the same way and echoes (boot_id, seq). A boot is one gateway

@@ -3,6 +3,6 @@
   "private": true,
   "description": "The OpenClaw release the engine's gateway runs, pinned with its lockfile.",
   "dependencies": {
-    "openclaw": "2026.9.4"
+    "openclaw": "2026.10.33"
   }
 }
