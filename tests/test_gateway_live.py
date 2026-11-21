@@ -260,7 +260,7 @@ async def test_a_new_token_reaches_the_running_gateway(stand_args):
         assert await asyncio.to_thread(host.login, live.cfg, DUMMY_TOKEN.replace("x", "y")) is True
         assert (live.cfg.host_dir / "openclaw.json").read_bytes() == config
         await wait_until(lambda: any(s["state"] == "RUNNING" for s in live.states()[seen:]), timeout=120)
-        assert [s["reason"] for s in live.states()[seen:]][0] == "login"
+        assert live.states()[seen]["reason"] == "login"
         live.telegram.add_text(MEMBER, "after the new token")
         await wait_until(lambda: "STUB: after the new token" in live.sent(), timeout=60)
         assert [alert for alert in live.alerts.sent if "host" in alert["params"]["text"]] == []
