@@ -35,6 +35,7 @@ from klepa_core.host import reference
 from klepa_core.host import runtime as rt
 from klepa_core.host.instruction import TOOLS
 from klepa_core.host.peers import stand_in
+from klepa_core.host.served import RUNTIME_CARRIER as CARRIER
 
 RUNTIME = os.environ.get("KLEPA_TEST_RUNTIME")
 pytestmark = pytest.mark.skipif(not RUNTIME, reason="needs KLEPA_TEST_RUNTIME: an installed host runtime")
@@ -305,6 +306,13 @@ async def test_a_persons_text_reaches_the_model_with_cores_instruction(stand_arg
         assert "You are Klepa" in fake_model.requests[-1].system
         # Core's tools by their exact names and nothing else: no search, describe or dispatch in front of them
         assert sorted(fake_model.requests[-1].tools) == sorted(TOOLS)
+        # OpenClaw's runtime context, where Core's instruction says it is: if anywhere, a message of its own between
+        # the header and the footer, after the person's message
+        messages = fake_model.requests[-1].messages
+        carriers = [i for i, m in enumerate(messages) if fakemodel.text_of(m.get("content")).startswith(CARRIER[0])]
+        for index in carriers:
+            assert fakemodel.text_of(messages[index].get("content")).rstrip().endswith(CARRIER[1])
+            assert index > fake_model.requests[-1].human_index
 
 
 async def test_openclaws_first_run_ritual_and_persona_never_reach_the_model(stand_args, fake_model):

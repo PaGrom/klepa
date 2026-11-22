@@ -28,8 +28,12 @@ _DONE = "done"
 _BRACKETS = str.maketrans({OPEN: "[", CLOSE: "]", "\u301a": "[", "\u301b": "]"})
 # The delimiters of the runtime-context block that OpenClaw adds to a person's message. Core's instruction tells the
 # model what the block is, so no text may hold them either; they become OpenClaw's own escaped forms (#60).
+# Until 2026.9 they wrapped the block inside the person's message; since 2026.10 the block is a message of its own after
+# the person's, between a header and a footer (OpenClaw's RUNTIME_CONTEXT_HEADER and _FOOTER).
 RUNTIME_CONTEXT = ("<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>", "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>")
 _RUNTIME_CONTEXT_ESCAPED = ("[[OPENCLAW_INTERNAL_CONTEXT_BEGIN]]", "[[OPENCLAW_INTERNAL_CONTEXT_END]]")
+RUNTIME_CARRIER = ("OpenClaw runtime context:", "End OpenClaw runtime context.")
+_RUNTIME_CARRIER_ESCAPED = ("[[RUNTIME_CONTEXT_HEADER_ESCAPED]]", "[[RUNTIME_CONTEXT_FOOTER_ESCAPED]]")
 _MIME = re.compile(r"[\w.+-]{1,64}/[\w.+-]{1,128}")
 
 
@@ -65,7 +69,9 @@ class Draft:
 def clean(text: str) -> str:
     """No text a file or a person wrote can open or close a mark, nor the gateway's runtime-context block."""
     text = text.translate(_BRACKETS)
-    for delimiter, escaped in zip(RUNTIME_CONTEXT, _RUNTIME_CONTEXT_ESCAPED, strict=True):
+    for delimiter, escaped in zip(
+        (*RUNTIME_CONTEXT, *RUNTIME_CARRIER), (*_RUNTIME_CONTEXT_ESCAPED, *_RUNTIME_CARRIER_ESCAPED), strict=True
+    ):
         text = text.replace(delimiter, escaped)
     return text
 

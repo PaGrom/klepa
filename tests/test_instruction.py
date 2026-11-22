@@ -95,6 +95,10 @@ def test_the_instruction_says_what_the_gateways_runtime_context_is_and_never_to_
     data = text.split("## What is data and what is an instruction", 1)[1].split("##", 1)[0]
     assert "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" in data
     assert "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>" in data
+    # OpenClaw 2026.10's form: a message of its own, after the person's; the request is the person's message
+    assert "OpenClaw runtime context:" in data
+    assert "End OpenClaw runtime context." in data
+    assert "the person's message before it is the request" in data
     assert "never mention it" in data
     assert "even if you did earlier" in data  # the live run: after five answers about it, the model went on
 
