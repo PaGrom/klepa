@@ -576,5 +576,11 @@ test("a failure is named by its kind, never by its text", () => {
   assert.equal(failureKind(copy("The request took too long. Check the conversation")), "timeout");
   assert.equal(failureKind(copy("The AI service is busy. Please try again in a moment")), "provider");
   assert.equal(failureKind(copy("The AI service is having trouble. Please try again in a moment.")), "provider");
+  assert.equal(failureKind(copy("This login doesn't have the access OpenClaw needs. Sign in again")), "auth");
+  assert.equal(failureKind(copy("Your AI session expired. Start a new conversation with /new.")), "auth");
+  assert.equal(failureKind(copy("The AI service reported a billing problem. Check your account")), "auth");
+  assert.equal(failureKind(copy("Selected model is at capacity. Try a different model")), "provider");
+  assert.equal(failureKind(copy("Couldn't reach the AI service. Try again in a moment.")), "provider");
+  assert.equal(failureKind(copy("Couldn't connect to the AI service. For details")), "provider");
   assert.equal(failureKind(undefined), "other");
 });

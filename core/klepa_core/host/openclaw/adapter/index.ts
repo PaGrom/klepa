@@ -367,12 +367,14 @@ const BLOCK_WRAPPER = /^Your message could not be sent: ([\s\S]*?)(?: \(blocked 
  * copy), and the real gateway's tests check those sentences at every OpenClaw release. */
 export function failureKind(error: unknown): string {
   const text = typeof error === "string" ? error : "";
-  if (/HTTP 401|HTTP 403|authentication|Couldn't sign in to the AI service|isn't accepting your login/i.test(text)) {
-    return "auth";
-  }
+  // auth: the owner must log in again (a refused, scope-less or expired token, or the account's billing)
+  const auth = /HTTP 401|HTTP 403|authentication|Couldn't sign in to the AI service|isn't accepting your login/i;
+  const access = /doesn't have the access OpenClaw needs|Your AI session expired|reported a billing problem/i;
+  if (auth.test(text) || access.test(text)) return "auth";
   if (/HTTP 429|rate limit|needs a short break/i.test(text)) return "rate_limit";
   if (/timed? ?out|took too long/i.test(text)) return "timeout";
-  if (/HTTP 5\d\d|The AI service is (?:busy|having trouble)/.test(text)) return "provider";
+  const provider = /HTTP 5\d\d|The AI service is (?:busy|having trouble)|is at capacity|Couldn't (?:reach|connect to) the AI/;
+  if (provider.test(text)) return "provider";
   return "other";
 }
 
