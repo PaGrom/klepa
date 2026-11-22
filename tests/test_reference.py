@@ -67,6 +67,7 @@ def test_the_adapter_reports_every_value_but_the_unreported():
             [
                 "klepa__get",
                 "klepa__make_pdf",
+                "klepa__save_text",
                 "klepa__search",
                 "klepa__send_original",
                 "klepa__view_draft",
@@ -78,6 +79,7 @@ def test_the_adapter_reports_every_value_but_the_unreported():
             [
                 "klepa__get",
                 "klepa__make_pdf",
+                "klepa__save_text",
                 "klepa__search",
                 "klepa__send_original",
                 "klepa__view_draft",
@@ -176,7 +178,9 @@ def test_cores_tools_come_through_the_adapters_mcp_server():
         "args": ["/rt/adapter/mcp.ts"],
         "env": {"KLEPA_SOCKET": "/run/adapter.sock"},
     }
-    assert sorted(table["tools.alsoAllow"]) == sorted(TOOLS)  # exact names only (spec 4.3)
+    from klepa_core.host.instruction import READER_TOOLS
+
+    assert sorted(table["tools.alsoAllow"]) == sorted({*TOOLS, *READER_TOOLS})  # exact names only (spec 4.3)
     assert table["gateway.tools.deny"] == table["tools.alsoAllow"]  # never through /tools/invoke
     assert "mcp.servers.klepa" in ref.policy(table)  # every heartbeat proves the gateway runs this server
 

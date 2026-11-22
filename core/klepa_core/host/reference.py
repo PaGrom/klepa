@@ -56,6 +56,7 @@ FIXED: dict[str, Any] = {
     "tools.alsoAllow": [
         "klepa__get",
         "klepa__make_pdf",
+        "klepa__save_text",
         "klepa__search",
         "klepa__send_original",
         "klepa__view_draft",
@@ -65,6 +66,7 @@ FIXED: dict[str, Any] = {
     "gateway.tools.deny": [
         "klepa__get",
         "klepa__make_pdf",
+        "klepa__save_text",
         "klepa__search",
         "klepa__send_original",
         "klepa__view_draft",

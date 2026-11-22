@@ -271,3 +271,122 @@ def test_an_album_not_yet_quiet_is_read_later(worker):
     clock.advance(61)
     asyncio.run(reader.step())
     assert states(conn) == {"a1#1": "running"}
+
+
+# ---- save_text: the reader's only write ----
+def looked(box, record, page=1, run="read-1", call="look", size="large"):
+    return view(box, {"id": record, "page": page, "size": size}, run=run, call=call)
+
+
+def save(box, record, text, page=1, part=1, run="read-1", call="save"):
+    params = {"id": record, "page": page, "part": part, "text": text}
+    return box.call("save_text", signed("save_text", params, run, call))
+
+
+def conversation(box, run="talk-1"):
+    from test_tools import issue
+
+    issue(box.conn, OWNER, run)
+    return run
+
+
+def test_a_reading_saves_the_page_it_looked_at_and_get_and_search_find_it(box):
+    photo(box.conn, "p1", "owner")
+    reading, _ = reading_run(box.conn, "p1", 1, "shared")
+    shown(box, StubReaders())
+    box.model = "anthropic/claude-opus-5-5"
+    looked(box, "p1")
+    assert save(box, "p1", "Rental agreement between the parties") == {"saved": True, "id": "p1", "page": 1}
+    assert save(box, "p1", "signed on the first of March", part=2, call="save2")["saved"] is True
+    row = box.conn.execute(
+        "SELECT text, extractor, saved_by_reading FROM evidence_text WHERE evidence_id='p1'"
+    ).fetchone()
+    assert row["text"] == "Rental agreement between the parties\nsigned on the first of March"
+    assert row["extractor"] == "model anthropic/claude-opus-5-5"
+    assert row["saved_by_reading"] == reading
+    talk = conversation(box)
+    got = box.call("get", signed("get", {"id": "p1"}, talk, "g1"))
+    assert got["text_status"] == "read"
+    assert "Rental agreement" in got["text"]
+    found = box.call("search", signed("search", {"query": "rental"}, talk, "s1"))
+    assert [(r["id"], r.get("page")) for r in found["results"]] == [("p1", 1)]
+    assert box.conn.execute("SELECT state FROM evidence WHERE id='p1'").fetchone()[0] == "processed"
+    assert box.conn.execute("SELECT data FROM event_log WHERE kind='text_saved'").fetchone() is not None
+
+
+def test_a_reading_saves_only_after_a_large_look(box):
+    photo(box.conn, "p1", "owner")
+    reading_run(box.conn, "p1", 1, "shared")
+    shown(box, StubReaders())
+    with pytest.raises(ToolRefused, match="view_page"):
+        save(box, "p1", "text")
+    looked(box, "p1", size="small")
+    with pytest.raises(ToolRefused, match="view_page"):
+        save(box, "p1", "text", call="save2")
+
+
+def test_a_pdf_page_is_saved_only_where_pdftotext_found_nothing(box):
+    store(box.conn, "doc", "owner", "d.pdf")
+    box.conn.execute("INSERT INTO scan_page(evidence_id, page) VALUES ('doc', 2)")
+    reading_run(box.conn, "doc", 1, "shared", run_id="read-1")
+    reading_run(box.conn, "doc", 2, "shared", run_id="read-2")
+    shown(box, StubReaders())
+    looked(box, "doc", page=1, run="read-1")
+    with pytest.raises(ToolRefused, match="exact text"):
+        save(box, "doc", "a paraphrase", page=1, run="read-1")
+    looked(box, "doc", page=2, run="read-2", call="look2")
+    assert save(box, "doc", "the scanned page", page=2, run="read-2", call="save2")["saved"] is True
+
+
+def test_no_persons_turn_saves_a_text(box):
+    photo(box.conn, "p1", "owner")
+    talk = conversation(box)
+    with pytest.raises(ToolRefused, match="only a background reading"):
+        box.call("save_text", signed("save_text", {"id": "p1", "page": 1, "part": 1, "text": "x"}, talk, "c1"))
+
+
+def test_a_record_that_moved_away_after_the_look_is_not_written(box):
+    photo(box.conn, "p1", "owner")
+    reading_run(box.conn, "p1", 1, "shared")
+    shown(box, StubReaders())
+    looked(box, "p1")
+    box.conn.execute("UPDATE evidence SET space_id = 'personal:member' WHERE id = 'p1'")
+    with pytest.raises(ToolRefused, match="no such record"):
+        save(box, "p1", "text")
+    assert box.conn.execute("SELECT COUNT(*) FROM evidence_text").fetchone()[0] == 0
+
+
+def test_a_text_too_long_for_one_part_is_refused_with_how_to_save_it(box):
+    photo(box.conn, "p1", "owner")
+    reading_run(box.conn, "p1", 1, "shared")
+    shown(box, StubReaders())
+    looked(box, "p1")
+    with pytest.raises(ToolRefused, match="shorter part"):
+        save(box, "p1", "x" * 12_500)
+
+
+def test_a_saved_page_refreshes_the_pdf_made_of_it_and_only_the_latest_is_found(box):
+    import json
+
+    from klepa_core.search import index_pages
+
+    for record in ("p1", "p2"):
+        photo(box.conn, record, "owner")
+    for pdf, indexed in (("old", False), ("new", True)):
+        store(box.conn, pdf, "owner", f"{pdf}.pdf")
+        box.conn.execute(
+            "UPDATE evidence SET channel = 'core', derived_from = ? WHERE id = ?", (json.dumps(["p1", "p2"]), pdf)
+        )
+        if indexed:
+            index_pages(box.conn, pdf, ["", ""])
+        else:  # an older version: _build took all its rows out of the index
+            box.conn.execute("DELETE FROM evidence_fts WHERE evidence_id = ?", (pdf,))
+    reading_run(box.conn, "p2", 1, "shared")
+    shown(box, StubReaders())
+    looked(box, "p2")
+    save(box, "p2", "quarterly invoice")
+    texts = {r[0]: r[1] for r in box.conn.execute("SELECT evidence_id, text FROM evidence_text WHERE page = 2")}
+    assert texts == {"old": "quarterly invoice", "new": "quarterly invoice"}
+    talk = conversation(box)
+    found = box.call("search", signed("search", {"query": "quarterly"}, talk, "s1"))
+    assert sorted(r["id"] for r in found["results"]) == ["new", "p2"]

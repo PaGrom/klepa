@@ -20,9 +20,16 @@ def test_the_instruction_is_english_and_short_in_every_language_of_the_install()
 
 
 def test_the_instruction_names_exactly_cores_tools():
+    """A person's turn gets every tool but save_text, which only a background reading has (stage 2c-2)."""
+    from klepa_core.host.instruction import READER_TOOLS, reader_instruction
+
     text = instruction("en")
     assert all(name in text for name in TOOLS)
-    assert sorted(TOOLS) == sorted(f"klepa__{tool.name}" for tool in CORE_TOOLS)
+    assert "klepa__save_text" not in TOOLS
+    assert sorted({*TOOLS, *READER_TOOLS}) == sorted(f"klepa__{tool.name}" for tool in CORE_TOOLS)
+    reader = reader_instruction()
+    assert all(name in reader for name in READER_TOOLS)
+    assert len(reader) <= MAX_CHARS
 
 
 def test_the_instruction_and_the_tools_stay_within_the_token_budget():

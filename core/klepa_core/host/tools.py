@@ -20,11 +20,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..db import transaction
+from ..events import EventLog
 from ..gatekeeper.drafts import DraftRefused
 from ..gatekeeper.outbox import Outbox
 from ..names import sanitize_original_name
 from ..processing.jobs import KINDS, job_kind
-from ..search import find
+from ..search import find, reindex_page
 from ..signing import canonical_json
 from .served import clean
 
@@ -43,6 +44,7 @@ _MIME = re.compile(r"[\w.+-]{1,64}/[\w.+-]{1,128}")
 _READABLE = ("stored", "processing", "processed", "failed", "too_large")  # what get reads and search lists
 READER_TOOLS = ("view_page", "save_text")  # what a background reading may call (stage 2c-2)
 READER_ONLY = ("save_text",)  # what no person's turn may call: only a reading writes a page's text
+SAVE_BYTES = 12 * 1024  # one part of a page's text, inside the 16 KiB a call may carry (review 1's I3)
 ANSWER_MAX = 900_000  # a picture's answer, JSON with base64, under the MCP shim's 1 MiB (mcp.ts MAX_ANSWER_BYTES)
 
 
@@ -83,7 +85,7 @@ def _no_float(text: str) -> Any:
 def parse_call(body: bytes) -> tuple[str, dict[str, Any]]:
     """The shim's call: {"name": ..., "arguments": {...}}. A key twice anywhere, or a fraction, refuses it."""
     if len(body) > MAX_CALL_BYTES:
-        raise ToolRefused("the call is too large")
+        raise ToolRefused("the call is too large: save a long text in more, shorter parts")
     try:
         call = json.loads(body, object_pairs_hook=_no_duplicates, parse_float=_no_float, parse_constant=_no_float)
     except ValueError as exc:
@@ -184,6 +186,7 @@ class ToolBox:
         self.drafts: Drafts | None = None  # documents from photos (make_pdf): None where Core makes none
         self.pictures: Pictures | None = None  # pages shown as pictures (stage 2c-2): None where Core draws none
         self.readers: Mapping[int, str] = {}  # reader peer -> space (stage 2c-2): the senders of background readings
+        self.model = "model"  # the gateway's model, named in what it reads (extractor "model <id>")
         self.tools = {tool.name: tool for tool in TOOLS}
 
     def specs(self) -> list[dict[str, Any]]:
@@ -550,6 +553,101 @@ async def _view_draft(box: ToolBox, caller: Caller, params: dict[str, Any]) -> P
     return Picture(meta, data)
 
 
+def _save_text(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
+    """A reading's text of its page (stage 2c-2): only after a large look at it in this turn; for a PDF only a page
+    pdftotext found empty (scan_page); part 1 replaces the page, later parts follow it. The record must still be in its
+    owner's spaces. A Core-made PDF of photos gets the page's text too, where it is as private as the photo is now;
+    only its latest version, the one search finds, is indexed again (review 2's N4, review 4's I9)."""
+    page, part, text = params["page"], params["part"], clean(params["text"]).strip()
+    if part < 1:
+        raise ToolRefused("parts are numbered from 1")
+    if not text:
+        raise ToolRefused("the text is empty: for a page with no text, save what it shows in a short line")
+    if len(text.encode()) > SAVE_BYTES:
+        raise ToolRefused(f"a part holds at most {SAVE_BYTES // 1024} KiB: save the page in more, shorter parts")
+    looked = box.conn.execute(
+        "SELECT 1 FROM host_picture p JOIN host_picture_record r ON r.picture_id = p.id "
+        "WHERE p.run_id = ? AND p.size = 'large' AND r.evidence_id = ? AND r.page = ? LIMIT 1",
+        (caller.run_id, params["id"], page),
+    ).fetchone()
+    if looked is None:
+        raise ToolRefused("look at the page with view_page (size large) first")
+    reading = box.conn.execute(
+        "SELECT r.id FROM host_run h JOIN reading r ON r.host_message_id = h.host_message_id WHERE h.run_id = ?",
+        (caller.run_id,),
+    ).fetchone()
+    if reading is None:
+        raise ToolRefused("the reading is over")
+    now = box.clock()
+    with transaction(box.conn):
+        row = _record(box, caller, params["id"])  # still the owner's: a late private caption may have moved it
+        kind = _job_kind(row)
+        if kind == "pdf":
+            scanned = box.conn.execute(
+                "SELECT 1 FROM scan_page WHERE evidence_id = ? AND page = ?", (row["id"], page)
+            ).fetchone()
+            if scanned is None:
+                raise ToolRefused("this page has an exact text layer: it is kept as it is")
+        elif kind != "image" or row["channel"] == "core":
+            raise ToolRefused("only a photo's or a scanned page's text is saved")
+        if part == 1:
+            box.conn.execute("DELETE FROM evidence_text WHERE evidence_id = ? AND page = ?", (row["id"], page))
+            box.conn.execute(
+                "INSERT INTO evidence_text(evidence_id, page, text, extractor, created_at, saved_by_reading) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (row["id"], page, text, f"model {box.model}", now, reading["id"]),
+            )
+        else:
+            appended = box.conn.execute(
+                "UPDATE evidence_text SET text = text || char(10) || ? "
+                "WHERE evidence_id = ? AND page = ? AND saved_by_reading = ?",
+                (text, row["id"], page, reading["id"]),
+            )
+            if appended.rowcount != 1:
+                raise ToolRefused("save part 1 of this page first")
+        full = box.conn.execute(
+            "SELECT text FROM evidence_text WHERE evidence_id = ? AND page = ?", (row["id"], page)
+        ).fetchone()["text"]
+        if kind == "image":
+            box.conn.execute(
+                "INSERT INTO job(evidence_id, kind, state, pages, created_at) VALUES (?, 'image', 'done', 1, ?) "
+                "ON CONFLICT(evidence_id) DO UPDATE SET state = 'done', pages = MAX(COALESCE(pages, 0), 1)",
+                (row["id"], now),
+            )
+            box.conn.execute(
+                "UPDATE evidence SET state = 'processed' WHERE id = ? AND state IN ('stored', 'processing', 'failed')",
+                (row["id"],),
+            )
+        reindex_page(box.conn, row["id"], page, full)
+        if kind == "image":
+            _refresh_derived(box, row, full, now)
+    EventLog(box.conn).log("text_saved", {"page": page, "part": part, "length": len(text)})
+    return {"saved": True, "id": row["id"], "page": page}
+
+
+def _refresh_derived(box: ToolBox, source: sqlite3.Row, text: str, now: float) -> None:
+    """The PDFs Core made of this photo get its text as their page; only one as private as the photo is now."""
+    made = box.conn.execute(
+        "SELECT id, space_id, derived_from FROM evidence WHERE channel = 'core' AND derived_from LIKE ?",
+        (f'%"{source["id"]}"%',),
+    ).fetchall()
+    for pdf in made:
+        sources = json.loads(pdf["derived_from"] or "[]")
+        if source["id"] not in sources:
+            continue
+        if source["space_id"] != "shared" and pdf["space_id"] != source["space_id"]:
+            continue  # the photo went personal and this PDF has not followed it yet: not its text
+        page = sources.index(source["id"]) + 1
+        box.conn.execute("DELETE FROM evidence_text WHERE evidence_id = ? AND page = ?", (pdf["id"], page))
+        box.conn.execute(
+            "INSERT INTO evidence_text(evidence_id, page, text, extractor, created_at) VALUES (?, ?, ?, ?, ?)",
+            (pdf["id"], page, text, f"model {box.model}", now),
+        )
+        indexed = box.conn.execute("SELECT 1 FROM evidence_fts WHERE evidence_id = ? LIMIT 1", (pdf["id"],)).fetchone()
+        if indexed is not None:  # the latest version keeps its rows (its name's at least); _build cleared the older
+            reindex_page(box.conn, pdf["id"], page, text)
+
+
 TOOLS = (
     Tool(
         "search",
@@ -637,6 +735,20 @@ TOOLS = (
         },
         ("id",),
         _view_page,
+    ),
+    Tool(
+        "save_text",
+        "Save the full text of the page this reading names, as you see it after view_page (size large): word for word, "
+        "in the page's own language, never a summary. A long page goes in parts: part 1 replaces what was saved, "
+        "parts 2 and on follow it, in order.",
+        {
+            "id": {"type": "string"},
+            "page": {"type": "integer"},
+            "part": {"type": "integer", "description": "1, then 2 and on for a long page."},
+            "text": {"type": "string"},
+        },
+        ("id", "page", "part", "text"),
+        _save_text,
     ),
     Tool(
         "view_draft",

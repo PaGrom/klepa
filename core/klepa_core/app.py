@@ -239,6 +239,7 @@ def _host(
     names = {member.person_id: member.name for member in cfg.members}
     tools = ToolBox(conn, key, persons, names, outbox, cfg.incoming_dir, readable=readable)
     tools.readers = peers.reader_peers()
+    tools.model = cfg.host.model  # named in what the model reads (extractor "model <id>")
     # send_original answers once Core has queued the file: a send that then fails is told to the person.
     outbox.on_failed = functools.partial(tell_failed_original, outbox, cfg.locale.text("original_failed"))
     adapter = AdapterServer(

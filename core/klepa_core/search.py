@@ -39,6 +39,16 @@ def index_names(conn: sqlite3.Connection, evidence_id: str, name: str | None, ca
     )
 
 
+def reindex_page(conn: sqlite3.Connection, evidence_id: str, page: int, text: str) -> None:
+    """One page's text in the index anew (stage 2c-2: the model's reading of a photo or a scanned page)."""
+    conn.execute("DELETE FROM evidence_fts WHERE evidence_id = ? AND page = ?", (evidence_id, page))
+    if text:
+        conn.execute(
+            "INSERT INTO evidence_fts(body, name, caption, evidence_id, page) VALUES (?, '', '', ?, ?)",
+            (fold(text), evidence_id, page),
+        )
+
+
 def index_pages(conn: sqlite3.Connection, evidence_id: str, texts: Sequence[str]) -> None:
     """Pages 1 and on; a page without text has no row."""
     conn.executemany(

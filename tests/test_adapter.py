@@ -368,6 +368,7 @@ async def test_cores_tools_are_listed_and_a_signed_call_runs(server, short_dir):
     assert sorted(tool["name"] for tool in listed["tools"]) == [
         "get",
         "make_pdf",
+        "save_text",
         "search",
         "send_original",
         "view_draft",

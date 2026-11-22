@@ -140,3 +140,34 @@ def test_search_finds_a_short_word_in_another_case(core_db, query):
     conn = core_db[1]
     _record(conn, "ev-1", pages=("Решили: ёлку ставим во дворе 27 декабря",))
     assert {hit.evidence_id for hit in find(conn, ("shared",), ("processed",), _stems(query), 10)} == {"ev-1"}
+
+
+def test_a_reading_saves_a_dense_cyrillic_page_in_one_part(core_db, tmp_path):
+    """Stage 2c-2: a page of Russian text, two bytes a letter, fits one save_text call inside the 16 KiB a call may
+    carry; a part over the limit is refused with how to save it."""
+    import asyncio
+
+    from helpers import SPACES, reader_of
+    from klepa_core.events import EventLog
+    from klepa_core.gatekeeper.outbox import Outbox
+    from klepa_core.host.tools import ToolBox, ToolRefused
+    from test_pictures import StubReaders, photo, shown
+    from test_reader import box as reader_box  # noqa: F401
+    from test_reader import looked, reading_run, save
+
+    cfg, conn, _ = core_db
+    persons = {member.telegram_id: member.person_id for member in cfg.members}
+    names = {member.person_id: member.name for member in cfg.members}
+    box = ToolBox(conn, b"k" * 32, persons, names, Outbox(conn, None, EventLog(conn), bot="family"), tmp_path / "in")
+    box.readers = {reader_of(space): space for space in SPACES}
+    photo(conn, "p1", "owner")
+    reading_run(conn, "p1", 1, "shared")
+    shown(box, StubReaders())
+    looked(box, "p1")
+    page = ("Договор аренды квартиры между сторонами. " * 100)[:4000]
+    assert save(box, "p1", page)["saved"] is True
+    import pytest
+
+    with pytest.raises(ToolRefused, match="shorter part"):
+        save(box, "p1", "Ж" * 6500, call="save2")
+    assert asyncio  # the tool runs in its own loop
