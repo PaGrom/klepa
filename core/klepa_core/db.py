@@ -284,6 +284,68 @@ SCHEMA_V8 = (
 )
 
 
+# Stage 2c-2 (plan rev 7, spec 4.6): pictures to the model and background readings by it.
+SCHEMA_V9 = (
+    "ALTER TABLE draft ADD COLUMN title TEXT",  # the model's name for the document (make_pdf's title)
+    # why a declined draft closed: the model said it is no document, or its pages all went into another draft
+    "ALTER TABLE draft ADD COLUMN closed_reason TEXT "
+    "CHECK (closed_reason IS NULL OR closed_reason IN ('model', 'merged'))",
+    "UPDATE draft SET closed_reason = 'model' WHERE state = 'declined'",
+    # every picture a tool returned to the model (repeats too), and the records and pages it showed
+    """CREATE TABLE host_picture (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        chat_id INTEGER NOT NULL,
+        person_id TEXT NOT NULL,
+        size TEXT NOT NULL CHECK (size IN ('small', 'large', 'overview', 'strips')),
+        bytes INTEGER NOT NULL,
+        shown_at REAL NOT NULL)""",
+    "CREATE INDEX host_picture_run ON host_picture(run_id)",
+    "CREATE INDEX host_picture_chat ON host_picture(chat_id, shown_at)",
+    """CREATE TABLE host_picture_record (
+        picture_id INTEGER NOT NULL REFERENCES host_picture(id) ON DELETE CASCADE,
+        evidence_id TEXT NOT NULL,
+        page INTEGER NOT NULL,
+        PRIMARY KEY (picture_id, evidence_id, page))""",
+    "CREATE INDEX host_picture_record_evidence ON host_picture_record(evidence_id, page)",
+    # a page's thumbnail, drawn once in the sandbox, by the original's bytes (and the PDF page)
+    """CREATE TABLE thumb (
+        sha256 TEXT NOT NULL,
+        page INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (sha256, page))""",
+    # a background reading of one page by the model; host_message_id is the current attempt's message
+    """CREATE TABLE reading (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        evidence_id TEXT NOT NULL REFERENCES evidence(id),
+        page INTEGER NOT NULL,
+        space_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        uncounted INTEGER NOT NULL DEFAULT 0,
+        host_message_id INTEGER,
+        not_before REAL NOT NULL DEFAULT 0,
+        queued_at REAL NOT NULL,
+        started_at REAL,
+        ended_at REAL,
+        error TEXT,
+        UNIQUE (evidence_id, page))""",
+    "CREATE INDEX reading_queued ON reading(state, not_before) WHERE state = 'queued'",
+    # the pages of a PDF that pdftotext found empty: the only PDF pages a reading may write
+    """CREATE TABLE scan_page (
+        evidence_id TEXT NOT NULL REFERENCES evidence(id),
+        page INTEGER NOT NULL,
+        PRIMARY KEY (evidence_id, page))""",
+    # a reader peer whose session must be reset before its next reading
+    """CREATE TABLE reader_peer (
+        peer_id INTEGER PRIMARY KEY,
+        needs_reset INTEGER NOT NULL DEFAULT 0,
+        failures INTEGER NOT NULL DEFAULT 0)""",
+    "ALTER TABLE evidence_text ADD COLUMN saved_by_reading INTEGER",
+)
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
     current = int(conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version").fetchone()[0])
@@ -335,6 +397,12 @@ def migrate(conn: sqlite3.Connection) -> int:
                 conn.execute(statement)
             conn.execute("INSERT INTO schema_version(version) VALUES (8)")
         current = 8
+    if current < 9:
+        with transaction(conn):
+            for statement in SCHEMA_V9:
+                conn.execute(statement)
+            conn.execute("INSERT INTO schema_version(version) VALUES (9)")
+        current = 9
     return current
 
 

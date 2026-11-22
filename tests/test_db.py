@@ -15,8 +15,8 @@ def test_connect_sets_durability_pragmas(tmp_path):
 
 def test_migrate_is_idempotent(tmp_path):
     conn = db.connect(tmp_path / "core.db")
-    assert db.migrate(conn) == 8
-    assert db.migrate(conn) == 8
+    assert db.migrate(conn) == 9
+    assert db.migrate(conn) == 9
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     expected = {"member", "space", "evidence", "outbound", "event_log", "schema_version", "service_binding"}
     assert expected | {"button_action", "alert_state", "snapshot", "job_run"} <= tables
@@ -61,7 +61,7 @@ def test_v1_database_is_upgraded_in_place(tmp_path):
         "INSERT INTO outbound(idempotency_key, origin, method, chat_id, payload, state, created_at, updated_at) "
         "VALUES ('k', 'core', 'sendMessage', 1, '{}', 'PENDING', 't', 't')"
     )
-    assert db.migrate(conn) == 8
+    assert db.migrate(conn) == 9
     assert conn.execute("SELECT bot FROM outbound").fetchone()[0] == "family"
 
 
@@ -110,7 +110,7 @@ def test_records_stored_before_stage_2b_are_found_by_name_and_caption(tmp_path):
         "VALUES ('ev1', 'shared', 'file', 'Insurance_policy.pdf', 'd', 'p', 'application/pdf', 1, 'h', 't', "
         "'telegram', 1, 1, 1, 'owner', 'k1', 'stored', 'for the car of the \u0111ak')"
     )
-    assert db.migrate(conn) == 8
+    assert db.migrate(conn) == 9
     rows = conn.execute("SELECT evidence_id, page FROM evidence_fts WHERE evidence_fts MATCH 'insur* car'").fetchall()
     assert [(row[0], row[1]) for row in rows] == [("ev1", 0)]
     # folded as the index folds what it is given later: d with stroke as "dj"
@@ -154,10 +154,45 @@ def test_batches_closed_before_stage_2c1_are_never_looked_at_for_a_draft(tmp_pat
         "INSERT INTO host_message(kind, chat_id, message_id, sender_id, date, created_at) "
         "VALUES ('attachment', 1, 1, 1, 1, 0)"
     )
-    assert db.migrate(conn) == 8
+    assert db.migrate(conn) == 9
     assert conn.execute("SELECT draft_checked, draft_id FROM host_message").fetchone()[:] == (1, None)
     conn.execute(
         "INSERT INTO host_message(kind, chat_id, message_id, sender_id, date, created_at) "
         "VALUES ('attachment', 1, 2, 1, 1, 0)"
     )
     assert conn.execute("SELECT draft_checked FROM host_message WHERE message_id = 2").fetchone()[0] == 0
+
+
+def test_schema_9_holds_pictures_readings_and_draft_titles(tmp_path):
+    """Stage 2c-2: titles and closed reasons of drafts, the pictures the model was shown and which records they showed,
+    cached thumbnails, background readings by the model, the PDF pages a reading may write, and the reader peers'
+    reset marks."""
+    conn = db.connect(tmp_path / "core.db")
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    with db.transaction(conn):  # an installation at schema 8, with a draft the model declined
+        for schema in (db.SCHEMA_V1, db.SCHEMA_V2, db.SCHEMA_V3, db.SCHEMA_V4, db.SCHEMA_V5, db.SCHEMA_V6):
+            for statement in schema:
+                conn.execute(statement)
+        for schema in (db.SCHEMA_V7, db.SCHEMA_V8):
+            for statement in schema:
+                conn.execute(statement)
+        conn.execute("INSERT INTO schema_version(version) VALUES (8)")
+    conn.execute("INSERT INTO member(person_id, telegram_id, name, role) VALUES ('owner', 1, 'Owner', 'owner')")
+    conn.execute(
+        "INSERT INTO draft(id, chat_id, person_id, state, revision, reply_to, created_at, updated_at) "
+        "VALUES (1, 1, 'owner', 'declined', 1, NULL, 0, 0)"
+    )
+    assert db.migrate(conn) == 9
+    assert tuple(conn.execute("SELECT closed_reason, title FROM draft WHERE id = 1").fetchone()) == ("model", None)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE draft SET closed_reason = 'other' WHERE id = 1")
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"host_picture", "host_picture_record", "thumb", "reading", "scan_page", "reader_peer"} <= tables
+    assert "saved_by_reading" in {row[1] for row in conn.execute("PRAGMA table_info(evidence_text)")}
+    reading = {row[1] for row in conn.execute("PRAGMA table_info(reading)")}
+    assert {"evidence_id", "page", "space_id", "state", "attempts", "host_message_id", "not_before"} <= reading
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO reading(evidence_id, page, space_id, state, attempts, queued_at) "
+            "VALUES ('e', 1, 's', 'x', 0, 0)"
+        )
