@@ -171,8 +171,10 @@ def login_lock(layout: HostLayout) -> Iterator[LoginMark]:
         os.pwrite(fd, f"login {os.getpid()}\n".encode(), 0)
         yield mark
     finally:
-        if not mark.stopped_gateway:
-            with contextlib.suppress(OSError):
+        with contextlib.suppress(OSError):
+            if mark.stopped_gateway:
+                os.utime(layout.login_mark)  # the mark counts from the end of login, however long it took
+            else:
                 layout.login_mark.unlink()
         os.close(fd)
 

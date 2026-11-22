@@ -468,12 +468,12 @@ sequenceDiagram
         OC-->>O: profile listed
         O->>K: release the lock
         C->>C: the gate's 30 s wait for a heartbeat runs out
-        C->>K: mark says "stopped" (read once, honoured if under 120 s old)
+        C->>K: mark says "stopped" (read once, honoured within 120 s of the end of login)
         C->>L: bootstrap, then the start gate (probe up to 150 s)
     end
 ```
 
-A mark older than 120 seconds explains nothing: Core then stops the gateway with an alert, as for any failed gate.
+The mark counts from the end of login, however long its retries took. One older than 120 seconds explains nothing: Core then stops the gateway with an alert, as for any failed gate.
 
 
 **Supervision** (`host/supervisor.py`, D26):

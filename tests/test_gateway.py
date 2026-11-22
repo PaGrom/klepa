@@ -429,6 +429,19 @@ async def test_a_state_made_ready_for_this_openclaw_is_started(setup):
     assert any(call[1] == "bootstrap" for call in launchd.calls)
 
 
+def test_a_slow_login_still_leaves_a_mark_core_honours(setup):
+    """Login may take its 60 s of paste retries and 60 s of listing after it stopped the gateway: the mark counts
+    from the end of login, not from the stop, or Core would take the stopped gateway for a failed one (issue #90)."""
+    layout = setup[1]
+    layout.host_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    gateway = control(setup, FakeLaunchd())
+    with gw.login_lock(layout) as mark:
+        mark.stopped()
+        long_ago = time.time() - gw.LOGIN_SECONDS - 30
+        os.utime(layout.login_mark, (long_ago, long_ago))  # the stop was long before the end of login
+    assert gateway.login_state() == "stopped"
+
+
 def test_the_login_mark_says_busy_while_login_holds_it_then_stopped_once(setup):
     layout = setup[1]
     layout.host_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
