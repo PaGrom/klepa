@@ -315,6 +315,28 @@ async def test_a_persons_text_reaches_the_model_with_cores_instruction(stand_arg
             assert index > fake_model.requests[-1].human_index
 
 
+async def test_core_can_reset_a_session_and_the_next_turn_carries_nothing_earlier(stand_args, fake_model):
+    """Stage 2c-2's reader rests on this (plan rev 7, R5-I1): Core, with the credentials it has, resets a DM session
+    through the gateway (`sessions.reset` is operator.admin), and the session's next turn carries nothing of the
+    earlier one."""
+    async with live_stand(*stand_args, model=fake_model) as live:
+        await wait_until(lambda: live.state() == "RUNNING", timeout=90)
+        live.telegram.add_text(MEMBER, "the first message, before the reset")
+        await wait_until(lambda: any("STUB: the first" in text for text in live.sent()), timeout=60)
+        cfg = live.cfg
+        runtime, layout = rt.Runtime(cfg.host.runtime_dir), reference.layout_of(cfg)
+        key = cfg.adapter_key_path.read_bytes()
+        session = f"agent:main:telegram:direct:{stand_in(key, 'member')}"
+        params = json.dumps({"key": session, "reason": "reset"})
+        answer = rt.openclaw_json(runtime, layout, "gateway", "call", "sessions.reset", "--params", params)
+        assert answer.get("ok", True) is not False, answer
+        live.telegram.add_text(MEMBER, "the second message, after the reset")
+        await wait_until(lambda: any("STUB: the second" in text for text in live.sent()), timeout=60)
+        carried = json.dumps(fake_model.requests[-1].messages)
+        assert "the second message" in carried
+        assert "the first message" not in carried
+
+
 async def test_openclaws_first_run_ritual_and_persona_never_reach_the_model(stand_args, fake_model):
     """An OpenClaw that ran before stage 2 left BOOTSTRAP.md in the workspace: Core removes it at the start, so no
     turn's prompt tells the model to follow it, and no persona file is in the prompt either."""
