@@ -138,6 +138,44 @@ async def test_a_built_prompt_gets_cores_instruction_its_tools_and_the_failure_t
     assert probe["tools_allow"] == []  # the probes need no tool
 
 
+async def test_a_reading_gets_the_readers_instruction_and_two_tools_and_its_reply_goes_to_the_reader(server):
+    """Stage 2c-2: a reader peer's turn reads one page and saves its text; its reply ends the reading, never an
+    alert. A person's turn that met a busy provider pauses the readings."""
+    from helpers import reader_of
+    from klepa_core.host.instruction import READER_TOOLS, reader_instruction
+
+    adapter_server, adapter, conn, _ = server
+    peer = reader_of("shared", KEY)
+    _, answer = await adapter.prompt_built("run-r", peer)
+    assert answer["instruction"] == reader_instruction()
+    assert answer["tools_allow"] == list(READER_TOOLS)
+
+    class Reader:
+        def __init__(self):
+            self.replies, self.person_errors = [], []
+
+        def on_reply(self, host_message_id, ok, kind):
+            self.replies.append((host_message_id, ok, kind))
+
+        def on_person_error(self, kind):
+            self.person_errors.append(kind)
+
+    reader = Reader()
+    adapter_server.reader = reader
+    conn.execute(
+        "INSERT INTO host_message(source_update_id, kind, chat_id, message_id, sender_id, date, created_at) "
+        "VALUES (NULL, 'reading', ?, 1, ?, 1, 0)",
+        (peer, peer),
+    )
+    message = conn.execute("SELECT id FROM host_message WHERE kind='reading'").fetchone()[0]
+    conn.execute(
+        "UPDATE host_run SET host_message_id=?, registered_at=0, expires_at=9e12 WHERE run_id='run-r'", (message,)
+    )
+    await adapter.turn_reply("run-r", error=True, error_kind="rate_limit")
+    assert reader.replies == [(message, False, "rate_limit")]
+    assert adapter_server.alerts.raised == []
+
+
 async def test_a_registered_turn_reaches_the_model(server):
     adapter_server, adapter, conn, journal = server
     issue(adapter_server, journal, 1, MEMBER, 10)

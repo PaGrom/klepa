@@ -35,7 +35,7 @@ from ..alerts import Alerts
 from ..events import EventLog
 from ..keys import ensure_private_dir
 from ..locale import Locale
-from .instruction import TOOLS
+from .instruction import READER_TOOLS, TOOLS, reader_instruction
 from .queue import HostQueue
 from .supervisor import PROBE_BLOCK, Supervisor
 from .tools import ANSWER_MAX, Picture, ToolBox, ToolRefused, parse_call
@@ -120,6 +120,8 @@ class AdapterServer:
     ) -> None:
         self.alerts = alerts
         self.instruction = instruction
+        self.reader_instruction = reader_instruction()
+        self.reader: Any = None  # the background reader (stage 2c-2): its turns' replies end its readings
         self.tools = tools
         self.path = path
         self.key = key
@@ -252,6 +254,13 @@ class AdapterServer:
             return {"ok": False}
         sender_id, chat_id = self._member(message.get("sender_id")), self._member(message.get("chat_id"))
         self.turns.prompt_built(run_id, boot_id, chat_id, sender_id)
+        if self.queue.peers.reader_space(sender_id) is not None:  # a background reading: one page, its text saved
+            return {
+                "ok": True,
+                "instruction": self.reader_instruction,
+                "tools_allow": list(READER_TOOLS),
+                "failure": "",
+            }
         return {
             "ok": True,
             "instruction": self.instruction,
@@ -269,7 +278,12 @@ class AdapterServer:
         kind = None if replied is None else replied[0]
         if replied is not None and kind == "model_probe":
             self.supervisor.on_model_probe_reply(replied[1], ok, None if ok else reason)
+        elif replied is not None and kind == "reading":  # its reader decides; nobody waits for it
+            if self.reader is not None:
+                self.reader.on_reply(replied[1], ok, None if ok else reason)
         elif kind is not None and not ok:
+            if self.reader is not None:
+                self.reader.on_person_error(reason)
             self.events.log("turn_failed", {"reason": reason})
             if self.alerts is not None:
                 self.alerts.raise_("host_turn_failed", reason=reason)

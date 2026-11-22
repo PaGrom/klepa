@@ -36,7 +36,10 @@ def test_a_launchd_host_gets_cores_own_gateway_held_to_the_reference(make_config
     assert expect.plugin_sha256 == adapter_sha256()
     assert expect.policy["gateway.reload.mode"] == "off"
     # The gateway admits the members' stand-ins and the probe peer: never a Telegram id.
-    allowed = [str(stand_in(key, "owner")), str(stand_in(key, "member")), str(probe_peer(key))]
+    from klepa_core.host.peers import reader_peer
+
+    readers = [str(reader_peer(key, space)) for space in ("shared", "personal:owner", "personal:member")]
+    allowed = [str(stand_in(key, "owner")), str(stand_in(key, "member")), str(probe_peer(key)), *readers]
     assert expect.policy["channels.telegram.allowFrom"] == allowed
     assert (expect.model, expect.runtime, expect.version) == ("anthropic/claude-sonnet-5", "openclaw", "2026.10.33")
 

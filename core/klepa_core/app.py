@@ -29,6 +29,7 @@ from .gatekeeper.receipts import ReceiptBatcher
 from .gatekeeper.service import Gatekeeper
 from .health import Health, check_documents
 from .host import reference
+from .host import runtime as rt
 from .host.adapter import AdapterServer
 from .host.api import HostApi
 from .host.egress import EgressProxy
@@ -38,6 +39,7 @@ from .host.outbox import HostOutbox
 from .host.peers import Peers, probe_peer
 from .host.pictures import Pictures
 from .host.queue import HostQueue
+from .host.reader import Reader, reset_params
 from .host.runtime import OPENCLAW_VERSION, Runtime, adapter_sha256
 from .host.supervisor import Expectations, GatewayControl, HostTiming, Supervisor
 from .host.tools import ToolBox
@@ -184,12 +186,14 @@ async def _check_documents_at_start(documents: DocumentsFolder, alerts: Alerts, 
         await sleep_or_stop(stop, alerts.documents_grace)
 
 
-@dataclass(frozen=True)
+@dataclass
 class HostParts:
     queue: HostQueue
     supervisor: Supervisor
     tools: ToolBox
     loops: list[tuple[str, Loop]]
+    adapter: AdapterServer | None = None
+    reader: Reader | None = None  # background readings by the model (stage 2c-2), with pictures
 
 
 def _host(
@@ -212,7 +216,8 @@ def _host(
     key = load_or_create_key(cfg.adapter_key_path)
     members = cfg.members_by_telegram_id()
     probe = probe_peer(key)
-    queue = HostQueue(conn, journal, members, Peers(key, members, probe), readable=readable)
+    peers = Peers(key, members, probe, reference.reader_spaces(cfg))  # each space's reader too (stage 2c-2)
+    queue = HostQueue(conn, journal, members, peers, readable=readable)
     turns = TurnRegistry(conn, queue)
     hold_text = cfg.locale.text("hold")
     expect, control = _gateway(cfg, key)
@@ -233,6 +238,7 @@ def _host(
     persons = {member.telegram_id: member.person_id for member in cfg.members}
     names = {member.person_id: member.name for member in cfg.members}
     tools = ToolBox(conn, key, persons, names, outbox, cfg.incoming_dir, readable=readable)
+    tools.readers = peers.reader_peers()
     # send_original answers once Core has queued the file: a send that then fails is told to the person.
     outbox.on_failed = functools.partial(tell_failed_original, outbox, cfg.locale.text("original_failed"))
     adapter = AdapterServer(
@@ -256,7 +262,7 @@ def _host(
         ("supervisor", supervisor.run),
         ("host_outbox", host_outbox.run),
     ]
-    return HostParts(queue, supervisor, tools, loops)
+    return HostParts(queue, supervisor, tools, loops, adapter)
 
 
 ZONE_CHECK_SECONDS = 300.0
@@ -349,6 +355,24 @@ def _processing(cfg: Config, conn: sqlite3.Connection, alerts: Alerts, events: E
     return ProcessingParts(jobs, workers, loops, readers)
 
 
+def _session_reset(cfg: Config) -> Callable[[int], Awaitable[bool]]:
+    """Reset a reader peer's session in Core's own gateway (sessions.reset, proven live): off the event loop, as a CLI
+    call starts Node."""
+    assert cfg.host is not None
+    runtime, layout = Runtime(cfg.host.runtime_dir), reference.layout_of(cfg)
+
+    async def reset(peer: int) -> bool:
+        try:
+            answer = await asyncio.to_thread(
+                rt.openclaw_json, runtime, layout, "gateway", "call", "sessions.reset", "--params", reset_params(peer)
+            )
+        except rt.HostRuntimeError:
+            return False
+        return answer.get("ok", True) is not False
+
+    return reset
+
+
 def _drafts(
     conn: sqlite3.Connection,
     host: HostParts | None,
@@ -364,10 +388,22 @@ def _drafts(
         return None
     if PAGES in processing.readers.unavailable():  # no Pillow: the owner's alert named it, and no draft is made
         return None
-    # Stage 2c-2: pages shown to the model as pictures, drawn in the readers' sandbox
+    # Stage 2c-2: pages shown to the model as pictures, drawn in the readers' sandbox; with Core's own gateway, the
+    # background reader, whose sessions Core resets after every reading
     host.tools.pictures = Pictures(
         conn, processing.readers, cfg.incoming_dir, cfg.jobs_dir, album_quiet=cfg.album_quiet_seconds
     )
+    if cfg.host is not None and cfg.host.gateway == "launchd":
+        host.reader = Reader(
+            conn,
+            host.queue,
+            host.supervisor,
+            _session_reset(cfg),
+            events,
+            album_quiet=cfg.album_quiet_seconds,
+        )
+        if host.adapter is not None:
+            host.adapter.reader = host.reader
     drafts = Drafts(
         conn,
         host.queue,
@@ -527,6 +563,8 @@ async def run_service(
                     side_loops.append(("attachments", attachments.run))
                 if drafts is not None:
                     side_loops += [("drafts", drafts.run), ("drafts_drawing", drafts.draw)]
+                if host is not None and host.reader is not None:
+                    side_loops.append(("reader", host.reader.run))
                 events.log("core_started")
                 if crashed:
                     alerts.raise_("restarted")

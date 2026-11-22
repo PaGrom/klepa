@@ -19,7 +19,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..config import Config
-from .peers import probe_peer, stand_in
+from .peers import probe_peer, reader_peer, stand_in
 from .supervisor import REQUIRED_HOOKS, Expectations
 
 PLUGIN_ID = "klepa-adapter"
@@ -209,6 +209,7 @@ class HostSettings:
     allowed: tuple[int, ...]  # the members' stand-ins and the probe peer
     model: str
     time_zone: str  # the family's offset without its place: placeless_zone()
+    readers: tuple[int, ...] = ()  # each space's reader peer (stage 2c-2), in reader_spaces() order
 
 
 def placeless_zone(zone: str, now: datetime | None = None) -> str:
@@ -244,7 +245,13 @@ def settings_of(cfg: Config, key: bytes) -> HostSettings:
         allowed=(*(stand_in(key, member.person_id) for member in cfg.members), probe_peer(key)),
         model=cfg.host.model,
         time_zone=placeless_zone(cfg.timezone),
+        readers=tuple(reader_peer(key, space) for space in reader_spaces(cfg)),
     )
+
+
+def reader_spaces(cfg: Config) -> tuple[str, ...]:
+    """The spaces whose photos and scans a reader reads (stage 2c-2): the shared one, then each member's own."""
+    return ("shared", *(f"personal:{member.person_id}" for member in cfg.members))
 
 
 def table(settings: HostSettings, layout: HostLayout) -> dict[str, Any]:
@@ -260,7 +267,9 @@ def table(settings: HostSettings, layout: HostLayout) -> dict[str, Any]:
         },
         "channels.telegram.apiRoot": f"http://127.0.0.1:{settings.api_port}",  # exactly: the Host check (plan 1c-1)
         "channels.telegram.tokenFile": str(settings.host_token_path),
-        "channels.telegram.allowFrom": [str(peer) for peer in settings.allowed],
+        "channels.telegram.allowFrom": [str(peer) for peer in (*settings.allowed, *settings.readers)],
+        # a reader's session keeps one turn: a second wall beside Core's reset after every reading (stage 2c-2)
+        "channels.telegram.dms": {str(peer): {"historyLimit": 1} for peer in settings.readers},
         "proxy.proxyUrl": f"http://127.0.0.1:{settings.proxy_port}",
         "agents.defaults.workspace": str(layout.workspace),
         "agents.defaults.userTimezone": settings.time_zone,

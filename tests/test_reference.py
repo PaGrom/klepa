@@ -204,3 +204,18 @@ def test_the_table_carries_the_placeless_zone():
     table = ref.table(dataclasses.replace(SETTINGS, time_zone="+01:00"), LAYOUT)
     assert table["agents.defaults.userTimezone"] == "+01:00"
     assert "agents.defaults.userTimezone" in ref.policy(table)
+
+
+def test_each_spaces_reader_peer_is_admitted_and_keeps_one_turn_of_history(make_config, short_dir):
+    """Stage 2c-2: the gateway admits the reader peers beside the members and the probe, and a reader's session keeps
+    no more than one turn (a second wall beside Core's reset after every reading)."""
+    from klepa_core.host.peers import reader_peer
+
+    cfg = make_config(text=BASE_CONFIG + f'\n[host]\nsocket = "{short_dir / "run" / "adapter.sock"}"\n')
+    key = b"k" * 32
+    settings = ref.settings_of(cfg, key)
+    spaces = ("shared", "personal:owner", "personal:member")
+    assert settings.readers == tuple(reader_peer(key, space) for space in spaces)
+    table = ref.table(settings, ref.layout_of(cfg))
+    assert table["channels.telegram.allowFrom"][-3:] == [str(peer) for peer in settings.readers]
+    assert table["channels.telegram.dms"] == {str(peer): {"historyLimit": 1} for peer in settings.readers}
