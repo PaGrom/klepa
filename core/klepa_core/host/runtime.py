@@ -224,7 +224,7 @@ def ensure_openclaw(runtime: Runtime, *, run: Runner = _run, say: Callable[[str]
             changed = True
     if not changed and _openclaw_version(runtime, run) == OPENCLAW_VERSION:
         return
-    say(f"Installing OpenClaw {OPENCLAW_VERSION} with npm from its pinned lockfile (about 540 MB)…")
+    say(f"Installing OpenClaw {OPENCLAW_VERSION} with npm from its pinned lockfile (about 640 MB)…")
     env = {
         "PATH": f"{runtime.node.parent}:{SYSTEM_PATH}",
         "HOME": str(Path.home()),

@@ -111,7 +111,7 @@ Core runs its own OpenClaw gateway, apart from any other OpenClaw on the Mac. It
    ([configuration](docs/configuration.md#host)).
 2. **Install the runtime:** `"$KLEPA_HOME/venv/bin/python" -m klepa_core host install --config ~/KlepaData-test/config.toml`.
    It downloads a pinned Node from nodejs.org (about 27 MB, checked against its SHA-256) and OpenClaw from npm with a
-   pinned lockfile (about 540 MB), then writes the gateway's config, which OpenClaw itself may not change.
+   pinned lockfile (about 640 MB), then writes the gateway's config, which OpenClaw itself may not change.
 3. **Give it the model.** In your own terminal run `claude setup-token`, then
    `"$KLEPA_HOME/venv/bin/python" -m klepa_core host login --config ~/KlepaData-test/config.toml` and paste the token
    when it asks; it is not shown. Or copy the token and pipe it in, so it never meets a prompt:
