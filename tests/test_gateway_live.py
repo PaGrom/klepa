@@ -641,6 +641,11 @@ async def test_only_the_declared_set_reaches_the_model_provider(stand_args, fake
             "the account's full name": full_name if len(full_name) >= 5 else None,
             "the time zone's name": zone if "/" in zone else None,  # the offset is declared, the place is not
             "the time zone's city": zone.rsplit("/", 1)[-1].replace("_", " ") if "/" in zone else None,
+            # the installation's own zone too, which may differ from the Mac's
+            "the configured zone's name": cfg.timezone if "/" in cfg.timezone else None,
+            "the configured zone's city": cfg.timezone.rsplit("/", 1)[-1].replace("_", " ")
+            if "/" in cfg.timezone
+            else None,
             "the home folder": str(Path.home()),
             "the data folder": str(cfg.data_dir),
             "the documents folder": str(cfg.documents_dir),
