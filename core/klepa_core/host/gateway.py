@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import hashlib
 import json
 import logging
@@ -24,7 +25,7 @@ import re
 import secrets
 import subprocess
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -139,6 +140,62 @@ def prepare_host(
         log = layout.logs_dir / name
         log.touch(mode=0o600, exist_ok=True)
     return adapter_changed or config_changed
+
+
+class LoginMark:
+    """Held by host login from before it may stop the gateway until it has done with OpenClaw's state."""
+
+    def __init__(self, path: Path, fd: int) -> None:
+        self.path = path
+        self.fd = fd
+        self.stopped_gateway = False
+
+    def stopped(self) -> None:
+        """The gateway is down for the token: once login ends, Core starts it again without an alert."""
+        os.ftruncate(self.fd, 0)
+        os.pwrite(self.fd, b"stopped\n", 0)
+        self.stopped_gateway = True
+
+
+@contextlib.contextmanager
+def login_lock(layout: HostLayout) -> Iterator[LoginMark]:
+    """host login and Core take OpenClaw's state in turns (OpenClaw 2026.10 lets one offline command at a time have
+    it, and none while a gateway owns it): while login holds this lock, Core starts no gateway. A mark that says
+    "stopped" stays when login ends; Core reads it once (login_state)."""
+    ensure_private_dir(layout.host_dir)
+    fd = os.open(layout.login_mark, os.O_RDWR | os.O_CREAT, 0o600)
+    mark = LoginMark(layout.login_mark, fd)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, f"login {os.getpid()}\n".encode(), 0)
+        yield mark
+    finally:
+        if not mark.stopped_gateway:
+            with contextlib.suppress(OSError):
+                layout.login_mark.unlink()
+        os.close(fd)
+
+
+def login_state(layout: HostLayout) -> str | None:
+    """ "busy" while host login holds the lock; "stopped" once, after a login that stopped the gateway ended within
+    LOGIN_SECONDS (the mark is removed); None otherwise. A mark that explains nothing is removed."""
+    try:
+        fd = os.open(layout.login_mark, os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "busy"
+        stopped = os.read(fd, 64).startswith(b"stopped")
+        fresh = time.time() - os.fstat(fd).st_mtime < LOGIN_SECONDS
+        with contextlib.suppress(OSError):
+            layout.login_mark.unlink()
+        return "stopped" if stopped and fresh else None
+    finally:
+        os.close(fd)
 
 
 def hook_problem(log: Path, tail_bytes: int = LOG_TAIL_BYTES) -> str | None:
@@ -275,15 +332,9 @@ class LaunchdGateway:
             await asyncio.sleep(self.retry_seconds)
         return f"launchctl bootstrap: {error}"[:200]
 
-    def stopped_for_login(self) -> bool:
-        """host login left its mark when it stopped the gateway for a token, within the last LOGIN_SECONDS."""
-        mark = self.layout.login_mark
-        try:
-            fresh = time.time() - mark.stat().st_mtime < LOGIN_SECONDS
-            mark.unlink()
-        except OSError:
-            return False
-        return fresh
+    def login_state(self) -> str | None:
+        """What host login is doing to the gateway (login_state below)."""
+        return login_state(self.layout)
 
     async def stop(self) -> None:
         await self._launchctl("bootout", f"{self.target}/{LABEL}")

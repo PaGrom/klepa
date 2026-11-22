@@ -45,11 +45,13 @@ class FakeControl:
         self.stops = 0
         self.starts = 0
         self.running = None
-        self.login = False  # the owner's host login stopped the gateway
+        self.login = None  # host login: "busy" while it runs, "stopped" once it stopped the gateway and finished
 
-    def stopped_for_login(self):
-        login, self.login = self.login, False
-        return login
+    def login_state(self):
+        state = self.login
+        if state == "stopped":
+            self.login = None  # read once, as the mark is removed
+        return state
 
     async def start(self):
         self.starts += 1
@@ -586,15 +588,32 @@ def test_the_default_budget_outlasts_openclaws_own_retries():
 
 
 async def test_a_gateway_the_owners_login_stopped_comes_back_without_an_alert(make):
-    """OpenClaw 2026.10 stores a token only while no gateway runs, so host login stops it: Core starts it again and
-    gates it, and tells the owner nothing he did not do himself."""
+    """OpenClaw 2026.10 stores a token only while no gateway runs, so host login stops it: Core waits while login
+    holds its lock, then starts the gateway again and gates it, and tells the owner nothing he did not do himself."""
     control = FakeControl(managed=True)
     supervisor, alerts, _ = make(control=control, timing=managed())
     async with running(supervisor):
         await gate(supervisor)
-        control.login = True
+        control.login = "busy"
+        control.running = None
+        await wait_until(lambda: (supervisor.state, supervisor.reason) == (GatewayState.STARTING, "login"))
+        await asyncio.sleep(0.3)
+        assert control.starts == 1  # not while login holds OpenClaw's state
+        control.login = "stopped"
+        await wait_until(lambda: control.starts == 2)
+        await gate(supervisor, boot="boot-bbbbbbbb")
+    assert alerts.raised == []
+
+
+async def test_a_login_during_the_start_gate_restarts_quietly(make):
+    """The gate fails because login stopped the gateway under it: that is no failure of the gateway."""
+    control = FakeControl(managed=True)
+    supervisor, alerts, _ = make(control=control, timing=managed(first_heartbeat=0.3))
+    async with running(supervisor):
+        await wait_until(lambda: control.starts == 1)
+        control.login = "stopped"
         control.running = None
         await wait_until(lambda: control.starts == 2)
-        assert (supervisor.state, supervisor.reason) == (GatewayState.STARTING, "login")
+        assert supervisor.state is not GatewayState.STOPPED
         await gate(supervisor, boot="boot-bbbbbbbb")
     assert alerts.raised == []

@@ -1,7 +1,9 @@
 import json
+import os
 import plistlib
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -398,3 +400,28 @@ async def test_the_model_token_is_checked_before_the_gateway_starts(setup):
     problem = await control(setup, launchd, token=False).start()
     assert problem == "no model token: run klepa-core host login"
     assert not any(call[1] == "bootstrap" for call in launchd.calls)
+
+
+def test_the_login_mark_says_busy_while_login_holds_it_then_stopped_once(setup):
+    import fcntl
+
+    runtime, layout, reference = setup
+    layout.host_dir.mkdir(parents=True, exist_ok=True)
+    gateway = control(setup, FakeLaunchd())
+    assert gateway.login_state() is None
+    with gw.login_lock(layout) as mark:
+        assert gateway.login_state() == "busy"
+        mark.stopped()
+        assert gateway.login_state() == "busy"  # stopped, but login has not finished
+    assert gateway.login_state() == "stopped"
+    assert gateway.login_state() is None  # read once
+    assert not layout.login_mark.exists()
+    with gw.login_lock(layout):
+        pass  # login that stopped nothing leaves no mark
+    assert gateway.login_state() is None
+    layout.login_mark.write_text("stopped\n")
+    old = time.time() - gw.LOGIN_SECONDS - 5
+    os.utime(layout.login_mark, (old, old))
+    assert gateway.login_state() is None  # a stale mark explains nothing
+    assert not layout.login_mark.exists()
+    assert fcntl  # imported for the lock's sake

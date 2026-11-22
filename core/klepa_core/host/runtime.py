@@ -317,11 +317,12 @@ def openclaw_json(
 
 def model_token_stored(runtime: Runtime, layout: HostLayout, *, run: Runner = _run) -> bool | None:
     """Whether the gateway's auth store holds the model's profile; None when OpenClaw cannot tell now: since 2026.10
-    nothing reads its state while a gateway owns it. Whether the token still works only a call shows."""
+    nothing reads its state while a gateway owns it, and another offline command may hold it for a moment. Only an
+    answer without the profile says it is missing. Whether the token still works only a call shows."""
     try:
         answer = openclaw_json(runtime, layout, "models", "auth", "list", "--provider", "anthropic", run=run)
-    except HostRuntimeError as exc:
-        return None if OFFLINE_OWNERSHIP in str(exc) else False
+    except HostRuntimeError:
+        return None
     profiles = answer.get("profiles")
     return isinstance(profiles, list) and any(
         isinstance(profile, dict) and profile.get("id") == MODEL_PROFILE for profile in profiles

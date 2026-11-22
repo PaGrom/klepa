@@ -39,6 +39,8 @@ class FakeOpenClaw:
         self.paste = paste
         self.calls: list[tuple[list[str], dict | None, str | None]] = []
         self.owned = False  # OpenClaw 2026.10: a running gateway owns the state, and token commands refuse
+        self.loaded = True  # whether launchd has Core's gateway agent to boot out
+        self.busy = 0  # commands answered "busy" while another offline command holds the state
 
     def __call__(self, argv, *, env=None, timeout=600.0, input=None):
         argv = [str(part) for part in argv]
@@ -62,6 +64,9 @@ class FakeOpenClaw:
                 "error": "operation requires exclusive offline state ownership. Inspect openclaw gateway status."
             }
             return subprocess.CompletedProcess(argv, 1, json.dumps(refusal), "")
+        if self.busy and ("list" in tail or "paste-token" in tail):
+            self.busy -= 1
+            return subprocess.CompletedProcess(argv, 1, json.dumps({"error": "OpenClaw state database is busy"}), "")
         if "list" in tail:
             answer = {"profiles": [{"id": name, "type": "token"} for name in self.profiles]}
             return subprocess.CompletedProcess(argv, 0, json.dumps(answer), "")
@@ -77,8 +82,8 @@ class FakeOpenClaw:
                 return subprocess.CompletedProcess(argv, 1, "", "gateway closed (1006): connect ECONNREFUSED")
             return subprocess.CompletedProcess(argv, 0, json.dumps({"providers": []}), "")
         if argv[0] == "launchctl":
-            if argv[1] == "bootout" and self.owned:
-                self.owned = False  # the gateway is gone, and with it the state's owner
+            if argv[1] == "bootout" and self.loaded:
+                self.owned = self.loaded = False  # the gateway is gone, and with it the state's owner
                 return subprocess.CompletedProcess(argv, 0, "", "")
             return subprocess.CompletedProcess(argv, 113, "", "Could not find service")
         raise AssertionError(argv)
@@ -137,7 +142,7 @@ def installed(cfg, **fake_args):
 def test_login_hands_the_token_over_on_stdin_and_the_config_stays_cores(cfg):
     runtime, fake = installed(cfg, profiles=())
     before = (cfg.host_dir / "openclaw.json").read_bytes()
-    assert host.login(cfg, TOKEN + "\n", run=fake) is False  # no gateway runs: it reads the token at its start
+    assert host.login(cfg, TOKEN + "\n", run=fake) == "later"  # no gateway runs: it reads the token at its start
     argv, env, given = next(call for call in fake.calls if "paste-token" in call[0])
     assert TOKEN not in " ".join(argv)
     assert given == TOKEN + "\n"
@@ -148,7 +153,7 @@ def test_login_hands_the_token_over_on_stdin_and_the_config_stays_cores(cfg):
 
 def test_a_running_gateway_is_asked_to_take_the_new_token(cfg):
     _, fake = installed(cfg, gateway_runs=True)
-    assert host.login(cfg, TOKEN, run=fake) is True
+    assert host.login(cfg, TOKEN, run=fake) == "now"
     argv = next(call[0] for call in fake.calls if "models.authStatus" in call[0])
     assert json.loads(argv[argv.index("--params") + 1]) == {"refresh": True, "agentId": "main"}
 
@@ -214,7 +219,7 @@ def test_status_shows_the_runtime_the_agent_the_model_and_cores_view(cfg):
 def test_the_cli_reads_the_token_without_echo(cfg, monkeypatch, capsys, tmp_path):
     given = {}
     monkeypatch.setattr(cli, "_read_token", lambda: TOKEN)
-    monkeypatch.setattr(cli.host, "login", lambda config, token: given.update(token=token) or True)
+    monkeypatch.setattr(cli.host, "login", lambda config, token: given.update(token=token) or "now")
     path = tmp_path / "config.toml"  # make_config wrote the config here
     assert cli.main(["host", "login", "--config", str(path)]) == 0
     assert given == {"token": TOKEN}
@@ -230,7 +235,7 @@ def test_a_token_from_a_pipe_is_read_whole(cfg, monkeypatch, capsys, tmp_path):
 
     given = {}
     monkeypatch.setattr(cli.sys, "stdin", io.StringIO(TOKEN[:40] + "\n" + TOKEN[40:] + "\n"))
-    monkeypatch.setattr(cli.host, "login", lambda config, token: given.update(token=token) or False)
+    monkeypatch.setattr(cli.host, "login", lambda config, token: given.update(token=token) or "later")
     assert cli.main(["host", "login", "--config", str(tmp_path / "config.toml")]) == 0
     assert "".join(given["token"].split()) == TOKEN
 
@@ -334,10 +339,27 @@ def test_a_running_gateway_is_stopped_for_the_token_and_core_told_why(cfg):
     """OpenClaw 2026.10 stores a token only while no gateway owns its state: login stops Core's gateway, stores the
     token, and leaves a mark, so that Core starts the gateway again without an alert."""
     _, fake = installed(cfg)
-    fake.owned = True
-    assert host.login(cfg, TOKEN, run=fake) is True
+    fake.owned, fake.busy = True, 2  # and Core's own start may hold the state for a moment
+    assert host.login(cfg, TOKEN, run=fake) == "restarted"
     verbs = [call[0][1] for call in fake.calls if call[0][0] == "launchctl"]
     assert verbs == ["bootout"]
-    pastes = [call for call in fake.calls if "paste-token" in call[0]]
-    assert len(pastes) == 2  # refused while the gateway ran, stored once it was down
-    assert (cfg.host_dir / "login.pending").exists()
+    assert (cfg.host_dir / "login.pending").read_text().startswith("stopped")
+    assert "anthropic:klepa" in fake.profiles
+
+
+def test_a_state_another_openclaw_owns_is_named_and_nothing_is_stopped(cfg):
+    _, fake = installed(cfg)
+    fake.owned, fake.loaded = True, False  # not Core's gateway: an openclaw run by hand, say
+    with pytest.raises(rt.HostRuntimeError, match="another OpenClaw"):
+        host.login(cfg, TOKEN, run=fake)
+    assert not (cfg.host_dir / "login.pending").exists()
+
+
+def test_a_token_that_fails_after_the_stop_still_lets_core_start_the_gateway(cfg):
+    """The gateway is down already: Core starts it again with the token it had, quietly."""
+    _, fake = installed(cfg)
+    fake.owned = True
+    fake.paste = "Error: token rejected"
+    with pytest.raises(rt.HostRuntimeError, match="did not store"):
+        host.login(cfg, TOKEN, run=fake)
+    assert (cfg.host_dir / "login.pending").read_text().startswith("stopped")

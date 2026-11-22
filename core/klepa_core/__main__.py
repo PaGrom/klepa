@@ -178,10 +178,15 @@ def _host(cfg: Config, action: str) -> int:
         return 0
     if action == "login":
         paste = _read_token()
-        now = host.login(cfg, paste)
+        taken = host.login(cfg, paste)
         size = len(host.setup_token(paste))
         print(f"klepa-core: the setup-token is stored for the gateway ({host.PROFILE_ID}), {size} characters")
-        print("The running gateway uses it now." if now else "The gateway reads it when Core starts it.")
+        print(
+            {
+                "now": "The running gateway uses it now.",
+                "restarted": "The gateway was stopped for it: Core starts it again with the new token (if Core runs).",
+            }.get(taken, "The gateway reads it when Core starts it.")
+        )
         return 0
     if action == "status":
         for line in host.status(cfg):

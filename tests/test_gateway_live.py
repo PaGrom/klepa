@@ -258,7 +258,7 @@ async def test_a_new_token_reaches_the_running_gateway(stand_args):
         await wait_until(lambda: live.state() == "RUNNING", timeout=90)
         config = (live.cfg.host_dir / "openclaw.json").read_bytes()
         seen = len(live.states())
-        assert await asyncio.to_thread(host.login, live.cfg, DUMMY_TOKEN.replace("x", "y")) is True
+        assert await asyncio.to_thread(host.login, live.cfg, DUMMY_TOKEN.replace("x", "y")) == "restarted"
         assert (live.cfg.host_dir / "openclaw.json").read_bytes() == config
         await wait_until(lambda: any(s["state"] == "RUNNING" for s in live.states()[seen:]), timeout=120)
         assert live.states()[seen]["reason"] == "login"

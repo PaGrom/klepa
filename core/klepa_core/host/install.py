@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import time
 from collections.abc import Callable
 from contextlib import closing
@@ -23,7 +24,7 @@ from . import gateway, reference
 from . import runtime as rt
 from .supervisor import GatewayUnknown
 
-OWNERSHIP_TRIES = 20  # seconds host login waits for a stopped gateway to release its state
+LOGIN_SECONDS = 60.0  # how long host login waits for OpenClaw's state to be free, in all
 PROFILE_ID = reference.MODEL_PROFILE
 SETUP_TOKEN_PREFIX = "sk-ant-oat01-"  # OpenClaw takes only Anthropic's setup-token here, from `claude setup-token`
 SETUP_TOKEN_MIN_LENGTH = 80
@@ -93,13 +94,15 @@ def setup_token(paste: str) -> str:
     return token
 
 
-def login(cfg: Config, token: str, *, run: rt.Runner = rt._run) -> bool:
-    """Store the model's setup-token in the gateway's own auth store (spec 7.1, the owner's action). True when a
-    running gateway took it at once; a gateway that is not running reads it when Core starts it.
+def login(cfg: Config, token: str, *, run: rt.Runner = rt._run) -> str:
+    """Store the model's setup-token in the gateway's own auth store (spec 7.1, the owner's action). "now" when a
+    running gateway took it at once; "restarted" when login stopped Core's gateway for it and Core starts it again;
+    "later" when no gateway runs, and it reads the token when Core starts it.
 
     OpenClaw stores the token first and then tries to record the profile in its config, which Core keeps read-only.
-    That refusal is expected, and the profile list proves the token is stored. A running gateway keeps the credentials
-    it read until it is asked to refresh them (OpenClaw's own command would ask only after the config write)."""
+    That refusal is expected, and the profile list proves the token is stored. Since 2026.10 OpenClaw stores a token
+    only while no gateway owns its state: login stops Core's gateway, holding the login lock (gateway.login_lock), so
+    that Core starts nothing meanwhile, and leaves a mark that lets Core start it again without an alert."""
     runtime, layout = _parts(cfg)
     token = setup_token(token)
     if not layout.config_path.exists():
@@ -107,34 +110,53 @@ def login(cfg: Config, token: str, *, run: rt.Runner = rt._run) -> bool:
     argv = rt.openclaw_argv(
         runtime, "models", "auth", "paste-token", "--provider", "anthropic", "--profile-id", PROFILE_ID
     )
-    result = run(argv, env=rt.gateway_env(runtime, layout), input=token + "\n", timeout=120)
-    stopped = False
-    if result.returncode != 0 and rt.OFFLINE_OWNERSHIP in result.stdout + result.stderr:
-        # OpenClaw 2026.10 stores a token only while no gateway owns its state. Core's gateway stops for it, and the
-        # mark tells Core, which starts it again with the token and gates it, that the owner stopped it.
-        rt.write_private(layout.login_mark, b"host login\n")
-        stop = run(["launchctl", "bootout", _agent()], timeout=60)
-        if stop.returncode not in (0, 3, 113):  # 3 and 113: no such service, nothing to stop
-            raise rt.HostRuntimeError(f"the gateway did not stop for the token: {stop.stderr.strip()[-200:]}")
-        stopped = True
-        for _ in range(OWNERSHIP_TRIES):  # the state's ownership is released a moment after the process ends
-            result = run(argv, env=rt.gateway_env(runtime, layout), input=token + "\n", timeout=120)
-            if result.returncode == 0 or rt.OFFLINE_OWNERSHIP not in result.stdout + result.stderr:
+    with gateway.login_lock(layout) as mark:
+        result = run(argv, env=rt.gateway_env(runtime, layout), input=token + "\n", timeout=120)
+        if result.returncode != 0 and rt.OFFLINE_OWNERSHIP in result.stdout + result.stderr:
+            stop = run(["launchctl", "bootout", _agent()], timeout=60)
+            if stop.returncode != 0:  # 3 or 113: launchd has no such agent, so not Core's gateway owns the state
+                raise rt.HostRuntimeError(
+                    "another OpenClaw owns the gateway's state, not Core's gateway: stop it, then log in again"
+                )
+            mark.stopped()
+            result = _until_free(lambda: run(argv, env=rt.gateway_env(runtime, layout), input=token + "\n", timeout=60))
+        elif result.returncode != 0 and _busy(result):
+            result = _until_free(lambda: run(argv, env=rt.gateway_env(runtime, layout), input=token + "\n", timeout=60))
+        if result.returncode != 0 and "externally managed" not in result.stderr:
+            detail = (result.stderr.strip() or result.stdout.strip())[-300:]
+            raise rt.HostRuntimeError(f"OpenClaw did not store the token: {detail}")
+        stored = has_model_access(cfg, run=run)
+        for _ in range(int(LOGIN_SECONDS)):
+            if stored is not None:
                 break
             time.sleep(1.0)
-    if result.returncode != 0 and "externally managed" not in result.stderr:
-        detail = (result.stderr.strip() or result.stdout.strip())[-300:]
-        raise rt.HostRuntimeError(f"OpenClaw did not store the token: {detail}")
-    if has_model_access(cfg, run=run) is False:
-        raise rt.HostRuntimeError(f"OpenClaw does not list {PROFILE_ID} after storing it")
-    if stopped:
-        return True  # Core starts the gateway again, which reads the token
+            stored = has_model_access(cfg, run=run)
+        if stored is False:
+            raise rt.HostRuntimeError(f"OpenClaw does not list {PROFILE_ID} after storing it")
+        if mark.stopped_gateway:
+            return "restarted"
     params = json.dumps({"refresh": True, "agentId": "main"})
     try:
         rt.openclaw_json(runtime, layout, "gateway", "call", "models.authStatus", "--params", params, run=run)
     except rt.HostRuntimeError:
-        return False  # no gateway runs now
-    return True
+        return "later"  # no gateway runs now
+    return "now"
+
+
+def _busy(result: subprocess.CompletedProcess[str]) -> bool:
+    """OpenClaw refused because the state is not free yet: a gateway releasing it, or another offline command."""
+    text = result.stdout + result.stderr
+    return rt.OFFLINE_OWNERSHIP in text or "No local mutation was attempted" in text or " is busy" in text
+
+
+def _until_free(attempt: Callable[[], subprocess.CompletedProcess[str]]) -> subprocess.CompletedProcess[str]:
+    """Try again while OpenClaw's state is not free, LOGIN_SECONDS at most in all."""
+    deadline = time.monotonic() + LOGIN_SECONDS
+    result = attempt()
+    while result.returncode != 0 and _busy(result) and time.monotonic() < deadline:
+        time.sleep(1.0)
+        result = attempt()
+    return result
 
 
 def has_model_access(cfg: Config, *, run: rt.Runner = rt._run) -> bool | None:

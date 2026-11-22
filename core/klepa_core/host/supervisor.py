@@ -104,8 +104,9 @@ class GatewayControl(Protocol):
     async def ready(self) -> str | None:
         """None once the gateway reports ready, else the reason it is not."""
 
-    def stopped_for_login(self) -> bool:
-        """Whether the owner's host login stopped the gateway just now (and forget it)."""
+    def login_state(self) -> str | None:
+        """ "busy" while the owner's host login holds OpenClaw's state, "stopped" once after it stopped the gateway,
+        else None."""
 
 
 class NoGatewayControl:
@@ -125,8 +126,8 @@ class NoGatewayControl:
     async def ready(self) -> str | None:
         return None
 
-    def stopped_for_login(self) -> bool:
-        return False
+    def login_state(self) -> str | None:
+        return None
 
 
 def _same(a: object, b: object) -> bool:
@@ -350,8 +351,11 @@ class Supervisor:
             process = await self.control.process()
         except GatewayUnknown:
             return False
-        if process is None and self.control.stopped_for_login():
-            self._start_wanted = True  # the owner's own stop, to store a token: no alert, and it is no crash
+        login = self.control.login_state() if process is None else None
+        if login is not None:
+            # The owner's own stop, to store a token: no alert, and it is no crash. While login holds OpenClaw's state
+            # Core starts nothing; once it is done, the gateway starts again with the token.
+            self._start_wanted = login == "stopped"
             if not self.paused:
                 self.gated_boot = None
                 self._set(GatewayState.STARTING, "login")
@@ -491,6 +495,8 @@ class Supervisor:
             self.model_probe_id = None
 
     async def _fail(self, reason: str, alert: str = "host_failed") -> None:
+        if self.control.managed and await self._stopped_by_login():
+            return  # host login stopped the gateway under the gate: it starts again, quietly
         self.failed_boot = self.boot_id
         self.gated_boot = None
         self._set(GatewayState.STOPPED, reason)
@@ -498,6 +504,20 @@ class Supervisor:
             self.alerts.raise_(alert, reason=reason)
         self._stopped = self.control.managed
         await self.control.stop()
+
+    async def _stopped_by_login(self) -> bool:
+        try:
+            gone = await self.control.process() is None
+        except GatewayUnknown:
+            return False
+        login = self.control.login_state() if gone else None
+        if login is None:
+            return False
+        self._start_wanted = login == "stopped"
+        self.gated_boot = None
+        self._process_checked = 0.0  # the watch looks at once, and starts it when login is done
+        self._set(GatewayState.STARTING, "login")
+        return True
 
     def _set(self, state: GatewayState, reason: str | None) -> None:
         if state is GatewayState.RUNNING and self.state is not GatewayState.RUNNING:
