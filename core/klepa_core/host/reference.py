@@ -47,6 +47,10 @@ FIXED: dict[str, Any] = {
     f"plugins.entries.{PLUGIN_ID}.hooks.allowConversationAccess": True,
     # Tools: Core's own only, by exact name (spike report, point 25), through the adapter's MCP server.
     "tools.profile": "minimal",
+    # The model sees each tool by name: OpenClaw 2026.10 would hide them behind tool_search, tool_describe and
+    # dispatch_action, or behind a JavaScript surface it turns on by itself for some models.
+    "tools.toolSearch": False,
+    "tools.codeMode": False,
     "tools.alsoAllow": ["klepa__get", "klepa__make_pdf", "klepa__search", "klepa__send_original"],
     # never through /tools/invoke
     "gateway.tools.deny": ["klepa__get", "klepa__make_pdf", "klepa__search", "klepa__send_original"],

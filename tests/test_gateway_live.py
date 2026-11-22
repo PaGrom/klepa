@@ -33,6 +33,7 @@ from klepa_core.host import gateway as gw
 from klepa_core.host import install as host
 from klepa_core.host import reference
 from klepa_core.host import runtime as rt
+from klepa_core.host.instruction import TOOLS
 from klepa_core.host.peers import stand_in
 
 RUNTIME = os.environ.get("KLEPA_TEST_RUNTIME")
@@ -302,6 +303,8 @@ async def test_a_persons_text_reaches_the_model_with_cores_instruction(stand_arg
         answer = next(text for text in live.sent() if "STUB:" in text)
         assert answer == "STUB: hello there"
         assert "You are Klepa" in fake_model.requests[-1].system
+        # Core's tools by their exact names and nothing else: no search, describe or dispatch in front of them
+        assert sorted(fake_model.requests[-1].tools) == sorted(TOOLS)
 
 
 async def test_openclaws_first_run_ritual_and_persona_never_reach_the_model(stand_args, fake_model):

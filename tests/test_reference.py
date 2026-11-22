@@ -57,6 +57,8 @@ def test_the_adapter_reports_every_value_but_the_unreported():
         ("plugins.entries.klepa-adapter.hooks.allowConversationAccess", True),
         ("plugins.slots.memory", "none"),
         ("tools.profile", "minimal"),
+        ("tools.toolSearch", False),  # OpenClaw 2026.10 hides tools behind search/describe/dispatch unless told not to
+        ("tools.codeMode", False),  # and turns a JavaScript surface on by itself for some models
         ("tools.alsoAllow", ["klepa__get", "klepa__make_pdf", "klepa__search", "klepa__send_original"]),
         ("gateway.tools.deny", ["klepa__get", "klepa__make_pdf", "klepa__search", "klepa__send_original"]),
         ("tools.sessions.visibility", "self"),
