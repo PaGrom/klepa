@@ -1,5 +1,5 @@
-"""Stand-ins for the attachment readers (ffmpeg, ffprobe, whisper-cli, pdftotext, tesseract, ocrmypdf, textutil), for
-tests only.
+"""Stand-ins for the attachment readers (ffmpeg, ffprobe, whisper-cli, pdftotext, pdftoppm, tesseract, ocrmypdf,
+textutil), for tests only.
 
 Each is a small Python script that takes the real program's arguments and writes what the real one would, so the
 processing pipeline runs end to end, in the real sandbox on macOS, without the programs installed. What a script
@@ -97,6 +97,24 @@ else:
 open(target, "w").write("\f".join(pages) + "\f")
 """
 
+# Like the real one: draws page -f of the PDF as <base>.jpg, its longer side -scale-to pixels; a page the document
+# does not have exits with 99 ("Wrong page range given"). The page shows its number and what the test wrote.
+PDFTOPPM = r"""
+args = sys.argv[1:]
+source, base = args[-2], args[-1]
+inside(source)
+data = open(source, "rb").read().decode("utf-8", "replace")
+count = 2 if "SCAN" in data else len(data.split("PAGEBREAK"))
+page = int(args[args.index("-f") + 1])
+if not 1 <= page <= count:
+    sys.exit(99)
+side = int(args[args.index("-scale-to") + 1])
+from PIL import Image, ImageDraw
+image = Image.new("RGB", (round(side * 0.7071), side), "white")
+ImageDraw.Draw(image).text((20, 20), f"page {page}", fill="black")
+image.save(base + ".jpg", "JPEG")
+"""
+
 # Like the real one: forced, it reads the pages named in --pages and leaves one placeholder for each run of the
 # others; every page of the document has a page in the sidecar but such runs.
 OCRMYPDF = r"""
@@ -167,6 +185,7 @@ def install(folder: Path) -> dict[str, Path]:
         "ffprobe": FFPROBE,
         "whisper-cli": WHISPER,
         "pdftotext": PDFTOTEXT,
+        "pdftoppm": PDFTOPPM,
         "ocrmypdf": OCRMYPDF,
         "tesseract": TESSERACT,
         "textutil": TEXTUTIL,
@@ -194,6 +213,7 @@ def processing_config(tmp_path: Path, languages: str = "eng") -> ProcessingConfi
         ffmpeg=programs["ffmpeg"],
         ffprobe=programs["ffprobe"],
         pdftotext=programs["pdftotext"],
+        pdftoppm=programs["pdftoppm"],
         tesseract=programs["tesseract"],
         ocrmypdf=programs["ocrmypdf"],
         tessdata=tessdata,
@@ -212,6 +232,7 @@ def processing_section(processing: ProcessingConfig) -> str:
             "ffmpeg",
             "ffprobe",
             "pdftotext",
+            "pdftoppm",
             "tesseract",
             "ocrmypdf",
             "tessdata",

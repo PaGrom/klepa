@@ -118,6 +118,7 @@ Optional, macOS only. With it, Core reads what people send, in a sandbox: voice 
 | `ffmpeg` | `/opt/homebrew/bin/ffmpeg` | Turns a recording or a video's sound into the WAV whisper reads, and a HEIC photo into PNG. |
 | `ffprobe` | `/opt/homebrew/bin/ffprobe` | Reads an image's size before OCR, and whether a video has sound. |
 | `pdftotext` | `/opt/homebrew/bin/pdftotext` | Poppler's: a PDF's text layer. |
+| `pdftoppm` | beside `pdftotext` | Poppler's: draws a PDF's page for the model to look at (stage 2c-2). |
 | `tesseract` | `/opt/homebrew/bin/tesseract` | OCR of photos and images. |
 | `ocrmypdf` | `ocrmypdf` beside Core's interpreter | OCR of scanned PDF pages, from the engine's `processing` extra. |
 | `tessdata` | `~/Library/Application Support/Klepa/tessdata` | Tesseract's languages: `<language>.traineddata` for each OCR language, with Homebrew's `configs`, `tessconfigs`, `pdf.ttf`, `eng` and `osd` linked in. |

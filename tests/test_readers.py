@@ -457,3 +457,123 @@ def test_a_heic_page_is_turned_into_a_png_no_larger_than_asked(setup):
     args = json.loads((job / "ffmpeg.args").read_text())
     assert args[args.index("-vf") + 1] == FIT
     assert (job / "page-2.png").read_bytes() == b"heic NOGRID"
+
+
+# ---- pictures for the model (stage 2c-2) ----
+def a_photo(size=(1200, 900)):
+    import io
+
+    buffer = io.BytesIO()
+    Image.new("RGB", size, "#c8d6e5").save(buffer, "JPEG")
+    return buffer.getvalue()
+
+
+def picture(setup, kind, content, name, page=1, *, side=1568, max_bytes=400_000, deadline=None):
+    processing, runner, tmp_path = setup
+    source = tmp_path / "incoming" / name
+    source.parent.mkdir(exist_ok=True)
+    source.write_bytes(content)
+    folder = tmp_path / "jobs" / f"view-{name}-{page}"
+    folder.mkdir(parents=True)
+    readers = Readers(processing, runner)
+    return asyncio.run(readers.picture(kind, source, page, folder, side=side, max_bytes=max_bytes, deadline=deadline))
+
+
+def test_a_photo_is_drawn_for_the_model_within_its_side_and_bytes(setup):
+    data = picture(setup, "image", a_photo((4000, 3000)), "photo.jpg", side=800, max_bytes=120_000)
+    assert data[:3] == b"\xff\xd8\xff"
+    assert len(data) <= 120_000
+    import io
+
+    with Image.open(io.BytesIO(data)) as image:
+        assert max(image.size) == 800
+
+
+def test_a_heic_photo_is_joined_by_ffmpeg_then_drawn(setup):
+    data = picture(setup, "image", a_photo(), "photo.heic")
+    assert data[:3] == b"\xff\xd8\xff"
+    tmp_path = setup[2]
+    assert (tmp_path / "jobs" / "view-photo.heic-1" / "ffmpeg.args").exists()
+
+
+def test_a_photo_too_large_is_refused_before_anything_draws_it(setup):
+    with pytest.raises(ReaderFailed, match="megapixels"):
+        picture(setup, "image", b"PIXELS 12000x10000", "huge.jpg")
+    tmp_path = setup[2]
+    assert not (tmp_path / "jobs" / "view-huge.jpg-1" / "ffmpeg.args").exists()
+
+
+def test_a_photo_has_one_page_and_a_voice_message_none(setup):
+    with pytest.raises(ReaderFailed, match="page"):
+        picture(setup, "image", a_photo(), "photo.jpg", page=2)
+    with pytest.raises(ReaderFailed, match="no pages"):
+        picture(setup, "voice", b"hello", "voice.ogg")
+
+
+def test_a_pdf_page_is_drawn_and_a_page_it_lacks_is_refused(setup):
+    data = picture(setup, "pdf", f"{POLICY} PAGEBREAK {TERMS}".encode(), "policy.pdf", page=2)
+    assert data[:3] == b"\xff\xd8\xff"
+    with pytest.raises(ReaderFailed):
+        picture(setup, "pdf", f"{POLICY} PAGEBREAK {TERMS}".encode(), "other.pdf", page=3)
+
+
+def test_a_view_out_of_time_is_refused_at_once(setup):
+    import time
+
+    with pytest.raises(ReaderFailed, match="time"):
+        picture(setup, "image", a_photo(), "late.jpg", deadline=time.monotonic() - 1)
+
+
+def test_an_overview_composes_pictures_already_drawn(setup):
+    processing, runner, tmp_path = setup
+    folder = tmp_path / "jobs" / "sheet"
+    folder.mkdir(parents=True)
+    pages = []
+    for n in range(3):
+        path = folder / f"page-{n}.jpg"
+        path.write_bytes(a_photo())
+        pages.append(path)
+    readers = Readers(processing, runner)
+    data = asyncio.run(readers.sheet("overview", pages, 1, folder, max_bytes=400_000))
+    assert data[:3] == b"\xff\xd8\xff"
+
+
+def test_read_by_the_model_a_scan_has_no_ocr_and_names_its_scanned_pages(setup):
+    processing, runner, tmp_path = setup
+    source = tmp_path / "incoming" / "scan.pdf"
+    source.parent.mkdir(exist_ok=True)
+    source.write_bytes(f"SCAN {POLICY}".encode())
+    job = tmp_path / "jobs" / "pdf"
+    job.mkdir(parents=True)
+    pages = asyncio.run(Readers(processing, runner, model_reads=True).read("pdf", source, job))
+    assert pages.texts == ["", ""]
+    assert pages.scan_pages == (1, 2)
+    assert not (job / "ocrmypdf.args").exists()
+
+
+def test_read_by_the_model_a_photo_gets_its_picture_drawn_not_ocr(setup):
+    processing, runner, tmp_path = setup
+    source = tmp_path / "incoming" / "photo.jpg"
+    source.parent.mkdir(exist_ok=True)
+    source.write_bytes(a_photo((3000, 4000)))
+    job = tmp_path / "jobs" / "image"
+    job.mkdir(parents=True)
+    pages = asyncio.run(Readers(processing, runner, model_reads=True).read("image", source, job))
+    assert pages.texts == [""]
+    assert not (job / "tesseract.args").exists()
+    drawn = pages.pictures[1]
+    assert drawn.parent == job
+    with Image.open(drawn) as image:
+        assert max(image.size) == 1568
+
+
+def test_read_by_the_model_nothing_of_ocr_is_needed(setup):
+    processing, runner, _ = setup
+    gone = dataclasses.replace(
+        processing, tesseract=processing.tesseract.with_name("gone"), ocrmypdf=processing.ocrmypdf.with_name("gone")
+    )
+    needs = Readers(gone, runner, model_reads=True).unavailable()
+    assert "pdf" not in needs
+    assert "image" not in needs
+    missing_ppm = dataclasses.replace(processing, pdftoppm=processing.pdftoppm.with_name("gone"))
+    assert Readers(missing_ppm, runner, model_reads=True).unavailable()["pdf"] == ["gone"]

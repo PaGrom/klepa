@@ -303,6 +303,7 @@ def sandbox_for(processing: ProcessingConfig, private: Sequence[Path]) -> Sandbo
         processing.ffmpeg,
         processing.ffprobe,
         processing.pdftotext,
+        processing.pdftoppm,
         processing.tesseract,
         processing.ocrmypdf,
         processing.textutil,

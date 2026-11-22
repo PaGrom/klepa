@@ -16,9 +16,10 @@ import os
 import re
 import shutil
 import sys
+import time
 import wave
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, Protocol
 
@@ -38,6 +39,9 @@ OCR_JOBS = 2  # ocrmypdf's workers: one per core would hold several large pages 
 PAGES_SECONDS = 120  # Core's renderer: a PDF of a hundred pages
 PAGES = "pages"  # Core's renderer is no kind of original, yet it needs Pillow, which the processing extra brings
 PAGES_TOO_LARGE = 5  # the renderer's exit code when what it draws would pass its size (pages.OUTPUT_TOO_LARGE)
+PICTURE_SIDE = 1568  # a page drawn when it arrives (stage 2c-2): the large view, and what sheets are made of
+PICTURE_BYTES = 2_000_000  # what that drawing may take on disk
+SCAN_PAGES = 100  # scanned pages of one PDF the model reads (stage 2c-2)
 _SUFFIX = re.compile(r"\.[a-z0-9]{1,8}")
 _SIZE = re.compile(r"(\d{1,6})x(\d{1,6})")
 _CELLAR = re.compile(r"/Cellar/[^/]+/([^/]+)/")
@@ -83,6 +87,8 @@ class Pages:
     texts: list[str]  # page 1 first; an empty string for a page without text
     extractor: str  # the program, its version and what it was told: "whisper.cpp 1.9.4 <model>", "ocrmypdf … rus+eng"
     note: str | None = None  # what a limit left out, in words the model can repeat
+    scan_pages: tuple[int, ...] = ()  # read by the model: the PDF pages pdftotext found no text on (stage 2c-2)
+    pictures: Mapping[int, Path] = field(default_factory=dict)  # read by the model: a page drawn, in the job's folder
 
 
 def decode(data: bytes) -> str:
@@ -239,10 +245,14 @@ TEXT_CUT = f"the text was cut at {MAX_TEXT_BYTES // 1_000_000} MB"
 
 
 class Readers:
-    def __init__(self, processing: ProcessingConfig, runner: Runner, *, seconds: float | None = None) -> None:
+    def __init__(
+        self, processing: ProcessingConfig, runner: Runner, *, seconds: float | None = None, model_reads: bool = False
+    ) -> None:
         self.processing = processing
         self.runner = runner
         self.seconds = seconds  # tests: one time limit for every step
+        # Stage 2c-2: photos and scanned pages are read by the model in the background; no OCR (the owner, 2026-11-22)
+        self.model_reads = model_reads
         # A text names the program, the model and the version that read it (spec 5.4).
         self.whisper = _named("whisper.cpp", program_version(processing.whisper))
         self.ffmpeg = _named("ffmpeg", program_version(processing.ffmpeg))
@@ -260,11 +270,19 @@ class Readers:
             if not (p.tessdata / f"{language}.traineddata").is_file()
         ]
         model = [] if p.whisper_model is not None and p.whisper_model.is_file() else ["whisper_model"]
+        pillow = [] if _has_pillow() else ["pillow"]
+        if self.model_reads:
+            pdf, image = _missing(p.pdftotext, p.pdftoppm) + pillow, _missing(p.ffprobe, p.ffmpeg) + pillow
+        else:
+            pdf, image = (
+                _missing(p.pdftotext, p.ocrmypdf) + languages,
+                _missing(p.ffprobe, p.ffmpeg, p.tesseract) + languages,
+            )
         needs = {
             "voice": _missing(p.ffmpeg, p.whisper) + model,
             "video": _missing(p.ffprobe, p.ffmpeg, p.whisper) + model,
-            "pdf": _missing(p.pdftotext, p.ocrmypdf) + languages,
-            "image": _missing(p.ffprobe, p.ffmpeg, p.tesseract) + languages,
+            "pdf": pdf,
+            "image": image,
             "document": _missing(p.textutil),
             PAGES: [] if _has_pillow() else ["pillow"],
         }
@@ -298,11 +316,16 @@ class Readers:
         *,
         gpu: bool = False,
         name: str | None = None,
+        deadline: float | None = None,
     ) -> Result:
         program = Path(str(argv[0]))
         if not os.access(program, os.X_OK):
             raise ReaderMissing(program.name)
         timeout = self.seconds or limit
+        if deadline is not None:  # a picture the model waits for: the whole of it within its time
+            timeout = min(timeout, deadline - time.monotonic())
+            if timeout <= 0:
+                raise ReaderFailed(f"{name or program.name} had no time left")
         command = [*_launcher(program), *(str(arg) for arg in argv[1:])]
         result = await self.runner.run(command, job, timeout=timeout, env=env, gpu=gpu)
         if result.returncode != 0:
@@ -360,6 +383,11 @@ class Readers:
         scanned = [n for n, page in enumerate(pages, 1) if _letters(page) < MIN_PAGE_LETTERS]
         if not scanned:
             return Pages(pages, self.pdftotext, TEXT_CUT if cut else None)
+        if self.model_reads:  # the model reads the scanned pages, in the background (stage 2c-2)
+            to_read = tuple(scanned[:SCAN_PAGES])
+            more = len(scanned) - len(to_read)
+            unread = f"the model reads the first {len(to_read)} of {len(scanned)} scanned pages" if more else None
+            return Pages(pages, self.pdftotext, _note(unread, TEXT_CUT if cut else None), scan_pages=to_read)
         # A scan often carries a little text of its own (a page number, a stamp, "Scanned by …"), and ocrmypdf skips
         # any page with text unless forced: OCR is forced on these pages alone, and a page keeps whichever text has
         # more letters, its layer's or OCR's.
@@ -406,6 +434,10 @@ class Readers:
             raise ReaderFailed("the image's size could not be read")
         if pixels > MAX_IMAGE_PIXELS:
             raise ReaderFailed(f"the image is larger than {MAX_IMAGE_PIXELS // 1_000_000} megapixels")
+        if self.model_reads:  # drawn once for the model, which reads it in the background (stage 2c-2)
+            drawn = job / "picture-1.jpg"
+            await self._draw_image(source, drawn, job, PICTURE_SIDE, PICTURE_BYTES, None)
+            return Pages([""], "picture", pictures={1: drawn})
         if source.suffix in (".heic", ".heif"):
             converted = job / "converted.png"
             await self.to_png(source, converted, job)
@@ -415,7 +447,96 @@ class Readers:
         text, cut = _read(job / "ocr.txt")
         return Pages([text.strip()], f"{self.tesseract} {languages}", TEXT_CUT if cut else None)
 
-    async def to_png(self, source: Path, target: Path, job: Path, *, max_side: int | None = None) -> None:
+    async def _image_size_check(self, source: Path, folder: Path, deadline: float | None) -> None:
+        probe = ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height"]
+        probe += ["-show_entries", "stream_group_component=width,height", "-of", "csv=p=0:s=x"]
+        result = await self._step([self.processing.ffprobe, *probe, source], folder, 30, deadline=deadline)
+        pixels = max((int(width) * int(height) for width, height in _SIZE.findall(result.stdout)), default=0)
+        if not pixels:
+            raise ReaderFailed("the image's size could not be read")
+        if pixels > MAX_IMAGE_PIXELS:
+            raise ReaderFailed(f"the image is larger than {MAX_IMAGE_PIXELS // 1_000_000} megapixels")
+
+    async def _draw_image(
+        self, source: Path, output: Path, folder: Path, side: int, max_bytes: int, deadline: float | None
+    ) -> bytes:
+        if source.suffix.lower() in (".heic", ".heif"):
+            converted = folder / "joined.png"
+            await self.to_png(source, converted, folder, max_side=side, deadline=deadline)
+            source = converted
+        args = ["view", "--side", side, "--max-bytes", max_bytes, output, source]
+        return await self._render(args, output, folder, max_bytes, deadline)
+
+    async def _render(
+        self, args: Sequence[object], output: Path, folder: Path, max_bytes: int, deadline: float | None
+    ) -> bytes:
+        argv = [sys.executable, "-I", "-m", "klepa_core.processing.pages", *args]
+        try:
+            await self._step(argv, folder, PAGES_SECONDS, name="pages", deadline=deadline)
+        except ReaderFailed as exc:
+            if exc.code == PAGES_TOO_LARGE:
+                raise OutputTooLarge(f"{output.name} does not fit {max_bytes} bytes") from None
+            raise
+        with _output(output) as file:
+            data = file.read(max_bytes + 1)
+        if len(data) > max_bytes or data[:3] != b"\xff\xd8\xff":
+            raise ReaderFailed(f"{output.name} is no picture of its size")
+        return data
+
+    async def picture(
+        self,
+        kind: str,
+        original: Path,
+        page: int,
+        folder: Path,
+        *,
+        side: int,
+        max_bytes: int,
+        deadline: float | None = None,
+    ) -> bytes:
+        """One page of a record drawn for the model (stage 2c-2), in `folder`, which the caller made for this call: a
+        photo or an image (page 1), or a page of a PDF. A copy of the original goes into the folder first: the
+        sandbox never reads Core's data folder."""
+        if kind not in ("image", "pdf"):
+            raise ReaderFailed(f"no pages to show for {kind}")
+        if kind == "image" and page != 1:
+            raise ReaderFailed("a photo has one page")
+        suffix = original.suffix.lower()
+        copy = folder / ("input" + (suffix if _SUFFIX.fullmatch(suffix) else ""))
+        shutil.copyfile(original, copy)
+        output = folder / "picture.jpg"
+        if kind == "image":
+            await self._image_size_check(copy, folder, deadline)
+            return await self._draw_image(copy, output, folder, side, max_bytes, deadline)
+        drawn = ["-f", page, "-l", page, "-singlefile", "-jpeg", "-scale-to", side, copy, folder / "page"]
+        try:
+            await self._step([self.processing.pdftoppm, *drawn], folder, 60, deadline=deadline)
+        except ReaderFailed as exc:
+            raise ReaderFailed(f"no page {page}" if exc.code == 99 else str(exc), exc.code) from None
+        return await self._draw_image(folder / "page.jpg", output, folder, side, max_bytes, deadline)
+
+    async def sheet(
+        self,
+        layout: str,
+        pages: Sequence[Path],
+        first: int,
+        folder: Path,
+        *,
+        max_bytes: int,
+        deadline: float | None = None,
+    ) -> bytes:
+        """An overview or strips of pictures already drawn (stage 2c-2): only Core's renderer runs, over files in
+        `folder`."""
+        if layout not in ("overview", "strips"):
+            raise ReaderFailed(f"no sheet {layout}")
+        output = folder / f"{layout}.jpg"
+        return await self._render(
+            [layout, "--max-bytes", max_bytes, output, first, *pages], output, folder, max_bytes, deadline
+        )
+
+    async def to_png(
+        self, source: Path, target: Path, job: Path, *, max_side: int | None = None, deadline: float | None = None
+    ) -> None:
         """A HEIC image as a PNG, its tiles joined, by ffmpeg: tesseract and Pillow cannot open HEIC, and macOS's sips
         does not work in the sandbox, as it reads the home folder and writes in the user's temporary folder. With
         `max_side`, no longer than that and never enlarged: a 24-megapixel photo's PNG is slow to write and large."""
@@ -425,12 +546,11 @@ class Readers:
             await self._step([*convert, "-y", target], job, 60)
             return
         fit = f"scale='min(iw,{max_side})':'min(ih,{max_side})':force_original_aspect_ratio=decrease"
+        grid = [*convert, "-filter_complex", f"[0:g:0]{fit}[page]", "-map", "[page]", "-y", target]
         try:  # an iPhone's photo is a grid of tiles, which ffmpeg joins in a filter graph of its own (ffmpeg 9)
-            await self._step(
-                [*convert, "-filter_complex", f"[0:g:0]{fit}[page]", "-map", "[page]", "-y", target], job, 60
-            )
+            await self._step(grid, job, 60, deadline=deadline)
         except ReaderFailed:  # one image, with no grid of tiles
-            await self._step([*convert, "-vf", fit, "-y", target], job, 60)
+            await self._step([*convert, "-vf", fit, "-y", target], job, 60, deadline=deadline)
 
     async def pages(self, action: str, inputs: Sequence[Path], job: Path, *, max_bytes: int) -> bytes:
         """Core's own renderer of a document's pages (processing.pages) in the sandbox, like a reader: the PDF

@@ -75,6 +75,7 @@ class ProcessingConfig:
     ffmpeg: Path
     ffprobe: Path  # reads an image's size before tesseract reads it, and whether a video has sound
     pdftotext: Path
+    pdftoppm: Path  # draws a PDF's page for the model (stage 2c-2)
     tesseract: Path
     ocrmypdf: Path
     tessdata: Path  # the languages tesseract reads, with its own configs linked in
@@ -291,6 +292,7 @@ def _processing(raw: object, locale_code: str) -> ProcessingConfig | None:
         ffmpeg=program("ffmpeg", HOMEBREW_BIN / "ffmpeg"),
         ffprobe=program("ffprobe", HOMEBREW_BIN / "ffprobe"),
         pdftotext=program("pdftotext", HOMEBREW_BIN / "pdftotext"),
+        pdftoppm=program("pdftoppm", program("pdftotext", HOMEBREW_BIN / "pdftotext").parent / "pdftoppm"),
         tesseract=program("tesseract", HOMEBREW_BIN / "tesseract"),
         ocrmypdf=program("ocrmypdf", Path(sys.executable).parent / "ocrmypdf"),
         tessdata=program("tessdata", DEFAULT_TESSDATA),
