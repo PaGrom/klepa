@@ -32,10 +32,10 @@ from pathlib import Path
 
 from .reference import MODEL_PROFILE, HostLayout
 
-NODE_VERSION = "24.21.0"
+NODE_VERSION = "24.22.3"
 NODE_ARCHIVE = f"node-v{NODE_VERSION}-darwin-arm64.tar.xz"
 NODE_URL = f"https://nodejs.org/dist/v{NODE_VERSION}/{NODE_ARCHIVE}"
-NODE_SHA256 = "6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe"
+NODE_SHA256 = "1d64136c8a43d648d1b3bad10797a4c995b1ca032d2bde8799de43b37f058fe5"
 NODE_MAX_BYTES = 100 * 1024 * 1024
 OPENCLAW_VERSION = "2026.10.33"
 OFFLINE_OWNERSHIP = "exclusive offline state ownership"  # OpenClaw's refusal while a gateway owns its state

@@ -49,7 +49,7 @@ class FakeOpenClaw:
         self.calls.append((argv, env, input))
         tail = argv[2:]
         if argv[:2] == [str(self.runtime.node), "--version"]:
-            return subprocess.CompletedProcess(argv, 0, "v24.21.0\n", "")
+            return subprocess.CompletedProcess(argv, 0, "v24.22.3\n", "")
         if argv[0] == str(self.runtime.npm):
             self.runtime.openclaw_entry.parent.mkdir(parents=True, exist_ok=True)
             self.runtime.openclaw_entry.write_text("// openclaw\n")
@@ -225,7 +225,7 @@ def test_status_shows_the_runtime_the_agent_the_model_and_cores_view(cfg):
     conn.close()
     lines = host.status(cfg, run=fake, launchctl=fake)
     assert lines == [
-        "runtime: Node v24.21.0, OpenClaw 2026.10.33",
+        "runtime: Node v24.22.3, OpenClaw 2026.10.33",
         "gateway: not loaded (Core loads it when it runs)",
         "model token (anthropic:klepa): stored",
         "Core: not running; its last state was RUNNING since 2026-10-04T10:00:00Z",

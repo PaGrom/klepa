@@ -151,7 +151,7 @@ def test_cores_tools_come_through_the_adapters_mcp_server():
     layout = ref.HostLayout(runtime_dir=Path("/rt"), host_dir=Path("/h"))
     table = ref.table(settings, layout)
     assert table["mcp.servers.klepa"] == {
-        "command": "/rt/node-v24.21.0/bin/node",
+        "command": "/rt/node-v24.22.3/bin/node",
         "args": ["/rt/adapter/mcp.ts"],
         "env": {"KLEPA_SOCKET": "/run/adapter.sock"},
     }
