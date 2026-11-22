@@ -394,9 +394,11 @@ class Supervisor:
                 self._set(GatewayState.HOLD, "silent")
                 if self.alerts is not None:
                     self.alerts.raise_("host_silent")
-            elif now - max(self.last_poll or 0.0, self.running_since or now) > self.timing.not_polling:
-                if self.alerts is not None:
-                    self.alerts.raise_("host_not_polling")
+            elif (
+                now - max(self.last_poll or 0.0, self.running_since or now) > self.timing.not_polling
+                and self.alerts is not None
+            ):
+                self.alerts.raise_("host_not_polling")
         if self.state in (GatewayState.HOLD, GatewayState.STOPPED) and self.on_hold is not None:
             self.on_hold()
 
