@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 from ..config import Member
 
@@ -30,22 +30,38 @@ def stand_in(key: bytes, person_id: str) -> int:
     return 2**51 + int.from_bytes(digest[:8], "big") % 2**51
 
 
+def reader_peer(key: bytes, space_id: str) -> int:
+    """The sender and chat of a space's background readings (stage 2c-2): a Telegram-shaped id no member has, one per
+    space, so the gateway keeps each space's readings in a session of their own, beside the probe peer."""
+    digest = hmac.new(key, b"klepa reader peer\x00" + space_id.encode(), hashlib.sha256).digest()
+    return 2**51 + int.from_bytes(digest[:8], "big") % 2**51
+
+
 class Peers:
-    def __init__(self, key: bytes, members: Mapping[int, Member], probe: int) -> None:
+    def __init__(self, key: bytes, members: Mapping[int, Member], probe: int, spaces: Iterable[str] = ()) -> None:
         self.probe = probe
         self._to_host = {telegram_id: stand_in(key, member.person_id) for telegram_id, member in members.items()}
         self._to_telegram = {host_id: telegram_id for telegram_id, host_id in self._to_host.items()}
-        if len(self._to_telegram) != len(self._to_host) or probe in self._to_telegram:
+        self._readers = {reader_peer(key, space): space for space in spaces}
+        ids = [*self._to_telegram, probe, *self._readers]
+        if len(self._to_telegram) != len(self._to_host) or len(set(ids)) != len(ids):
             raise ValueError("two stand-ins clash")  # one in 2**50 for a family; never seen
 
     def host_id(self, telegram_id: int | None) -> int | None:
-        """The id the host knows a member by; the probe peer is its own; None for anyone else."""
-        if telegram_id == self.probe:
-            return self.probe
+        """The id the host knows a member by; the probe and reader peers are their own; None for anyone else."""
+        if telegram_id == self.probe or telegram_id in self._readers:
+            return telegram_id
         return None if telegram_id is None else self._to_host.get(telegram_id)
 
     def telegram_id(self, host_id: int | None) -> int | None:
-        """The member a stand-in stands for; the probe peer is its own; None for any other id."""
-        if host_id == self.probe:
-            return self.probe
+        """The member a stand-in stands for; the probe and reader peers are their own; None for any other id."""
+        if host_id == self.probe or host_id in self._readers:
+            return host_id
         return None if host_id is None else self._to_telegram.get(host_id)
+
+    def reader_space(self, peer: int | None) -> str | None:
+        """The space whose readings a reader peer sends; None for any other id."""
+        return None if peer is None else self._readers.get(peer)
+
+    def reader_peers(self) -> dict[int, str]:
+        return dict(self._readers)

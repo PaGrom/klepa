@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import sqlite3
 import time
 from collections.abc import Callable, Collection, Sequence
@@ -33,6 +34,17 @@ PROBE_NAME = "Klepa probe"
 PROBE_TEXT = "Klepa start probe"
 MODEL_PROBE_TEXT = "Klepa start check: answer with one word."
 PROBE_KINDS = ("probe", "model_probe")
+READING_NAME = "Klepa reader"  # stage 2c-2: the sender of background readings, in each space's reader chat
+
+
+def reading_text(evidence_id: str, page: int) -> str:
+    """The reader's task: one page of one record, read whole, nothing else (stage 2c-2)."""
+    return (
+        f"Read record {evidence_id}, page {page}: look at it with klepa__view_page (size large) and save its full text "
+        "with klepa__save_text, in parts if it is long. Write nothing else."
+    )
+
+
 FORWARDED_MARK = "[forwarded message]"
 
 MayServe = Callable[[int, str], bool]
@@ -152,11 +164,30 @@ class HostQueue:
         assert cursor.lastrowid is not None
         return cursor.lastrowid
 
+    def add_reading(self, reading_id: int, peer: int) -> int:
+        """A background reading's message (stage 2c-2), in the reader peer's own chat, and the reading's current
+        attempt. Each attempt has a message id of its own that grows with the clock, as the probes': the host remembers
+        chat_id:message_id pairs and would take a repeat for one it saw."""
+        now = self.clock()
+        with transaction(self.conn):
+            last = self.conn.execute(
+                "SELECT COALESCE(MAX(message_id), 0) FROM host_message WHERE chat_id=?", (peer,)
+            ).fetchone()[0]
+            cursor = self.conn.execute(
+                "INSERT INTO host_message(source_update_id, kind, chat_id, message_id, sender_id, date, created_at) "
+                "VALUES (NULL, 'reading', ?, ?, ?, ?, ?)",
+                (peer, max(int(last) + 1, math.ceil(now)), peer, math.ceil(now), now),
+            )
+            self.conn.execute("UPDATE reading SET host_message_id=? WHERE id=?", (cursor.lastrowid, reading_id))
+        self.wake()
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
     def retire(self, host_message_id: int) -> None:
-        """A probe that is over is never served later."""
+        """A probe or a reading that is over is never served later."""
         self.conn.execute(
             "UPDATE host_message SET answered_at=COALESCE(answered_at, ?) "
-            "WHERE id=? AND kind IN ('probe', 'model_probe')",
+            "WHERE id=? AND kind IN ('probe', 'model_probe', 'reading')",
             (self.clock(), host_message_id),
         )
 
@@ -351,6 +382,13 @@ class HostQueue:
             return None
         if row["kind"] in PROBE_KINDS:
             name, text = PROBE_NAME, PROBE_TEXT if row["kind"] == "probe" else MODEL_PROBE_TEXT
+        elif row["kind"] == "reading":
+            reading = self.conn.execute(
+                "SELECT evidence_id, page FROM reading WHERE host_message_id=?", (row["id"],)
+            ).fetchone()
+            if reading is None:  # superseded by a newer attempt
+                return None
+            name, text = READING_NAME, reading_text(str(reading["evidence_id"]), int(reading["page"]))
         elif row["kind"] == "attachment":
             member = self.members.get(sender_id)
             if member is None:

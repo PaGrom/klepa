@@ -41,6 +41,8 @@ _ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 _SIG = re.compile(r"[0-9a-f]{64}")
 _MIME = re.compile(r"[\w.+-]{1,64}/[\w.+-]{1,128}")
 _READABLE = ("stored", "processing", "processed", "failed", "too_large")  # what get reads and search lists
+READER_TOOLS = ("view_page", "save_text")  # what a background reading may call (stage 2c-2)
+READER_ONLY = ("save_text",)  # what no person's turn may call: only a reading writes a page's text
 ANSWER_MAX = 900_000  # a picture's answer, JSON with base64, under the MCP shim's 1 MiB (mcp.ts MAX_ANSWER_BYTES)
 
 
@@ -104,6 +106,7 @@ class Caller:
     chat_id: int
     spaces: tuple[str, ...]
     message_id: int | None = None  # the person's message the turn answers
+    reading: tuple[str, int] | None = None  # a background reading's turn (stage 2c-2): its record and page
 
 
 @dataclass(frozen=True)
@@ -180,6 +183,7 @@ class ToolBox:
         self.clock = clock
         self.drafts: Drafts | None = None  # documents from photos (make_pdf): None where Core makes none
         self.pictures: Pictures | None = None  # pages shown as pictures (stage 2c-2): None where Core draws none
+        self.readers: Mapping[int, str] = {}  # reader peer -> space (stage 2c-2): the senders of background readings
         self.tools = {tool.name: tool for tool in TOOLS}
 
     def specs(self) -> list[dict[str, Any]]:
@@ -192,7 +196,14 @@ class ToolBox:
         params = dict(arguments)
         klepa = params.pop("_klepa", None)
         caller = self._authorize(name, klepa, params)
-        return tool.run(self, caller, tool.check(params))
+        checked = tool.check(params)
+        if caller.reading is not None:  # Core's own check, not only the gateway's list of the turn's tools
+            evidence_id, page = caller.reading
+            if name not in READER_TOOLS or checked.get("id") != evidence_id or checked.get("page", 1) != page:
+                raise ToolRefused("a reading may only look at its own page and save its text")
+        elif name in READER_ONLY:
+            raise ToolRefused("only a background reading saves a page's text")
+        return tool.run(self, caller, checked)
 
     def _authorize(self, name: str, klepa: object, params: dict[str, Any]) -> Caller:
         if not isinstance(klepa, dict) or set(klepa) != {"run_id", "tool_call_id", "sig"}:
@@ -226,11 +237,29 @@ class ToolBox:
             )
             if used.rowcount != 1:
                 raise ToolRefused("the call was made already")
+        if int(run["sender_id"]) in self.readers:
+            return self._reading(run_id, int(run["chat_id"]), run["message_id"])
         person = self.members.get(int(run["sender_id"]))
         if person is None:
             raise ToolRefused("the turn is not a member's")
         message_id = None if run["message_id"] is None else int(run["message_id"])
         return Caller(run_id, person, int(run["chat_id"]), ("shared", f"personal:{person}"), message_id)
+
+    def _reading(self, run_id: str, chat_id: int, message_id: object) -> Caller:
+        """A background reading's turn acts for its record's owner, on that record's page alone; an attempt a newer one
+        superseded, or a reading that ended, may do nothing."""
+        row = self.conn.execute(
+            "SELECT r.evidence_id, r.page, r.state, e.authenticated_subject FROM host_run h "
+            "JOIN reading r ON r.host_message_id = h.host_message_id JOIN evidence e ON e.id = r.evidence_id "
+            "WHERE h.run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None or row["state"] != "running":
+            raise ToolRefused("the reading is over")
+        owner = str(row["authenticated_subject"])
+        spaces = ("shared", f"personal:{owner}")
+        mid = None if message_id is None else int(str(message_id))
+        return Caller(run_id, owner, chat_id, spaces, mid, (str(row["evidence_id"]), int(row["page"])))
 
 
 def _stems(query: str) -> list[str]:

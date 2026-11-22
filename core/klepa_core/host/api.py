@@ -299,6 +299,7 @@ class HostApi:
         if (
             params["action"] == "typing"
             and chat_id != self.queue.probe_peer
+            and self.queue.peers.reader_space(chat_id) is None
             and now - self._typing_at.get(chat_id, float("-inf")) >= TYPING_EVERY_SECONDS
             and self.queue.conversation_open(chat_id)
             and self.supervisor.may_release()
@@ -340,6 +341,20 @@ class HostApi:
 
     def _send_message(self, params: dict[str, Any]) -> web.Response:
         chat_id, host_id = self._chat(params)
+        if self.queue.peers.reader_space(chat_id) is not None:
+            # A background reading's turn writing to its reader chat (stage 2c-2): nobody reads it, whatever it is,
+            # and its length must not alert the owner. Only the reading of the turn that wrote is closed.
+            active = self.outbox.turns.active_message(chat_id)
+            if active is not None:
+                self.queue.mark_answered(chat_id, prefer=active)
+            return _ok(
+                {
+                    "message_id": _PROBE_MESSAGE_ID,
+                    "date": int(self.clock()),
+                    "chat": {"id": host_id, "type": "private"},
+                    "text": "",
+                }
+            )
         text = params.get("text")
         if not isinstance(text, str):
             raise BadParams("message text is empty")

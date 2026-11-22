@@ -161,11 +161,21 @@ HOST_OWNER = stand_in_of("owner")  # the stand-ins of OWNER and MEMBER under HOS
 HOST_MEMBER = stand_in_of("member")
 
 
+SPACES = ("shared", "personal:owner", "personal:member")  # the spaces of the test config's members
+
+
+def reader_of(space, key=HOST_KEY):
+    """The reader peer of a space (stage 2c-2)."""
+    from klepa_core.host.peers import reader_peer
+
+    return reader_peer(key, space)
+
+
 def host_peers(cfg, probe, key=HOST_KEY):
-    """Who the host knows by which stand-in, as Core builds it."""
+    """Who the host knows by which stand-in, as Core builds it: members, the probe, a reader per space."""
     from klepa_core.host.peers import Peers
 
-    return Peers(key, cfg.members_by_telegram_id(), probe)
+    return Peers(key, cfg.members_by_telegram_id(), probe, SPACES)
 
 
 def record(conn, record_id, *, chat_id, message_id, kind="file", name=None, mime=None, caption=None, tags=()):

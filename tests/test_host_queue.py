@@ -387,3 +387,34 @@ def test_a_text_whose_last_page_is_blank_comes_whole(setup):
     [(_, text)] = served_texts(queue)
     assert "· its text:⟧" in text
     assert "read the rest" not in text
+
+
+def test_a_reading_is_served_from_its_spaces_reader_peer_and_retired_when_over(setup):
+    """Stage 2c-2: a background reading is a message of the reader peer in its own chat, naming the record and the
+    page; a new attempt gets a new message id; a retired reading is never served again."""
+    from helpers import reader_of
+    from klepa_core.host.queue import READING_NAME
+
+    queue, _, conn, clock = setup
+    peer = reader_of("shared")
+    record(conn, "rec-1", chat_id=OWNER, message_id=1)
+    reading = conn.execute(
+        "INSERT INTO reading(evidence_id, page, space_id, state, queued_at) VALUES ('rec-1', 2, 'shared', 'queued', 0)"
+    ).lastrowid
+    first = queue.add_reading(reading, peer)
+    assert conn.execute("SELECT host_message_id FROM reading WHERE id=?", (reading,)).fetchone()[0] == first
+    [update] = queue.serve(None, 100, everything)
+    message = update["message"]
+    assert message["from"] == {"id": peer, "is_bot": False, "first_name": READING_NAME}
+    assert message["chat"]["id"] == peer
+    assert "rec-1" in message["text"]
+    assert "page 2" in message["text"]
+    assert "klepa__view_page" in message["text"]
+    assert "klepa__save_text" in message["text"]
+    queue.retire(first)
+    assert queue.unanswered(peer) == []
+    second = queue.add_reading(reading, peer)
+    row = lambda i: conn.execute("SELECT message_id, date FROM host_message WHERE id=?", (i,)).fetchone()  # noqa: E731
+    assert row(second)["message_id"] > row(first)["message_id"]
+    assert row(second)["date"] >= int(clock())
+    assert queue.waiting_chats() == []  # a reader chat never gets the hold text

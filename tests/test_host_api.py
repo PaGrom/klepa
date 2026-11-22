@@ -435,3 +435,29 @@ async def test_a_late_reply_in_the_probe_chat_never_answers_a_new_probe(gatekeep
     await call(host_api, "getUpdates", {"timeout": 0})
     assert (await call(host_api, "sendMessage", {"chat_id": PEER, "text": "OK"}))[0] == 200
     assert conn.execute("SELECT answered_at FROM host_message WHERE id=?", (probe,)).fetchone()[0] is None
+
+
+async def test_a_reader_chat_is_answered_but_never_reaches_telegram_nor_alerts(gatekeeper, fake_tg):
+    """Stage 2c-2: what the model writes in a reader chat closes the reading's message and goes nowhere, however long
+    (review 5: before the too-long checks, which would alert the owner); no typing goes to Telegram for it."""
+    from helpers import reader_of, record
+
+    host_api, queue, _, outbox, _, alerts, conn = gatekeeper
+    peer = reader_of("shared")
+    record(conn, "rec-1", chat_id=OWNER, message_id=1)
+    reading = conn.execute(
+        "INSERT INTO reading(evidence_id, page, space_id, state, queued_at) VALUES ('rec-1', 1, 'shared', 'queued', 0)"
+    ).lastrowid
+    message = queue.add_reading(reading, peer)
+    queue.serve(None, 100, lambda host_message_id, kind: True)
+    status, _ = await call(host_api, "sendChatAction", {"chat_id": peer, "action": "typing"})
+    assert status == 200
+    status, body = await call(host_api, "sendMessage", {"chat_id": peer, "text": "x" * 20_000})
+    assert status == 200
+    assert body["ok"] is True
+    await outbox.release_due()
+    assert fake_tg.sent == []
+    assert "sendChatAction" not in fake_tg.calls
+    assert alerts.raised == []
+    assert message  # closed by the reader's own turn; a late reply of an earlier attempt closes nothing
+    assert conn.execute("SELECT COUNT(*) FROM outbound").fetchone()[0] == 0
