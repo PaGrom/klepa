@@ -53,9 +53,23 @@ FIXED: dict[str, Any] = {
     # dispatch_action, or behind a JavaScript surface it turns on by itself for some models.
     "tools.toolSearch": False,
     "tools.codeMode": False,
-    "tools.alsoAllow": ["klepa__get", "klepa__make_pdf", "klepa__search", "klepa__send_original"],
+    "tools.alsoAllow": [
+        "klepa__get",
+        "klepa__make_pdf",
+        "klepa__search",
+        "klepa__send_original",
+        "klepa__view_draft",
+        "klepa__view_page",
+    ],
     # never through /tools/invoke
-    "gateway.tools.deny": ["klepa__get", "klepa__make_pdf", "klepa__search", "klepa__send_original"],
+    "gateway.tools.deny": [
+        "klepa__get",
+        "klepa__make_pdf",
+        "klepa__search",
+        "klepa__send_original",
+        "klepa__view_draft",
+        "klepa__view_page",
+    ],
     "tools.deny": ["session_status"],
     "tools.sessions.visibility": "self",
     "tools.fs.workspaceOnly": True,
@@ -73,6 +87,9 @@ FIXED: dict[str, Any] = {
     # Telegram, through the gatekeeper only.
     "channels.telegram.enabled": True,
     "channels.telegram.dmPolicy": "allowlist",
+    # Stage 2c-2: what a request carries of a chat's history. OpenClaw keeps up to ceil(1.5 * 3) earlier turns and the
+    # current one: at 10 pictures and 3 MB a turn, a request stays under the API's 100 images and 32 MB (R4-C2).
+    "channels.telegram.dmHistoryLimit": 3,
     "channels.telegram.groupPolicy": "disabled",
     "channels.telegram.streaming.mode": "off",
     "channels.telegram.linkPreview": False,

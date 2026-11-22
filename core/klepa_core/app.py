@@ -36,6 +36,7 @@ from .host.gateway import LaunchdGateway
 from .host.instruction import instruction
 from .host.outbox import HostOutbox
 from .host.peers import Peers, probe_peer
+from .host.pictures import Pictures
 from .host.queue import HostQueue
 from .host.runtime import OPENCLAW_VERSION, Runtime, adapter_sha256
 from .host.supervisor import Expectations, GatewayControl, HostTiming, Supervisor
@@ -363,6 +364,10 @@ def _drafts(
         return None
     if PAGES in processing.readers.unavailable():  # no Pillow: the owner's alert named it, and no draft is made
         return None
+    # Stage 2c-2: pages shown to the model as pictures, drawn in the readers' sandbox
+    host.tools.pictures = Pictures(
+        conn, processing.readers, cfg.incoming_dir, cfg.jobs_dir, album_quiet=cfg.album_quiet_seconds
+    )
     drafts = Drafts(
         conn,
         host.queue,

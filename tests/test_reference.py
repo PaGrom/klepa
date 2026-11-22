@@ -61,8 +61,29 @@ def test_the_adapter_reports_every_value_but_the_unreported():
         ("tools.profile", "minimal"),
         ("tools.toolSearch", False),  # OpenClaw 2026.10 hides tools behind search/describe/dispatch unless told not to
         ("tools.codeMode", False),  # and turns a JavaScript surface on by itself for some models
-        ("tools.alsoAllow", ["klepa__get", "klepa__make_pdf", "klepa__search", "klepa__send_original"]),
-        ("gateway.tools.deny", ["klepa__get", "klepa__make_pdf", "klepa__search", "klepa__send_original"]),
+        ("channels.telegram.dmHistoryLimit", 3),
+        (
+            "tools.alsoAllow",
+            [
+                "klepa__get",
+                "klepa__make_pdf",
+                "klepa__search",
+                "klepa__send_original",
+                "klepa__view_draft",
+                "klepa__view_page",
+            ],
+        ),
+        (
+            "gateway.tools.deny",
+            [
+                "klepa__get",
+                "klepa__make_pdf",
+                "klepa__search",
+                "klepa__send_original",
+                "klepa__view_draft",
+                "klepa__view_page",
+            ],
+        ),
         ("tools.sessions.visibility", "self"),
         ("commands.allowFrom", {"*": []}),
         ("commands.restart", False),
