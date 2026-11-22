@@ -91,13 +91,15 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+EXIT_RESTART = 75  # EX_TEMPFAIL: launchd's KeepAlive starts Core again after an exit that is not clean
+
+
 async def _run_with_signals(cfg: Config) -> int:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
-    await run_service(cfg, stop)
-    return 0
+    return EXIT_RESTART if await run_service(cfg, stop) else 0
 
 
 async def _bind(cfg: Config, token: str) -> int:

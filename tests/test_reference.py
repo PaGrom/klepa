@@ -163,11 +163,12 @@ def test_cores_tools_come_through_the_adapters_mcp_server():
 @pytest.mark.parametrize(
     ("zone", "when", "expected"),
     [
-        ("Europe/Berlin", "2026-01-15T12:00:00+00:00", "Etc/GMT-1"),  # winter: UTC+1; the Etc names' sign is turned
-        ("Europe/Berlin", "2026-07-15T12:00:00+00:00", "Etc/GMT-2"),  # summer: UTC+2
-        ("America/New_York", "2026-01-15T12:00:00+00:00", "Etc/GMT+5"),
+        ("Europe/Berlin", "2026-01-15T12:00:00+00:00", "+01:00"),  # winter
+        ("Europe/Berlin", "2026-07-15T12:00:00+00:00", "+02:00"),  # summer
+        ("America/New_York", "2026-01-15T12:00:00+00:00", "-05:00"),
         ("UTC", "2026-01-15T12:00:00+00:00", "UTC"),
-        ("Asia/Kolkata", "2026-01-15T12:00:00+00:00", "UTC"),  # +05:30 has no Etc name: UTC, and the place stays home
+        ("Asia/Kolkata", "2026-01-15T12:00:00+00:00", "+05:30"),  # Node shows it as GMT+5:30
+        ("America/St_Johns", "2026-01-15T12:00:00+00:00", "-03:30"),
     ],
 )
 def test_the_gateway_gets_the_familys_offset_never_its_place(zone, when, expected):
@@ -179,6 +180,6 @@ def test_the_gateway_gets_the_familys_offset_never_its_place(zone, when, expecte
 
 
 def test_the_table_carries_the_placeless_zone():
-    table = ref.table(dataclasses.replace(SETTINGS, time_zone="Etc/GMT-1"), LAYOUT)
-    assert table["agents.defaults.userTimezone"] == "Etc/GMT-1"
+    table = ref.table(dataclasses.replace(SETTINGS, time_zone="+01:00"), LAYOUT)
+    assert table["agents.defaults.userTimezone"] == "+01:00"
     assert "agents.defaults.userTimezone" in ref.policy(table)

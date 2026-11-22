@@ -195,15 +195,17 @@ class HostSettings:
 
 
 def placeless_zone(zone: str, now: datetime | None = None) -> str:
-    """A time zone of the family's current offset that names no place: OpenClaw 2026.10 sends the zone's name with
-    every turn, and "Area/City" says where the family lives (the canary test). The Etc names count the other way:
-    UTC+1 is "Etc/GMT-1". An offset that is not a whole hour has no such name, and the gateway gets UTC. The offset is
-    the one at Core's start: after a change to or from summer time it is an hour off until Core starts again."""
+    """The family's current offset as a time zone that names no place: OpenClaw 2026.10 sends the zone's name with
+    every turn, and "Area/City" says where the family lives (the canary test). "+01:00", "-03:30", or "UTC"; Node
+    shows them as "GMT+1", "GMT-3:30". The offset is the one at Core's start: Core starts again when it changes
+    (app.watch_zone)."""
     offset = (now or datetime.now(UTC)).astimezone(ZoneInfo(zone)).utcoffset() or timedelta(0)
-    hours, rest = divmod(int(offset.total_seconds()), 3600)
-    if rest or hours == 0:
+    minutes = int(offset.total_seconds()) // 60
+    if minutes == 0:
         return "UTC"
-    return f"Etc/GMT{-hours:+d}"
+    sign = "+" if minutes > 0 else "-"
+    hours, rest = divmod(abs(minutes), 60)
+    return f"{sign}{hours:02d}:{rest:02d}"
 
 
 def layout_of(cfg: Config) -> HostLayout:

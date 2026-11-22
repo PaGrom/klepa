@@ -1,3 +1,5 @@
+import asyncio
+
 from helpers import BASE_CONFIG
 from klepa_core import app
 from klepa_core.host.gateway import LaunchdGateway
@@ -190,3 +192,34 @@ def test_the_tools_learn_what_core_reads_now(make_config, short_dir, tmp_path):
     finally:
         journal.close()
         conn.close()
+
+
+async def test_core_restarts_for_its_gateway_when_the_familys_offset_changes():
+    """The gateway knows the family's offset, not its place (OpenClaw 2026.10 sends the zone with every turn): when
+    summer time begins or ends, Core stops cleanly and asks launchd to start it again with the new offset."""
+    from klepa_core.app import watch_zone
+
+    offsets = iter(["+01:00", "+01:00", "+02:00"])
+    stop = asyncio.Event()
+    asked = await asyncio.wait_for(watch_zone("+01:00", lambda: next(offsets), stop, every=0.01), 5)
+    assert asked is True
+    assert stop.is_set()
+
+
+async def test_the_zone_watch_ends_quietly_when_core_stops():
+    from klepa_core.app import watch_zone
+
+    stop = asyncio.Event()
+    stop.set()
+    assert await watch_zone("+01:00", lambda: "+01:00", stop, every=0.01) is False
+
+
+def test_a_restart_for_the_zone_exits_so_that_launchd_starts_core_again(monkeypatch):
+    """launchd's KeepAlive starts Core again after a failed exit only: the restart's own exit code says so."""
+    from klepa_core import __main__ as cli
+
+    async def restarting(cfg, stop):
+        return True
+
+    monkeypatch.setattr(cli, "run_service", restarting)
+    assert asyncio.run(cli._run_with_signals(object())) == cli.EXIT_RESTART != 0

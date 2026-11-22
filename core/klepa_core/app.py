@@ -258,6 +258,23 @@ def _host(
     return HostParts(queue, supervisor, tools, loops)
 
 
+ZONE_CHECK_SECONDS = 300.0
+
+
+async def watch_zone(
+    zone: str, now: Callable[[], str], stop: asyncio.Event, *, every: float = ZONE_CHECK_SECONDS
+) -> bool:
+    """The gateway has the family's offset (reference.placeless_zone), fixed when Core started it. When the offset
+    changes, at the start or end of summer time, Core stops cleanly so that launchd starts it again, and the gateway
+    with the new offset. True when it asked for that."""
+    while not stop.is_set():
+        await sleep_or_stop(stop, every)
+        if not stop.is_set() and now() != zone:
+            stop.set()
+            return True
+    return False
+
+
 def _gateway(cfg: Config, key: bytes) -> tuple[Expectations | None, GatewayControl | None]:
     """Core's own gateway under launchd, held to the reference table (spec 4.6, 7.1); or one somebody else runs,
     which only the heartbeat and the live probe gate."""
@@ -416,7 +433,8 @@ async def run_service(
     retry_seconds: float = 30.0,
     documents_grace: float = DOCUMENTS_GRACE_SECONDS,
     host_timing: HostTiming | None = None,
-) -> None:
+) -> bool:
+    """Run Core until `stop`. True when Core stopped to be started again: the family's offset changed (watch_zone)."""
     ensure_private_dir(cfg.data_dir)
     raise_file_limit()
     lock_fd = acquire_lock(cfg.data_dir / "core.lock")
@@ -507,8 +525,13 @@ async def run_service(
                 events.log("core_started")
                 if crashed:
                     alerts.raise_("restarted")
+                zone_watch: asyncio.Task[bool] | None = None
                 try:
                     async with asyncio.TaskGroup() as tasks:
+                        if cfg.host is not None and cfg.host.gateway == "launchd" and host is not None:
+                            zone = reference.placeless_zone(cfg.timezone)
+                            now = functools.partial(reference.placeless_zone, cfg.timezone)
+                            zone_watch = tasks.create_task(watch_zone(zone, now, stop))
                         # Family intake: when it fails, Core stops and launchd starts it again.
                         tasks.create_task(gatekeeper.poll_forever(stop))
                         tasks.create_task(gatekeeper.copy_forever(stop))
@@ -523,7 +546,11 @@ async def run_service(
                 await outbox.send_due()
                 if service_outbox is not None:
                     await service_outbox.send_due()
+                restart = zone_watch is not None and zone_watch.result()
+                if restart:
+                    events.log("core_restart_for_zone")
                 events.log("core_stopped")
+                return restart
         finally:
             journal.close()
             conn.close()
