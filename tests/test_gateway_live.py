@@ -166,7 +166,7 @@ async def test_a_crashed_gateway_is_checked_again_before_it_gets_messages(stand_
         await wait_until(lambda: live.state() == "STARTING", timeout=20)
         assert live.states()[-1]["reason"] in ("new_process", "new_boot")
         live.telegram.add_text(MEMBER, "while it restarts")
-        await wait_until(lambda: live.state() == "RUNNING", timeout=90)
+        await wait_until(lambda: live.state() == "RUNNING", timeout=180)  # OpenClaw 2026.10: the dead lease, ~1 min
         assert live.agent().process.pid != before.pid
         await wait_until(lambda: "STUB: while it restarts" in live.sent(), timeout=40)
         assert live.sent().count("STUB: while it restarts") == 1

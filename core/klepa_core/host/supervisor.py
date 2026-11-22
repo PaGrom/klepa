@@ -68,7 +68,9 @@ class Expectations:
 @dataclass(frozen=True)
 class HostTiming:
     first_heartbeat: float = 30.0  # a full heartbeat within 30 s of the start (spec 4.6)
-    probe: float = 60.0  # the live probe: a gateway back from a long outage may wait 30 s before it polls again
+    # The live probe: a gateway back from a long outage may wait 30 s before it polls again, and one that replaces a
+    # killed process (OpenClaw 2026.10) holds the probe chat for about a minute while the dead process's lease runs out.
+    probe: float = 150.0
     # The model probe: OpenClaw itself retries a busy provider for about 80 s within one turn before it reports the
     # error, so the probe waits longer, and asks once more after a pause when the model erred or was silent.
     model_probe: float = 150.0
