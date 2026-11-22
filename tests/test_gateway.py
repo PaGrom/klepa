@@ -404,7 +404,7 @@ async def test_the_model_token_is_checked_before_the_gateway_starts(setup):
 
 def test_the_login_mark_says_busy_while_login_holds_it_then_stopped_once(setup):
     layout = setup[1]
-    layout.host_dir.mkdir(parents=True, exist_ok=True)
+    layout.host_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     gateway = control(setup, FakeLaunchd())
     assert gateway.login_state() is None
     with gw.login_lock(layout) as mark:
