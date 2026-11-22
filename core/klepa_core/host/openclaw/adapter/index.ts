@@ -362,13 +362,17 @@ export function remember(runs: Set<string>, runId: string, keep = KEEP_RUNS): vo
 // report, point 15). The person reads Core's text alone.
 const BLOCK_WRAPPER = /^Your message could not be sent: ([\s\S]*?)(?: \(blocked by [\w.-]+\))?$/;
 
-/** What kind of failure ended a turn, without its text: OpenClaw's error names the provider and the cause. */
+/** What kind of failure ended a turn, without its text. Until 2026.9 OpenClaw's error named the provider and the
+ * cause ("HTTP 401"); since 2026.10 it is a fixed sentence of its own for each kind (its assistant-request failure
+ * copy), and the real gateway's tests check those sentences at every OpenClaw release. */
 export function failureKind(error: unknown): string {
   const text = typeof error === "string" ? error : "";
-  if (/HTTP 401|HTTP 403|authentication/i.test(text)) return "auth";
-  if (/HTTP 429|rate limit/i.test(text)) return "rate_limit";
-  if (/timed? ?out/i.test(text)) return "timeout";
-  if (/HTTP 5\d\d/.test(text)) return "provider";
+  if (/HTTP 401|HTTP 403|authentication|Couldn't sign in to the AI service|isn't accepting your login/i.test(text)) {
+    return "auth";
+  }
+  if (/HTTP 429|rate limit|needs a short break/i.test(text)) return "rate_limit";
+  if (/timed? ?out|took too long/i.test(text)) return "timeout";
+  if (/HTTP 5\d\d|The AI service is (?:busy|having trouble)/.test(text)) return "provider";
   return "other";
 }
 

@@ -568,5 +568,13 @@ test("a failure is named by its kind, never by its text", () => {
   assert.equal(failureKind("HTTP 429: rate limit reached"), "rate_limit");
   assert.equal(failureKind("the request timed out"), "timeout");
   assert.equal(failureKind("HTTP 503 from the provider"), "provider");
+  // OpenClaw 2026.10 replaces the provider's error with fixed copy of its own, one sentence per kind
+  const copy = (text: string) => `⚠️ ${text}`;
+  assert.equal(failureKind(copy("Couldn't sign in to the AI service. Sign in again under Models")), "auth");
+  assert.equal(failureKind(copy("The AI service isn't accepting your login. Sign in again")), "auth");
+  assert.equal(failureKind(copy("The AI service needs a short break. Please try again in a few minutes.")), "rate_limit");
+  assert.equal(failureKind(copy("The request took too long. Check the conversation")), "timeout");
+  assert.equal(failureKind(copy("The AI service is busy. Please try again in a moment")), "provider");
+  assert.equal(failureKind(copy("The AI service is having trouble. Please try again in a moment.")), "provider");
   assert.equal(failureKind(undefined), "other");
 });
