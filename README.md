@@ -22,20 +22,37 @@ Family members send documents, photos and voice messages to a Telegram bot. Klep
 
 ```mermaid
 flowchart LR
-    TG[Telegram Bot API] -->|getUpdates| GK[Gatekeeper]
-    GK -->|journal first| J[(inbound journal)]
-    GK -->|download| IN[incoming/YYYY/MM]
-    IN --> DB[(core.db)]
-    DB -->|verified copy + signed card| DOCS[documents folder]
-    GK -->|one receipt per batch| OB[outbox]
-    OB --> TG
+    P([family member]) <-->|messages, files| TG[Telegram<br>family bot]
+    TG <--> GK
+    subgraph core[Core]
+        GK[Gatekeeper] -->|journal first| J[(inbound journal)]
+        GK --> DB[(core.db + originals)]
+        DB --> R[Readers<br>in a sandbox]
+        R -->|text, search| DB
+        DB -->|verified copy + signed card| DOCS[documents folder]
+        GK --> Q[Host queue<br>text only, stand-ins]
+        OB[Outbox<br>hold, sanitize, release] --> GK
+        T[Core's tools<br>signed calls]
+        S[Supervisor]
+        X[Egress proxy]
+    end
+    subgraph host[Core's own OpenClaw gateway]
+        OC[Agent + adapter plugin]
+    end
+    Q -->|Telegram-shaped API| OC
+    OC -->|sendMessage| OB
+    OC <-->|search, get, make_pdf, ...| T
+    S -->|start gate, heartbeat| OC
+    OC -->|HTTP| X --> M[Anthropic API]
+    S -.->|alerts, buttons| SB[Telegram<br>service bot] -.-> OW([owner])
 ```
 
 1. **Journal first.** The gatekeeper long-polls the family bot and writes each batch of updates to the inbound journal before the next poll acknowledges it.
 2. **Filtering.** Only messages from configured family members in a private chat are accepted. Everything else is dropped and logged without its text.
-3. **Storing.** Attachments are downloaded, written to `incoming/` and recorded in `core.db`.
-4. **Receipts.** Core answers once per batch ("📄 got 3 files") in the configured language.
-5. **Copies.** Each original is copied into the documents folder next to an HMAC-signed provenance card, and the copy is verified by SHA-256.
+3. **Storing and reading.** Attachments are downloaded, recorded in `core.db`, copied into the documents folder next to an HMAC-signed provenance card (the copy verified by SHA-256), and read by sandboxed readers: text, transcripts, page images.
+4. **The assistant.** Members' texts, and what was read from their files, reach Core's own OpenClaw gateway through a Telegram-shaped API with an exact method allow-list; people appear there under stand-ins, never their Telegram ids. The model answers with Core's instruction and Core's tools only; every tool call is signed, and every HTTP request goes through an egress proxy that lets only the model API through.
+5. **Answers.** Every message the gateway sends is held in Core's outbox, stripped of links and record ids, and released only while the gateway is healthy.
+6. **Supervision.** Core starts the gateway itself, lets it have messages only after a start gate (heartbeat, a hook probe, a model probe), and holds or stops it when it goes quiet or stops matching. The service bot tells the owner, with buttons and no model behind them.
 
 See [docs/architecture.md](docs/architecture.md) for the full design and the roadmap.
 

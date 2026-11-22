@@ -14,14 +14,49 @@ The rule between them: **the model thinks, Core acts.** Every action the model a
 
 ## Components
 
-The target design:
+What runs, and who talks to whom (stages to come are dashed):
 
-```
-Telegram (family bot)  <-->  GATEKEEPER (Core)  <-->  agent host (OpenClaw)
-                                                      ├─ adapter plugin ──> Core
-                                                      └─ tool package ────> Core
-Internet (model API only)  <--  EGRESS PROXY (Core)  <--  other host HTTP
-Telegram (service bot)  <-->  Core
+```mermaid
+flowchart LR
+    subgraph internet[Internet]
+        FB[Telegram: family bot]
+        SB[Telegram: service bot]
+        API[Anthropic API]
+    end
+    subgraph mac[The Mac, one user account]
+        subgraph core["Core: klepa.core (launchd), Python"]
+            GK[Gatekeeper<br>intake, journal, filter, receipts]
+            ST[(core.db, incoming/,<br>signed cards, snapshots)]
+            PR[Processing<br>jobs, readers in a sandbox]
+            HI[Host interface<br>Telegram-shaped API, queue, outbox]
+            AL[Adapter link + Core's tools<br>Unix socket, HMAC]
+            SV[Supervisor<br>STARTING / RUNNING / HOLD / STOPPED]
+            EP[Egress proxy<br>model API only]
+            SBC[Service bot<br>alerts, daily line, buttons]
+        end
+        subgraph gw["OpenClaw gateway: klepa.gateway (launchd), Node"]
+            CH[Telegram channel]
+            AG[Agent turn]
+            AD[Adapter plugin<br>hooks, heartbeat]
+            MCP[MCP server<br>Core's tools, no key]
+        end
+        DOCS[Documents folder]
+        WD[Watchdog]:::later
+    end
+    FB <-->|getUpdates, sends, files| GK
+    GK --> ST
+    ST --> PR
+    ST -->|verified copy + card| DOCS
+    GK --> HI
+    CH <-->|127.0.0.1, fake token| HI
+    AD <-->|signed messages| AL
+    MCP -->|signed tool calls| AL
+    AG --> MCP
+    AG -->|every HTTP request| EP
+    EP --> API
+    SV -->|launchctl, probes| gw
+    SBC <--> SB
+    classDef later stroke-dasharray: 5 5
 ```
 
 - **Gatekeeper.** The only process that talks to the family bot. It journals updates, takes attachments in, filters senders, and sends Core's own messages and buttons. From stage 1c it serves the host text-only updates through a Telegram-compatible API with an exact method allow-list.
@@ -73,6 +108,14 @@ The data directory must be mode 0700, on a local disk, and never inside iCloud o
 ├─ snapshots/                 signed snapshots of core.db, <day>-g<generation>/
 ├─ logs/                      Core's stdout and stderr under launchd, 0600, tokens redacted
 ├─ run/adapter.sock           the adapter plugin's Unix socket, 0600 (with a host)
+├─ host/                      0700, out of Time Machine and snapshots: Core's own gateway (with a host)
+│  ├─ openclaw.json           the reference config Core writes; OpenClaw may not change it
+│  ├─ state/                  OpenClaw's state: sessions, the model's token (auth store)
+│  ├─ state.version           the OpenClaw the state was last made ready for (Upgrade, below)
+│  ├─ workspace/  home/       the agent's workspace and the gateway's own HOME
+│  ├─ logs/                   the gateway's log (rotates at 20 MB), doctor-<version>.log
+│  ├─ klepa.gateway.plist     its launchd agent, loaded only by Core
+│  └─ login.pending           while host login holds the gateway's state
 └─ .metadata_never_index      keeps Spotlight out
 ```
 
@@ -128,6 +171,31 @@ It is signed with HMAC-SHA256 over canonical JSON. A card without a valid signat
 Code: `klepa_core/processing/`, `klepa_core/search.py`. Stage 2b.
 
 With a `[processing]` section ([configuration](configuration.md#processing)), Core reads what people send. Without it nothing is read, as in stage 2a.
+
+A file's path, from Telegram to the host:
+
+```mermaid
+flowchart TD
+    U[update with a file] --> J[(inbound journal)]
+    J --> C{member, private chat?}
+    C -- no --> D[dropped, logged without text]
+    C -- yes --> S{at most 20 MB?}
+    S -- no --> TL["too_large: sender asked to send it another way"]
+    S -- yes --> DL["download (5 tries, 60 s silence limit)"]
+    DL --> IN["incoming/YYYY/MM + record in core.db"]
+    IN --> CP["copy in the documents folder<br>+ HMAC-signed card, verified by SHA-256"]
+    IN --> RC[one receipt per batch]
+    IN --> JOB{a reader for its kind?}
+    JOB -- no --> NR[kept, not read]
+    JOB -- "program missing" --> W[waits in the queue, one alert]
+    JOB -- yes --> SB["reader in sandbox-exec<br>no network, writes only in its jobs/ folder"]
+    SB --> T["evidence_text, page by page<br>+ search index"]
+    T --> M["served to the host as marks<br>(transcript 8,000, document 3,000 chars)"]
+    IN --> TWO{"2+ images in the batch?"}
+    TWO -- yes --> DR["draft of a document: its pages named in a last mark"]
+    DR --> MK["model orders the pages (make_pdf)<br>or says not_a_document"]
+    MK --> PDF["Core builds the PDF from the originals<br>and sends it after the model's answer"]
+```
 
 **What is read** (spec 6.1 item 4):
 
@@ -244,6 +312,47 @@ Code: `klepa_core/host/`.
 
 Stage 1c puts the agent host behind the gatekeeper. It runs when the config has a `[host]` section ([configuration](configuration.md)). With `gateway = "launchd"`, the default, Core runs its own OpenClaw gateway as well: `klepa-core host install` puts its runtime in place, and Core starts, checks and watches it.
 
+A member's message, from Telegram to the answer:
+
+```mermaid
+sequenceDiagram
+    participant P as member (Telegram)
+    participant GK as Gatekeeper
+    participant Q as host queue + API
+    participant G as gateway (OpenClaw)
+    participant A as adapter plugin
+    participant C as Core (adapter link, tools)
+    participant M as model
+    participant O as outbox
+    P->>GK: message (or files)
+    GK->>GK: journal, filter sender, store files, read them
+    GK->>Q: served text (stand-in ids, marks for files)
+    G->>Q: getUpdates (long poll, only while RUNNING)
+    Q-->>G: text-only update
+    G->>A: before_dispatch
+    A->>C: dispatch (signed)
+    G->>A: before_prompt_build
+    A->>C: prompt_built
+    C-->>A: Core's instruction, the turn's tools, the failure text
+    G->>A: before_agent_run
+    A->>C: turn_start (prompt's SHA-256 and length)
+    C-->>A: registered, or blocked with the hold text
+    G->>M: Core's instruction + the conversation (through the egress proxy)
+    opt tool calls
+        M-->>G: tool call
+        G->>A: before_tool_call (signs it)
+        A->>C: call over the socket (MCP server, no key)
+        C-->>G: result
+    end
+    M-->>G: answer
+    G->>A: reply_payload_sending (text only, Core's error text)
+    A->>C: turn_reply
+    G->>Q: sendMessage
+    Q->>O: held durably, then "sent"
+    O->>O: links and record ids out, HTML from an allow-list
+    O->>P: released one chat at a time, while the heartbeat is fresh
+```
+
 **The gatekeeper's API** (`host/api.py`). The host talks to a Telegram-shaped API on `127.0.0.1` with a fake token:
 - the fake token holds 256 random bits and is made once per installation in `keys/host-bot.token` (0600). It is a secret of its own and never the real one;
 - the methods are an exact allow-list: `getUpdates`, `getMe`, `sendChatAction` and `sendMessage`, plus `deleteWebhook`, `deleteMyCommands` and `setMyCommands`, which are answered here and never passed on;
@@ -321,7 +430,86 @@ flowchart TD
 - **Watch.** A gateway that exits by itself, or is unloaded behind Core's back, is started again with an alert; the third time in ten minutes Core stops it instead. A new gateway process, after a crash too, passes the start gate before it gets messages. An answer from launchd that Core cannot read changes nothing. After a failed check Core stops the gateway, and it stays down until Resume or until Core itself starts again.
 - **Model access.** `klepa-core host login` reads the model's setup-token (from `claude setup-token`) without echo, the whole paste even when the display broke it into lines or framed it, or from a pipe, and gives it to OpenClaw on stdin; the gateway keeps it in its own state. OpenClaw stores the token and then fails to write its config, which stays Core's. Since 2026.10 OpenClaw stores a token only while no gateway runs, so `host login` stops Core's gateway, stores the token, and leaves a mark (`host/login.pending`). Login holds a lock on the mark the whole time, and Core starts no gateway while it is held (OpenClaw lets one command at a time have its state); once login is done, Core starts the gateway again and gates it, with no alert for what the owner did himself, also when the login came in the middle of a start gate. A state that another OpenClaw owns, not Core's gateway, is named and left alone. A gateway that was not running reads the token when Core starts it. Whether the token works only a model call shows: the start gate makes one.
 
+`host login` while Core's gateway runs (OpenClaw 2026.10 stores a token only while no gateway owns its state):
+
+```mermaid
+sequenceDiagram
+    participant O as owner (host login)
+    participant K as host/login.pending (flock)
+    participant L as launchd
+    participant OC as OpenClaw CLI
+    participant C as Core (supervisor)
+    O->>K: take the lock (Core starts nothing while it is held: "busy")
+    O->>OC: models auth paste-token (token on stdin)
+    OC-->>O: refused: exclusive offline state ownership
+    O->>L: bootout klepa.gateway
+    alt launchd had no such agent
+        O-->>O: another OpenClaw owns the state: named, nothing stopped, no mark
+    else Core's gateway stopped
+        O->>K: mark "stopped"
+        loop until OpenClaw's state is free (60 s in all)
+            O->>OC: paste-token again
+        end
+        O->>OC: models auth list (until it can tell)
+        OC-->>O: profile listed
+        O->>K: release the lock
+        C->>K: gateway gone, mark says "stopped" (read once)
+        C->>C: STARTING "login", no alert
+        C->>L: bootstrap, then the start gate
+    end
+```
+
 **Supervision** (`host/supervisor.py`, D26):
+
+```mermaid
+stateDiagram-v2
+    [*] --> STARTING: Core starts (loads its gateway, or keeps a current one)
+    STARTING --> RUNNING: start gate passed
+    STARTING --> STOPPED: gate failed (no_heartbeat, ready, probe, model_auth, model_silent)
+    STARTING --> STARTING: host login stopped the gateway ("login"), quietly
+    RUNNING --> STARTING: new boot_id or new process ("new_boot", "new_process")
+    RUNNING --> STARTING: gateway exited, alert ("exited")
+    RUNNING --> HOLD: 3 min without a heartbeat ("silent")
+    RUNNING --> STOPPED: heartbeat no longer matches, or 3 exits in 10 min
+    RUNNING --> HOLD: owner's Pause
+    HOLD --> RUNNING: heartbeat of the gated boot again
+    HOLD --> STOPPED: heartbeat no longer matches, or 3 exits in 10 min
+    HOLD --> STARTING: heartbeat of another boot
+    HOLD --> STARTING: owner's Resume
+    STOPPED --> STARTING: owner's Resume, or a boot other than the failed one
+```
+
+The start gate, in order; anything that changes the state or the boot ends it, and the loop decides again:
+
+```mermaid
+sequenceDiagram
+    participant C as Core (supervisor)
+    participant L as launchd
+    participant G as gateway + adapter
+    participant M as model provider
+    C->>C: files written, config validated, state ready for this OpenClaw, model token stored
+    C->>L: bootstrap klepa.gateway
+    L->>G: start
+    G-->>C: full heartbeat (policy, plugin hash, hooks), within 30 s
+    C->>G: /startupz, /readyz, log since start has no hook refusal
+    C->>G: probe 1 (a peer no member has)
+    G-->>C: before_prompt_build, before_agent_run
+    C-->>G: blocked on purpose
+    G-->>C: block written to the probe chat (60 s, 150 s after a crash or login)
+    C->>G: probe 2, to the model
+    G->>M: one real call through the egress proxy
+    M-->>G: answer or error
+    G-->>C: turn_reply (ok, or the error's kind), within 150 s
+    alt ok
+        C->>C: RUNNING
+    else auth
+        C->>C: STOPPED, owner told to log in again
+    else silent after one more try (30 s later)
+        C->>C: STOPPED
+    else other error after one more try
+        C->>C: RUNNING, one alert: people get Core's apology until the provider answers
+    end
+```
 - **STARTING.** The gateway runs but gets no messages and sends nothing until it passes the start gate: a full heartbeat within 30 seconds, the gateway ready, and two probes. The probes are synthetic messages from a peer that no member has. For the first, the adapter must report `before_prompt_build` and `before_agent_run`, and the host must then write the block to the probe's chat: the turn ended there, without the model. Hooks without `allowConversationAccess` never report, so such a host never gets messages. The second probe goes to the model, through the egress proxy. A token the model refuses stops the gateway at once, and the owner is told to log in again and press Resume, before a person's question meets it. OpenClaw itself retries a busy provider for about 80 seconds within a turn, so the probe waits up to 150 seconds, and a model that erred otherwise or stayed silent is asked once more after 30 seconds. If it still errs, the host runs anyway and the owner gets one alert: people get Core's apology for each message until the provider answers again, without waiting for anyone. If it stays silent, the gateway stops, because a person would meet silence.
 - **RUNNING.** The host gets messages. A new `boot_id`, or a new gateway process that Core sees in launchd before its first heartbeat, means the gateway restarted; it passes the gate again, without alerts. A gateway that replaces a killed one holds the probe chat for about a minute while the dead process's lease on its interrupted send runs out, so the first probe of such a gateway waits up to 150 seconds; a first start waits 60.
 - **HOLD.** Three minutes without a heartbeat, or the owner's Pause. The host gets no new messages, its sends are held, turns are blocked, and people get a fixed reply at most once per ten minutes per chat. Core keeps receiving files.
@@ -399,6 +587,26 @@ The config must name one. Each file declares its plural rule:
 Receipts use the matching form ("1 file", "2 files"). Loading a locale checks that every text, form and keyword list is present.
 
 ## Security model
+
+Where each party could reach, and what stops it there:
+
+```mermaid
+flowchart LR
+    PL([planted document<br>or message]) --> R["reader in sandbox-exec<br>no network, own folder only"]
+    R -->|text, marked, delimiters taken out| H
+    PL -->|its text, as data| H
+    subgraph H[gateway + model]
+        MO[model]
+    end
+    MO -->|tools by exact name, each call signed| T["Core's tools<br>only the speaker's spaces"]
+    MO -->|HTTP| EP{egress proxy}
+    EP -->|"api.anthropic.com:443 only"| API[model provider]
+    EP -.->|anything else: refused| NET[internet]
+    MO -->|sendMessage| OB["outbox: text only,<br>links inactive, no record ids"]
+    OB --> TG[member's own chat]
+    MO -.->|no other Telegram method,<br>no files, no other chat| X[refused by the gatekeeper]
+    API -.->|"sees: Core's instruction, the talk,<br>stand-ins, names, offset (no place)"| PV[(provider's logs)]
+```
 
 - **Secrets.** The bot token exists only in a 0600 file. It never reaches databases, logs, events, URLs or exception texts. Errors never include the request URL, because that URL carries the token.
 - **Event log.** It keeps metadata only: no message text, captions, tokens, file paths or URLs.

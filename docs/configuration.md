@@ -4,6 +4,35 @@ Core reads one TOML file, passed with `--config`. Keep it **outside** the reposi
 
 Start from [`config/example.toml`](../config/example.toml).
 
+Which section drives which part of Core:
+
+```mermaid
+flowchart LR
+    subgraph file[config.toml]
+        TOP["timezone, locale"]
+        PA["[paths]"]
+        TE["[telegram]"]
+        SP["[spaces]"]
+        IN["[intake]"]
+        SC["[schedule]"]
+        SBK["[service_bot]"]
+        HO["[host]"]
+        PR["[processing]"]
+        ME["[[members]]"]
+    end
+    TOP --> L[texts, month folders,<br>the gateway's place-free zone]
+    PA --> DATA[data and documents folders]
+    TE --> GK[gatekeeper: the family bot]
+    ME --> GK
+    ME --> STAND[stand-ins for the host]
+    SP --> SPACES[spaces and private keywords]
+    IN --> GK
+    SC --> SNAP[daily snapshot and line]
+    SBK --> SB[service bot]
+    HO --> GW[gatekeeper API, egress proxy,<br>Core's own OpenClaw gateway]
+    PR --> RD[readers and their sandbox]
+```
+
 ## Top level
 
 | Key | Required | Meaning |
