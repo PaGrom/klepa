@@ -403,9 +403,7 @@ async def test_the_model_token_is_checked_before_the_gateway_starts(setup):
 
 
 def test_the_login_mark_says_busy_while_login_holds_it_then_stopped_once(setup):
-    import fcntl
-
-    runtime, layout, reference = setup
+    layout = setup[1]
     layout.host_dir.mkdir(parents=True, exist_ok=True)
     gateway = control(setup, FakeLaunchd())
     assert gateway.login_state() is None
@@ -424,4 +422,3 @@ def test_the_login_mark_says_busy_while_login_holds_it_then_stopped_once(setup):
     os.utime(layout.login_mark, (old, old))
     assert gateway.login_state() is None  # a stale mark explains nothing
     assert not layout.login_mark.exists()
-    assert fcntl  # imported for the lock's sake

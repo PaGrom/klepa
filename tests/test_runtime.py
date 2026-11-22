@@ -287,8 +287,8 @@ def test_a_running_gateway_leaves_the_model_token_unknown_not_missing(tmp_path):
     owned = (  # OpenClaw's real refusal is long; the sentence that matters is far from its end
         '{"error": "Cannot admit models.auth for system/agent credentials in state root /x/state: This operation '
         "requires exclusive offline state ownership. No local mutation was attempted. Inspect openclaw gateway status. "
-        "Update the Gateway or fix authentication and retry. To run offline, stop the Gateway through its service owner, "
-        'wait for ownership to release, then rerun this exact command.", "code": "OWNER_UNAVAILABLE"}'
+        "Update the Gateway or fix authentication and retry. To run offline, stop the Gateway through its service "
+        'owner, wait for ownership to release, then rerun this exact command.", "code": "OWNER_UNAVAILABLE"}'
     )
     assert rt.model_token_stored(runtime, layout, run=answering(owned, 1)) is None
     busy = '{"error": "OpenClaw state database is busy at /x/state/openclaw.sqlite"}'
