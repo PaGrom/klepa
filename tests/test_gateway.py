@@ -402,6 +402,33 @@ async def test_the_model_token_is_checked_before_the_gateway_starts(setup):
     assert not any(call[1] == "bootstrap" for call in launchd.calls)
 
 
+@pytest.mark.parametrize("version", ["2026.9.4\n", None])
+async def test_a_state_an_older_openclaw_left_is_never_started(setup, version):
+    """The new OpenClaw refuses readiness on a state it has not migrated: Core names the command, never a silent
+    no_heartbeat."""
+    layout = setup[1]
+    for folder in (layout.host_dir, layout.state_dir, layout.state_dir / "agents"):
+        folder.mkdir(mode=0o700)
+    if version is not None:
+        (layout.host_dir / "state.version").write_text(version)
+    launchd = FakeLaunchd()
+    problem = await control(setup, launchd).start()
+    assert problem is not None
+    assert "host install" in problem
+    assert rt.OPENCLAW_VERSION in problem
+    assert not any(call[1] == "bootstrap" for call in launchd.calls)
+
+
+async def test_a_state_made_ready_for_this_openclaw_is_started(setup):
+    layout = setup[1]
+    for folder in (layout.host_dir, layout.state_dir, layout.state_dir / "agents"):
+        folder.mkdir(mode=0o700)
+    (layout.host_dir / "state.version").write_text(rt.OPENCLAW_VERSION + "\n")
+    launchd = FakeLaunchd()
+    assert await control(setup, launchd).start() is None
+    assert any(call[1] == "bootstrap" for call in launchd.calls)
+
+
 def test_the_login_mark_says_busy_while_login_holds_it_then_stopped_once(setup):
     layout = setup[1]
     layout.host_dir.mkdir(mode=0o700, parents=True, exist_ok=True)

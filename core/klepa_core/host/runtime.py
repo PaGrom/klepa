@@ -41,6 +41,8 @@ OPENCLAW_VERSION = "2026.10.33"
 OFFLINE_OWNERSHIP = "exclusive offline state ownership"  # OpenClaw's refusal while a gateway owns its state
 PROFILE = "klepa"
 OWNERSHIP_MANAGER = "klepa-core"
+STATE_VERSION = "state.version"  # in the host folder: the OpenClaw the gateway's state was last made ready for
+DOCTOR_SECONDS = 900.0
 ADAPTER_FILES = ("index.ts", "mcp.ts", "openclaw.plugin.json", "package.json")
 RUNTIME_FILES = ("package.json", "package-lock.json")
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
@@ -333,6 +335,50 @@ def validate_config(runtime: Runtime, layout: HostLayout, *, run: Runner = _run)
     answer = openclaw_json(runtime, layout, "config", "validate", run=run)
     if answer.get("valid") is not True:
         raise HostRuntimeError(f"OpenClaw refuses the rendered config: {json.dumps(answer)[:500]}")
+
+
+def state_is_new(layout: HostLayout) -> bool:
+    """Whether OpenClaw has written nothing in the gateway's state yet."""
+    return not layout.state_dir.is_dir() or not any(layout.state_dir.iterdir())
+
+
+def state_version(layout: HostLayout) -> str | None:
+    try:
+        return (layout.host_dir / STATE_VERSION).read_text().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def state_ready(layout: HostLayout) -> bool:
+    """Whether the pinned OpenClaw may start on the state: a new one, or one made ready for this very version.
+    OpenClaw migrates some of its state only through Doctor, and refuses readiness on a state it has not migrated."""
+    return state_version(layout) == OPENCLAW_VERSION or state_is_new(layout)
+
+
+def mark_state_ready(layout: HostLayout) -> None:
+    write_private(layout.host_dir / STATE_VERSION, f"{OPENCLAW_VERSION}\n".encode())
+
+
+def migrate_state(
+    runtime: Runtime, layout: HostLayout, *, run: Runner = _run, say: Callable[[str], None] = print
+) -> None:
+    """Let the pinned OpenClaw's Doctor migrate a state an older one left, as OpenClaw's own updater does after an
+    install. Nothing may own the state meanwhile. Doctor keeps backups beside it; older builds refuse what it
+    writes, so the step is one way. Its output stays in the logs folder, private."""
+    say(f"Migrating the gateway's state for OpenClaw {OPENCLAW_VERSION}; OpenClaw keeps backups beside it")
+    log = layout.logs_dir / f"doctor-{OPENCLAW_VERSION}.log"
+    try:
+        result = run(
+            openclaw_argv(runtime, "doctor", "--fix", "--non-interactive"),
+            env=gateway_env(runtime, layout),
+            timeout=DOCTOR_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HostRuntimeError(f"openclaw doctor did not run: {exc}") from None
+    write_private(log, (result.stdout + result.stderr).encode())
+    if result.returncode != 0:
+        raise HostRuntimeError(f"OpenClaw could not migrate the gateway's state; what it said is in {log}")
+    mark_state_ready(layout)
 
 
 def claim_ownership(runtime: Runtime, layout: HostLayout, *, run: Runner = _run) -> None:

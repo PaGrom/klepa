@@ -293,6 +293,28 @@ A text is built from the inbound journal when the host polls, so no message text
 **Core's own gateway** (`host/runtime.py`, `host/reference.py`, `host/gateway.py`, `host/install.py`, D30):
 - **Runtime.** A pinned Node from nodejs.org, checked against the SHA-256 in the code before it is unpacked, and OpenClaw 2026.10.33 (its extended-stable line; the first that Anthropic serves Opus 5.5 to) from npm with the lockfile that ships with Core; npm runs no install scripts. Both live in Klepa's program folder (`host.runtime_dir`), each version and each lockfile in a folder of its own, so a new one never rebuilds what a running gateway uses; Node is for Macs with Apple silicon. The `klepa-openclaw` wrapper there runs OpenClaw as the engine does, from an empty environment and with the gateway's own HOME.
 - **Reference configuration.** Core writes the gateway's `openclaw.json` from a table of exact values (spec 7.1): loopback only, no live reload, no terminal, no Control UI, no silent device pairing, no mDNS; only Telegram, the model's provider and the adapter, and no memory plugin; Core's tools only, by exact name, through the adapter's MCP server and never through `/tools/invoke`, each shown to the model by its name (OpenClaw's Tool Search and Code Mode off: they would put `tool_search`, `tool_describe` and `dispatch_action`, or a JavaScript surface, in front of them); none of OpenClaw's own persona files or first-run ritual in the prompt (Core also deletes a `BOOTSTRAP.md` an earlier OpenClaw left in the workspace), no internal hooks, no ACP; no commands, no scheduled jobs, no statistics, no updates; every HTTP request through the egress proxy; one model on the built-in runtime; a time zone of the family's offset that names no place (`+01:00`, shown as GMT+1), because OpenClaw sends the zone's name with every turn and `Area/City` says where the family lives; when the offset changes at the start or end of summer time, Core stops cleanly and launchd starts it again (exit code 75), so the gateway gets the new one. OpenClaw cannot write the file (`OPENCLAW_CONFIG_READONLY`), and a heartbeat that reports another value stops the gateway.
+- **Upgrade.** A new pinned OpenClaw goes into a folder of its own beside the old one, but the gateway's state is shared, and OpenClaw migrates some of it only through its Doctor, and only while no gateway owns it; a gateway on a state it has not migrated never becomes ready (found when 2026.9.4 gave way to 2026.10.33: the agent database's schema 19 needed 27). `host/state.version` names the OpenClaw the state was last made ready for. `host install` gives a new state the current version; for an older one it needs Core stopped, unloads the gateway, runs `openclaw doctor --fix --non-interactive` in the engine's environment, keeps what Doctor said in `host/logs/doctor-<version>.log`, and writes the marker only when Doctor succeeded. Doctor keeps backups beside the state; an older OpenClaw refuses what it wrote, so there is no way back without them. Core starts no gateway on a state that is neither new nor marked for the pinned version: the owner gets the commands instead of a gateway that never answers.
+
+```mermaid
+flowchart TD
+    A[service uninstall: Core stops] --> B[host install]
+    B --> C[Node and OpenClaw of the pinned versions,<br>each in a folder of its own]
+    C --> D[config written and validated,<br>ownership claimed if not Core's]
+    D --> E{state.version}
+    E -- "no state yet" --> M[marker: pinned version]
+    E -- "pinned version" --> K[nothing to migrate]
+    E -- "older or none" --> F{Core running?}
+    F -- yes --> X[refused: stop Core first]
+    F -- no --> G[launchctl bootout klepa.gateway]
+    G --> H["openclaw doctor --fix --non-interactive<br>output to logs/doctor-version.log"]
+    H -- "exit 0" --> M
+    H -- "failed" --> Y[refused: marker unchanged, log named]
+    M --> S[service install: Core starts]
+    K --> S
+    S --> T{state ready?}
+    T -- yes --> U[gateway loaded, start gate]
+    T -- no --> Z[STOPPED, alert names the commands]
+```
 - **The gateway's folder** is `host/` in the data folder: config, state, workspace, logs and the gateway's own HOME, so OpenClaw finds nothing of the owner's by its default paths. It holds the model's token and the host's sessions, so Core keeps it out of Time Machine every time it starts the gateway, and no snapshot includes it. The console goes to launchd's files at the error level only; the gateway's own log rotates at 20 MB.
 - **launchd.** The agent `klepa.gateway` runs under external supervision and never respawns itself; launchd brings it back after a crash but not after a clean exit. Its plist lives in the gateway's folder, not in `~/Library/LaunchAgents`, so only Core starts it. Stopping is always `launchctl bootout`.
 - **Start.** Core writes the gateway's files and keeps a digest of what it loaded: config, adapter and plist. A gateway whose files still match the digest keeps running across a restart of Core; files that changed since, whoever wrote them, are validated by OpenClaw and loaded. The gateway is ready when `/startupz` says started, `/readyz` says ready, its log since this start shows no refusal of the adapter's hooks, and a model token is stored. Since OpenClaw 2026.10 nothing may read its state while a gateway owns it, so Core looks for the token before it loads the gateway, and while one runs "cannot tell" is not "missing".

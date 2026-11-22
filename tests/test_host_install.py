@@ -42,6 +42,7 @@ class FakeOpenClaw:
         self.loaded = True  # whether launchd has Core's gateway agent to boot out
         self.busy = 0  # commands answered "busy" while another offline command holds the state
         self.claimed: str | None = None  # the state's manager, once claimed
+        self.doctor = (0, "Upgraded agent database schema: v19 -> v27.\n")  # what `doctor --fix` exits and prints
 
     def __call__(self, argv, *, env=None, timeout=600.0, input=None):
         argv = [str(part) for part in argv]
@@ -57,6 +58,11 @@ class FakeOpenClaw:
             return subprocess.CompletedProcess(argv, 0, "OpenClaw 2026.10.33 (3a9d69d)\n", "")
         if "validate" in tail:
             return subprocess.CompletedProcess(argv, 0, json.dumps({"valid": True, "warnings": []}), "")
+        if "doctor" in tail:
+            if self.owned:  # Doctor's repairs need the state, which a running gateway owns
+                refusal = "operation requires exclusive offline state ownership. Inspect openclaw gateway status."
+                return subprocess.CompletedProcess(argv, 1, "", refusal)
+            return subprocess.CompletedProcess(argv, self.doctor[0], self.doctor[1], "")
         if "ownership" in tail:
             if "claim" in tail:
                 if self.owned:  # OpenClaw 2026.10 refuses a claim while a gateway runs
@@ -381,3 +387,89 @@ def test_installing_again_while_the_gateway_runs_keeps_cores_claim(cfg):
     host.install(cfg, say=lambda line: None, run=fake, exclude=lambda path: None)
     claims = [call for call in fake.calls if "claim" in call[0]]
     assert len(claims) == 1
+
+
+def doctor_calls(fake):
+    return [call for call in fake.calls if "doctor" in call[0]]
+
+
+def older_state(cfg, version="2026.9.4"):
+    """A state an older OpenClaw left: its agent database, and the version Core last made it ready for."""
+    folder = cfg.host_dir
+    for part in ("state", "agents", "main", "agent"):
+        folder = folder / part
+        folder.mkdir(mode=0o700, exist_ok=True)
+    if version is not None:
+        (cfg.host_dir / "state.version").write_text(version + "\n")
+
+
+def test_a_new_state_is_marked_ready_without_doctor(cfg):
+    _, fake = installed(cfg)
+    assert (cfg.host_dir / "state.version").read_text().strip() == rt.OPENCLAW_VERSION
+    assert not doctor_calls(fake)
+
+
+@pytest.mark.parametrize("version", ["2026.9.4", None])
+def test_an_older_state_is_migrated_by_doctor_with_the_gateway_stopped(cfg, version):
+    cfg.host_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    older_state(cfg, version)
+    runtime = rt.Runtime(cfg.host.runtime_dir)
+    installed_node(runtime)
+    fake = FakeOpenClaw(runtime)
+    fake.claimed = "klepa-core"  # the older install claimed the state
+    fake.owned = True  # and its gateway still runs
+    said: list[str] = []
+    host.install(cfg, say=said.append, run=fake, exclude=lambda path: None)
+    [doctor] = doctor_calls(fake)
+    assert doctor[0][-3:] == ["doctor", "--fix", "--non-interactive"]
+    assert doctor[1]["OPENCLAW_STATE_DIR"] == str(cfg.host_dir / "state")
+    order = [
+        " ".join(call[0][:2]) if call[0][0] == "launchctl" else "doctor"
+        for call in fake.calls
+        if call[0][0] == "launchctl" or "doctor" in call[0]
+    ]
+    assert order == ["launchctl bootout", "doctor"]
+    log = cfg.host_dir / "logs" / f"doctor-{rt.OPENCLAW_VERSION}.log"
+    assert "v19 -> v27" in log.read_text()
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert (cfg.host_dir / "state.version").read_text().strip() == rt.OPENCLAW_VERSION
+    assert any(rt.OPENCLAW_VERSION in line for line in said)
+
+
+def test_a_migration_needs_core_stopped(cfg):
+    cfg.host_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    older_state(cfg)
+    runtime = rt.Runtime(cfg.host.runtime_dir)
+    installed_node(runtime)
+    fake = FakeOpenClaw(runtime)
+    lock = acquire_lock(cfg.data_dir / "core.lock")
+    try:
+        with pytest.raises(rt.HostRuntimeError, match="service uninstall"):
+            host.install(cfg, say=lambda line: None, run=fake, exclude=lambda path: None)
+    finally:
+        os.close(lock)
+    assert not doctor_calls(fake)
+    assert not [call for call in fake.calls if call[0][0] == "launchctl"]
+    assert (cfg.host_dir / "state.version").read_text().strip() == "2026.9.4"
+
+
+def test_a_failed_migration_leaves_the_state_unmarked_and_names_its_log(cfg):
+    cfg.host_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    older_state(cfg)
+    runtime = rt.Runtime(cfg.host.runtime_dir)
+    installed_node(runtime)
+    fake = FakeOpenClaw(runtime)
+    fake.doctor = (1, "Doctor could not repair the agent database\n")
+    with pytest.raises(rt.HostRuntimeError, match=f"doctor-{rt.OPENCLAW_VERSION}.log"):
+        host.install(cfg, say=lambda line: None, run=fake, exclude=lambda path: None)
+    assert (cfg.host_dir / "state.version").read_text().strip() == "2026.9.4"
+    assert "could not repair" in (cfg.host_dir / "logs" / f"doctor-{rt.OPENCLAW_VERSION}.log").read_text()
+
+
+def test_installing_again_on_a_ready_state_runs_no_doctor_and_stops_nothing(cfg):
+    _, fake = installed(cfg)
+    older_state(cfg, rt.OPENCLAW_VERSION)
+    fake.owned = True  # Core runs its gateway now
+    host.install(cfg, say=lambda line: None, run=fake, exclude=lambda path: None)
+    assert not doctor_calls(fake)
+    assert not [call for call in fake.calls if call[0][0] == "launchctl"]

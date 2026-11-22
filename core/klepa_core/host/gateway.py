@@ -297,6 +297,11 @@ class LaunchdGateway:
         """Write the gateway's files and load the agent unless it already runs exactly them. None, or why not."""
         if not self.runtime.openclaw_entry.exists():
             return "OpenClaw is not installed: run klepa-core host install"
+        if not rt.state_ready(self.layout):
+            return (
+                f"the gateway's state predates OpenClaw {rt.OPENCLAW_VERSION}: run klepa-core service uninstall, "
+                "host install, service install"
+            )
         try:
             await asyncio.to_thread(prepare_host, self.runtime, self.layout, self.reference)
             plist = plistlib.dumps(plist_for(self.runtime, self.layout))

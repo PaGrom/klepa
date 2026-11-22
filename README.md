@@ -121,6 +121,16 @@ Core runs its own OpenClaw gateway, apart from any other OpenClaw on the Mac. It
 4. **Restart Core:** `"$KLEPA_HOME/venv/bin/python" -m klepa_core service restart`. Core starts the gateway, checks it,
    and only then gives it messages. `host status` shows the runtime, the gateway, the model's token and Core's view.
 
+**Upgrading OpenClaw.** A new engine may pin a newer OpenClaw. Stop Core, install, start Core:
+
+1. `"$KLEPA_HOME/venv/bin/python" -m klepa_core service uninstall`
+2. `"$KLEPA_HOME/venv/bin/python" -m klepa_core host install --config ~/KlepaData-test/config.toml`: it puts the
+   new runtime beside the old one, stops the gateway and lets the new OpenClaw migrate its state (its Doctor keeps
+   backups; what it said is in `host/logs/doctor-<version>.log` in the data folder).
+3. `"$KLEPA_HOME/venv/bin/python" -m klepa_core service install --config ~/KlepaData-test/config.toml`
+
+Core never starts a gateway on a state the pinned OpenClaw has not migrated; the service bot names these commands.
+
 ## Reading attachments
 
 Core reads voice messages, videos, PDFs, scans, photos, Word documents and spreadsheets in a sandbox, so that search

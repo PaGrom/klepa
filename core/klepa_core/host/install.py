@@ -52,6 +52,7 @@ def install(
     ensure_host_token(cfg.host_token_path, bot_id(read_token(cfg)))
     key = load_or_create_key(cfg.adapter_key_path)
     runtime.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    new = rt.state_is_new(layout)  # before the claim below, which writes OpenClaw's first state
     rt.ensure_node(runtime, fetch=fetch, run=run, say=say)
     rt.ensure_openclaw(runtime, run=run, say=say)
     table = reference.table(reference.settings_of(cfg, key), layout)
@@ -59,9 +60,32 @@ def install(
     rt.validate_config(runtime, layout, run=run)
     rt.write_wrapper(runtime, layout)
     rt.claim_ownership(runtime, layout, run=run)
+    if new:
+        rt.mark_state_ready(layout)
+    elif rt.state_version(layout) != rt.OPENCLAW_VERSION:
+        _migrate(cfg, runtime, layout, run=run, say=say)
     if MODEL_API not in cfg.host.egress_allow:
         say('warning: host.egress_allow lacks "api.anthropic.com:443"; the gateway cannot reach the model')
     return runtime
+
+
+def _migrate(
+    cfg: Config, runtime: rt.Runtime, layout: reference.HostLayout, *, run: rt.Runner, say: Callable[[str], None]
+) -> None:
+    """A state an older OpenClaw left: Core must not run (it would load the gateway again), and the gateway goes
+    down, so that Doctor may own the state; Core starts it again."""
+    try:
+        lock = acquire_lock(cfg.data_dir / "core.lock")
+    except AlreadyRunning:
+        raise rt.HostRuntimeError(
+            f"OpenClaw {rt.OPENCLAW_VERSION} must migrate the gateway's state while Core is stopped: "
+            "run klepa-core service uninstall, then host install again, then service install"
+        ) from None
+    try:
+        run(["launchctl", "bootout", _agent()])  # an agent launchd does not have is already down
+        rt.migrate_state(runtime, layout, run=run, say=say)
+    finally:
+        os.close(lock)
 
 
 def allowed(cfg: Config) -> list[tuple[int, str]]:
