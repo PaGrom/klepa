@@ -336,8 +336,20 @@ def validate_config(runtime: Runtime, layout: HostLayout, *, run: Runner = _run)
 
 
 def claim_ownership(runtime: Runtime, layout: HostLayout, *, run: Runner = _run) -> None:
-    """Make Core the only manager of the gateway's state database (spec 4.6); repeating it is harmless."""
-    answer = openclaw_json(runtime, layout, "database", "ownership", "claim", "--manager", OWNERSHIP_MANAGER, run=run)
+    """Make Core the only manager of the gateway's state database (spec 4.6). A state Core manages already needs no
+    claim: OpenClaw 2026.10 refuses one while a gateway runs. Looking is read-only."""
+    try:
+        current = openclaw_json(runtime, layout, "database", "ownership", run=run).get("ownership")
+    except HostRuntimeError:
+        current = None
+    if isinstance(current, dict) and current.get("managerId") == OWNERSHIP_MANAGER:
+        return
+    try:
+        answer = openclaw_json(
+            runtime, layout, "database", "ownership", "claim", "--manager", OWNERSHIP_MANAGER, run=run
+        )
+    except HostRuntimeError as exc:
+        raise HostRuntimeError(f"OpenClaw refused the ownership claim (stop Core, then install again): {exc}") from None
     ownership = answer.get("ownership")
     if not isinstance(ownership, dict) or ownership.get("managerId") != OWNERSHIP_MANAGER:
         raise HostRuntimeError(f"OpenClaw refused the ownership claim: {str(answer.get('error', answer))[:300]}")

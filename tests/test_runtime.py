@@ -198,12 +198,14 @@ def test_the_gateway_environment_is_the_spec_one(tmp_path):
     assert env["HOME"] == str(layout.home)  # the gateway's own: nothing of the owner's by default paths
 
 
-def answering(answer: dict):
+def answering(answer: dict, *, first: dict | None = None):
+    """OpenClaw answering every command with `answer`, or the first one with `first`."""
     calls = []
 
     def run(argv, *, env=None, timeout=600.0):
         calls.append([str(part) for part in argv])
-        return subprocess.CompletedProcess(argv, 0, json.dumps(answer), "")
+        given = first if first is not None and len(calls) == 1 else answer
+        return subprocess.CompletedProcess(argv, 0, json.dumps(given), "")
 
     run.calls = calls  # type: ignore[attr-defined]
     return run
@@ -212,9 +214,14 @@ def answering(answer: dict):
 def test_the_ownership_claim_must_name_core(tmp_path):
     runtime = rt.Runtime(tmp_path / "runtime")
     layout = HostLayout(runtime_dir=runtime.root, host_dir=tmp_path / "host")
-    run = answering({"status": "external", "ownership": {"managerId": "klepa-core"}})
-    rt.claim_ownership(runtime, layout, run=run)
-    assert run.calls[0][-5:] == ["ownership", "claim", "--manager", "klepa-core", "--json"]
+    managed = answering({"status": "external", "ownership": {"managerId": "klepa-core"}})
+    rt.claim_ownership(runtime, layout, run=managed)
+    assert [call[-3:] for call in managed.calls] == [
+        ["database", "ownership", "--json"]
+    ]  # looked, and Core's: no claim
+    free = answering({"status": "external", "ownership": {"managerId": "klepa-core"}}, first={"ownership": None})
+    rt.claim_ownership(runtime, layout, run=free)
+    assert free.calls[1][-5:] == ["ownership", "claim", "--manager", "klepa-core", "--json"]
     with pytest.raises(rt.HostRuntimeError, match="already claimed"):
         rt.claim_ownership(runtime, layout, run=answering({"error": "already claimed by someone"}))
 

@@ -41,6 +41,7 @@ class FakeOpenClaw:
         self.owned = False  # OpenClaw 2026.10: a running gateway owns the state, and token commands refuse
         self.loaded = True  # whether launchd has Core's gateway agent to boot out
         self.busy = 0  # commands answered "busy" while another offline command holds the state
+        self.claimed: str | None = None  # the state's manager, once claimed
 
     def __call__(self, argv, *, env=None, timeout=600.0, input=None):
         argv = [str(part) for part in argv]
@@ -57,7 +58,12 @@ class FakeOpenClaw:
         if "validate" in tail:
             return subprocess.CompletedProcess(argv, 0, json.dumps({"valid": True, "warnings": []}), "")
         if "ownership" in tail:
-            answer = {"status": "external", "ownership": {"managerId": "klepa-core"}}
+            if "claim" in tail:
+                if self.owned:  # OpenClaw 2026.10 refuses a claim while a gateway runs
+                    refusal = {"error": "Cannot claim shared-state ownership while a Gateway is running"}
+                    return subprocess.CompletedProcess(argv, 1, json.dumps(refusal), "")
+                self.claimed = "klepa-core"
+            answer = {"status": "external", "ownership": {"managerId": self.claimed} if self.claimed else None}
             return subprocess.CompletedProcess(argv, 0, json.dumps(answer), "")
         if self.owned and ("list" in tail or "paste-token" in tail):
             refusal = {
@@ -363,3 +369,15 @@ def test_a_token_that_fails_after_the_stop_still_lets_core_start_the_gateway(cfg
     with pytest.raises(rt.HostRuntimeError, match="did not store"):
         host.login(cfg, TOKEN, run=fake)
     assert (cfg.host_dir / "login.pending").read_text().startswith("stopped")
+
+
+def test_installing_again_while_the_gateway_runs_keeps_cores_claim(cfg):
+    """OpenClaw 2026.10 refuses an ownership claim while a gateway runs: a state Core already manages needs none."""
+    runtime = rt.Runtime(cfg.host.runtime_dir)
+    installed_node(runtime)
+    fake = FakeOpenClaw(runtime)
+    host.install(cfg, say=lambda line: None, run=fake, exclude=lambda path: None)
+    fake.owned = True  # Core runs its gateway now
+    host.install(cfg, say=lambda line: None, run=fake, exclude=lambda path: None)
+    claims = [call for call in fake.calls if "claim" in call[0]]
+    assert len(claims) == 1
