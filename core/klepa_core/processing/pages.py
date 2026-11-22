@@ -1,7 +1,13 @@
-"""The PDF of a document made from photos (spec 6.1 item 4, `make_pdf`).
+"""The PDF of a document made from photos (spec 6.1 item 4, `make_pdf`), and the pictures of pages the model is shown
+(stage 2c-2: a view of one page, a cached copy of a page, an overview of up to 16 pages, strips of the top and bottom
+of up to STRIP_PAGES pages to order them by).
 
 Core runs this module in the sandbox, like its readers:
-`python -I -m klepa_core.processing.pages pdf [--max-bytes N] <output> <page>...`. With `--max-bytes` it stops
+`python -I -m klepa_core.processing.pages pdf [--max-bytes N] <output> <page>...`,
+`... view --side S --max-bytes N <output> <page>`, `... thumb --side S <output> <page>`,
+`... overview --max-bytes N <output> <first number> <page>...`, `... strips --max-bytes N <output> <first number>
+<page>...`. A picture is a JPEG without metadata, upright, never enlarged, made smaller (quality, then size) until it
+fits its bytes. With `--max-bytes` it stops
 once the output would pass that size: a PDF as it adds its pages, before it holds them all.
 Every page is an image that came from a person, and Core never decodes one itself. A JPEG's image goes into the PDF
 byte for byte as it came, without what says where, when and with what it was taken, unless its EXIF orientation asks
@@ -17,7 +23,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 MAX_PIXELS = 100_000_000  # as the readers: a larger image is not unpacked (spec 8)
 MAX_PAGES = 100
@@ -26,6 +32,13 @@ JPEG_QUALITY = 92  # of a page encoded anew
 MAX_SIDE = 3508  # pixels: the longest side of A4 at 300 dpi; a page encoded anew is no larger (the final review's I3)
 # When the pages as they came would not fit --max-bytes, every page is encoded anew, smaller at each try.
 FALLBACK = ((3508, 85), (2480, 80))
+VIEW_QUALITIES = (85, 75, 65)  # a picture for the model: lower quality first, then a smaller side
+MIN_SIDE = 400  # a picture that fits only below this is refused
+OVERVIEW_SIZE = (1176, 1568)  # an overview: 4 x 4 pages on a portrait sheet
+OVERVIEW_PAGES = 16
+STRIP_PAGES = 6  # pages on an ordering sheet: each its top and bottom at the sheet's width (a 9-point line >= 10 px)
+STRIP_SIZE = (1176, 1568)
+LABEL_POINTS = 36
 NOT_AN_IMAGE = 3  # exit codes
 TOO_LARGE = 4  # an image too large to unpack, or too many pages
 OUTPUT_TOO_LARGE = 5  # what it draws would pass --max-bytes
@@ -189,8 +202,122 @@ def _fitting(pages: Sequence[Path], max_bytes: int | None) -> list[tuple[bytes, 
     return None
 
 
+def _fit(image: Image.Image, side: int, max_bytes: int, output: Path) -> bytes:
+    """The image as a JPEG no longer than `side`, never enlarged, within `max_bytes`: a lower quality first, then a
+    smaller side; a JPEG Pillow writes without EXIF carries no metadata."""
+    while side >= MIN_SIDE:
+        fitted = image.copy()
+        fitted.info.clear()  # Pillow writes a comment, EXIF or XMP it read from the source again
+        fitted.thumbnail((side, side))
+        for quality in VIEW_QUALITIES:
+            buffer = io.BytesIO()
+            fitted.save(buffer, "JPEG", quality=quality, optimize=True)
+            if buffer.tell() <= max_bytes:
+                return buffer.getvalue()
+        side = int(side * 0.8)
+    raise PageError(OUTPUT_TOO_LARGE, f"{output.name} does not fit {max_bytes} bytes")
+
+
+def _flat_page(path: Path) -> Image.Image:
+    with _open(path) as image:
+        return _flat(image)
+
+
+def view(output: Path, page: Path, side: int, max_bytes: int) -> None:
+    output.write_bytes(_fit(_flat_page(page), side, max_bytes, output))
+
+
+def _label(canvas: Image.Image, x: int, y: int, number: int) -> None:
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default(size=LABEL_POINTS)  # Pillow's own font: nothing of the system's is read
+    text = str(number)
+    left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+    draw.rectangle((x, y, x + right - left + 16, y + bottom - top + 12), fill="black")
+    draw.text((x + 8 - left, y + 6 - top), text, fill="white", font=font)
+
+
+def overview(output: Path, first: int, pages: Sequence[Path], max_bytes: int) -> None:
+    """Up to 16 pages, 4 x 4, each numbered: enough to tell a document from other photos, not to read it."""
+    if not 1 <= len(pages) <= OVERVIEW_PAGES:
+        raise PageError(TOO_LARGE, f"an overview holds 1 to {OVERVIEW_PAGES} pages")
+    canvas = Image.new("RGB", OVERVIEW_SIZE, "white")
+    cell_w, cell_h = OVERVIEW_SIZE[0] // 4, OVERVIEW_SIZE[1] // 4
+    for index, path in enumerate(pages):
+        page = _flat_page(path)
+        page.thumbnail((cell_w - 12, cell_h - 12))
+        x, y = (index % 4) * cell_w, (index // 4) * cell_h
+        canvas.paste(page, (x + (cell_w - page.width) // 2, y + (cell_h - page.height) // 2))
+        _label(canvas, x + 4, y + 4, first + index)
+    output.write_bytes(_fit(canvas, max(OVERVIEW_SIZE), max_bytes, output))
+
+
+def strips(output: Path, first: int, pages: Sequence[Path], max_bytes: int) -> None:
+    """For each page, its top and its bottom at the sheet's width, one band a page, numbered: headings, the first and
+    last lines and page numbers are legible, so the pages can be put in order by what they say."""
+    if not 1 <= len(pages) <= STRIP_PAGES:
+        raise PageError(TOO_LARGE, f"strips hold 1 to {STRIP_PAGES} pages")
+    width, height = STRIP_SIZE
+    band = height // STRIP_PAGES
+    strip = (band - 8) // 2
+    canvas = Image.new("RGB", (width, band * len(pages)), "white")
+    draw = ImageDraw.Draw(canvas)
+    for index, path in enumerate(pages):
+        page = _flat_page(path)
+        page = page.resize((width, max(1, round(page.height * width / page.width))))
+        y = index * band
+        canvas.paste(page.crop((0, 0, width, min(strip, page.height))), (0, y))
+        canvas.paste(page.crop((0, max(0, page.height - strip), width, page.height)), (0, y + strip + 4))
+        draw.line((0, y + strip + 2, width, y + strip + 2), fill=(150, 150, 150), width=2)
+        draw.line((0, y + band - 1, width, y + band - 1), fill=(60, 60, 60), width=3)
+        _label(canvas, 4, y + 4, first + index)
+    output.write_bytes(_fit(canvas, max(STRIP_SIZE), max_bytes, output))
+
+
+_USAGE = (
+    "usage: pages pdf [--max-bytes N] <output> <page>... | view --side S --max-bytes N <output> <page> | "
+    "thumb --side S <output> <page> | overview|strips --max-bytes N <output> <first> <page>..."
+)
+
+
+def _options(args: list[str], names: Sequence[str]) -> dict[str, int] | None:
+    """The leading `--name N` options in this order, taken out of args; None when one is missing or no number."""
+    found = {}
+    for name in names:
+        if len(args) < 2 or args[0] != f"--{name}" or not args[1].isdigit():
+            return None
+        found[name] = int(args[1])
+        del args[:2]
+    return found
+
+
+def _pictures(action: str, args: list[str]) -> int:
+    names = {"view": ("side", "max-bytes"), "thumb": ("side",)}.get(action, ("max-bytes",))
+    options = _options(args, names)
+    if options is None:
+        print(_USAGE, file=sys.stderr)
+        return 2
+    if action in ("view", "thumb"):
+        if len(args) != 2:
+            print(_USAGE, file=sys.stderr)
+            return 2
+        view(Path(args[0]), Path(args[1]), options["side"], options.get("max-bytes", 4_000_000))
+        return 0
+    if len(args) < 3 or not args[1].isdigit():
+        print(_USAGE, file=sys.stderr)
+        return 2
+    draw = overview if action == "overview" else strips
+    draw(Path(args[0]), int(args[1]), [Path(page) for page in args[2:]], options["max-bytes"])
+    return 0
+
+
 def main(argv: Sequence[str]) -> int:
     args = list(argv)
+    if args and args[0] in ("view", "thumb", "overview", "strips"):
+        try:
+            return _pictures(args[0], args[1:])
+        except PageError as exc:
+            print(str(exc), file=sys.stderr)
+            return exc.code
     max_bytes = None
     if len(args) >= 3 and args[1] == "--max-bytes":
         if not args[2].isdigit():

@@ -139,3 +139,95 @@ def test_a_transparent_page_is_white_paper_not_black(tmp_path):
     with Image.open(io.BytesIO(data[data.index(b"\xff\xd8") : data.rindex(b"\xff\xd9") + 2])) as page:
         assert min(page.getpixel((10, 10))) > 240  # white where it was transparent
         assert page.getpixel((200, 200))[2] > 150  # the blue square stays
+
+
+# ---- pictures for the model (stage 2c-2) ----
+def jpeg_size(path):
+    with Image.open(path) as image:
+        return image.format, image.size
+
+
+def test_a_view_is_upright_no_longer_than_its_side_and_says_nothing_of_where_it_was_taken(tmp_path):
+    exif = Image.Exif()
+    exif[0x0112] = 6  # turned: the camera held upright
+    exif[0x8825] = {2: (45.0, 15.0, 30.0)}  # GPS
+    source = tmp_path / "photo.jpg"
+    noise(source, (4000, 3000))
+    Image.open(source).save(source, "JPEG", exif=exif.tobytes(), comment=b"taken at home", quality=95)
+    out = tmp_path / "view.jpg"
+    code = pages.main(["view", "--side", "1568", "--max-bytes", "400000", str(out), str(source)])
+    assert code == 0
+    data = out.read_bytes()
+    assert data[:3] == b"\xff\xd8\xff"
+    kind, (width, height) = jpeg_size(out)
+    assert kind == "JPEG"
+    assert height > width
+    assert max(width, height) <= 1568
+    assert abs(height / width - 4 / 3) < 0.01
+    assert b"Exif" not in data
+    assert b"taken at home" not in data
+    assert len(data) <= 400_000  # noise, the worst case, fits by a lower quality and then a smaller side
+
+
+def test_a_small_picture_is_never_enlarged_and_its_transparency_is_white(tmp_path):
+    source = tmp_path / "small.png"
+    Image.new("RGBA", (600, 400), (0, 0, 0, 0)).save(source)
+    out = tmp_path / "view.jpg"
+    assert pages.main(["view", "--side", "1568", "--max-bytes", "400000", str(out), str(source)]) == 0
+    with Image.open(out) as image:
+        assert image.size == (600, 400)
+        assert image.getpixel((10, 10)) == (255, 255, 255)
+
+
+def test_a_view_that_cannot_fit_or_is_no_image_exits_with_its_own_code(tmp_path):
+    source = noise(tmp_path / "noise.jpg", (2000, 2000))
+    out = tmp_path / "view.jpg"
+    assert pages.main(["view", "--side", "1568", "--max-bytes", "500", str(out), str(source)]) == pages.OUTPUT_TOO_LARGE
+    (tmp_path / "note.jpg").write_text("not a picture")
+    assert pages.main(["view", "--side", "800", "--max-bytes", "9999", str(out), str(tmp_path / "note.jpg")]) == (
+        pages.NOT_AN_IMAGE
+    )
+    assert pages.main(["view", "--side", "x", "--max-bytes", "9999", str(out), str(source)]) == 2
+
+
+def test_a_thumbnail_is_no_longer_than_its_side(tmp_path):
+    source = photo(tmp_path / "page.jpg", size=(3000, 4000))
+    out = tmp_path / "thumb.jpg"
+    assert pages.main(["thumb", "--side", "600", str(out), str(source)]) == 0
+    assert jpeg_size(out) == ("JPEG", (450, 600))
+
+
+def test_an_overview_shows_up_to_16_pages_numbered_from_the_first_given(tmp_path):
+    thumbs = [str(photo(tmp_path / f"{i}.jpg", size=(450, 600), colour=f"#{i * 15:02x}4060")) for i in range(1, 17)]
+    out = tmp_path / "overview.jpg"
+    assert pages.main(["overview", "--max-bytes", "400000", str(out), "17", *thumbs]) == 0
+    assert jpeg_size(out) == ("JPEG", (1176, 1568))
+    assert out.stat().st_size <= 400_000
+    assert pages.main(["overview", "--max-bytes", "400000", str(out), "1", *thumbs, thumbs[0]]) == pages.TOO_LARGE
+
+
+def test_strips_show_the_top_and_bottom_of_each_page_legibly(tmp_path):
+    """The ordering sheet: a line of 9-point print at the top of an A4 page stays at least 10 pixels high."""
+    page = Image.new("RGB", (2480, 3508), "white")  # A4 at 300 dpi
+    for y in range(80, 3508, 300):
+        page.paste((0, 0, 0), (200, y, 2280, y + 37))  # 9-point lines at 300 dpi are about 37 pixels high
+    source = tmp_path / "a4.jpg"
+    page.save(source, "JPEG")
+    thumb = tmp_path / "thumb.jpg"
+    page.resize((1240, 1754)).save(thumb, "JPEG")  # the cached thumbnail a strip is drawn from
+    out = tmp_path / "strips.jpg"
+    assert pages.main(["strips", "--max-bytes", "400000", str(out), "1", *([str(thumb)] * pages.STRIP_PAGES)]) == 0
+    with Image.open(out) as image:
+        assert image.width <= 1568
+        assert image.height <= 1568
+        dark = [y for y in range(image.height) if image.getpixel((image.width // 2, y))[0] < 40]  # print, not rules
+        runs, start = [], None
+        for y in range(image.height + 1):
+            inside = y in dark
+            if inside and start is None:
+                start = y
+            elif not inside and start is not None:
+                runs.append(y - start)
+                start = None
+        assert runs
+        assert min(runs) >= 10
