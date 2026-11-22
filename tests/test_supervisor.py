@@ -101,7 +101,8 @@ def make(core_db):
 
 def managed(**changes):
     """Timings for Core's own gateway: its process is checked at every step."""
-    timing = {"first_heartbeat": 1.0, "probe": 1.0, "model_probe": 1.0, "process_check": 0.01, "tick": 0.01}
+    timing = {"first_heartbeat": 1.0, "probe": 1.0, "probe_after_exit": 1.0, "model_probe": 1.0, "process_check": 0.01}
+    timing["tick"] = 0.01
     timing["model_retries"] = (0.05,)
     return HostTiming(**(timing | changes))
 
@@ -617,3 +618,15 @@ async def test_a_login_during_the_start_gate_restarts_quietly(make):
         assert supervisor.state is not GatewayState.STOPPED
         await gate(supervisor, boot="boot-bbbbbbbb")
     assert alerts.raised == []
+
+
+def test_the_probe_waits_longer_only_for_a_gateway_that_replaces_a_dead_one():
+    """A gateway that replaces a killed one holds the probe chat while the dead process's lease runs out (OpenClaw
+    2026.10, about a minute); a first start has no lease to wait for, and a refused hook should stop it sooner."""
+    timing = HostTiming()
+    assert timing.probe == 60.0
+    assert timing.probe_after_exit >= 120.0
+    for reason in ("exited", "new_process", "new_boot", "login"):
+        assert timing.probe_budget(reason) == timing.probe_after_exit
+    for reason in (None, "start", "resume"):
+        assert timing.probe_budget(reason) == timing.probe

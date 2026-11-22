@@ -68,9 +68,10 @@ class Expectations:
 @dataclass(frozen=True)
 class HostTiming:
     first_heartbeat: float = 30.0  # a full heartbeat within 30 s of the start (spec 4.6)
-    # The live probe: a gateway back from a long outage may wait 30 s before it polls again, and one that replaces a
-    # killed process (OpenClaw 2026.10) holds the probe chat for about a minute while the dead process's lease runs out.
-    probe: float = 150.0
+    probe: float = 60.0  # the live probe: a gateway back from a long outage may wait 30 s before it polls again
+    # A gateway that replaces a dead one (OpenClaw 2026.10) holds the probe chat for about a minute while the dead
+    # process's lease on its interrupted send runs out; its owner record goes stale after 90 s.
+    probe_after_exit: float = 150.0
     # The model probe: OpenClaw itself retries a busy provider for about 80 s within one turn before it reports the
     # error, so the probe waits longer, and asks once more after a pause when the model erred or was silent.
     model_probe: float = 150.0
@@ -81,6 +82,10 @@ class HostTiming:
     not_polling: float = 300.0  # RUNNING, but the host has not polled for this long: an alert
     process_check: float = 2.0  # how often Core asks launchd about its own gateway's process
     tick: float = 1.0
+
+    def probe_budget(self, reason: str | None) -> float:
+        """How long the live probe may take, by why the gateway is starting."""
+        return self.probe_after_exit if reason in ("exited", "new_process", "new_boot", "login") else self.probe
 
 
 class GatewayUnknown(Exception):
@@ -425,7 +430,7 @@ class Supervisor:
             await self._fail(problem)
             return
         self.probe_id = self.queue.add_probe()
-        deadline = self.mono() + self.timing.probe
+        deadline = self.mono() + self.timing.probe_budget(self.reason)
         try:
             while self._probe_blocked != self.probe_id:
                 if self.state is not GatewayState.STARTING or self.boot_id != boot:
