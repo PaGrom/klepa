@@ -216,8 +216,8 @@ def test_the_ownership_claim_must_name_core(tmp_path):
     layout = HostLayout(runtime_dir=runtime.root, host_dir=tmp_path / "host")
     managed = answering({"status": "external", "ownership": {"managerId": "klepa-core"}})
     rt.claim_ownership(runtime, layout, run=managed)
-    assert [call[-3:] for call in managed.calls] == [
-        ["database", "ownership", "--json"]
+    assert [call[-4:] for call in managed.calls] == [
+        ["database", "ownership", "status", "--json"]  # OpenClaw has no `ownership --json` (found on the real one)
     ]  # looked, and Core's: no claim
     free = answering({"status": "external", "ownership": {"managerId": "klepa-core"}}, first={"ownership": None})
     rt.claim_ownership(runtime, layout, run=free)

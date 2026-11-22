@@ -385,7 +385,7 @@ def claim_ownership(runtime: Runtime, layout: HostLayout, *, run: Runner = _run)
     """Make Core the only manager of the gateway's state database (spec 4.6). A state Core manages already needs no
     claim: OpenClaw 2026.10 refuses one while a gateway runs. Looking is read-only."""
     try:
-        current = openclaw_json(runtime, layout, "database", "ownership", run=run).get("ownership")
+        current = openclaw_json(runtime, layout, "database", "ownership", "status", run=run).get("ownership")
     except HostRuntimeError:
         current = None
     if isinstance(current, dict) and current.get("managerId") == OWNERSHIP_MANAGER:

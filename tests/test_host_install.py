@@ -64,6 +64,10 @@ class FakeOpenClaw:
                 return subprocess.CompletedProcess(argv, 1, "", refusal)
             return subprocess.CompletedProcess(argv, self.doctor[0], self.doctor[1], "")
         if "ownership" in tail:
+            command = tail[tail.index("ownership") + 1]
+            if command not in ("status", "claim"):  # OpenClaw knows only these two; `ownership --json` is refused
+                refusal = {"ok": False, "error": {"message": f'OpenClaw does not recognize option "{command}".'}}
+                return subprocess.CompletedProcess(argv, 0, json.dumps(refusal), "")
             if "claim" in tail:
                 if self.owned:  # OpenClaw 2026.10 refuses a claim while a gateway runs
                     refusal = {"error": "Cannot claim shared-state ownership while a Gateway is running"}
