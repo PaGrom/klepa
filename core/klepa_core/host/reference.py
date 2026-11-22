@@ -13,8 +13,10 @@ from __future__ import annotations
 import itertools
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..config import Config
 from .peers import probe_peer, stand_in
@@ -189,6 +191,19 @@ class HostSettings:
     host_token_path: Path
     allowed: tuple[int, ...]  # the members' stand-ins and the probe peer
     model: str
+    time_zone: str  # the family's offset without its place: placeless_zone()
+
+
+def placeless_zone(zone: str, now: datetime | None = None) -> str:
+    """A time zone of the family's current offset that names no place: OpenClaw 2026.10 sends the zone's name with
+    every turn, and "Area/City" says where the family lives (the canary test). The Etc names count the other way:
+    UTC+1 is "Etc/GMT-1". An offset that is not a whole hour has no such name, and the gateway gets UTC. The offset is
+    the one at Core's start: after a change to or from summer time it is an hour off until Core starts again."""
+    offset = (now or datetime.now(UTC)).astimezone(ZoneInfo(zone)).utcoffset() or timedelta(0)
+    hours, rest = divmod(int(offset.total_seconds()), 3600)
+    if rest or hours == 0:
+        return "UTC"
+    return f"Etc/GMT{-hours:+d}"
 
 
 def layout_of(cfg: Config) -> HostLayout:
@@ -209,6 +224,7 @@ def settings_of(cfg: Config, key: bytes) -> HostSettings:
         host_token_path=cfg.host_token_path,
         allowed=(*(stand_in(key, member.person_id) for member in cfg.members), probe_peer(key)),
         model=cfg.host.model,
+        time_zone=placeless_zone(cfg.timezone),
     )
 
 
@@ -228,6 +244,7 @@ def table(settings: HostSettings, layout: HostLayout) -> dict[str, Any]:
         "channels.telegram.allowFrom": [str(peer) for peer in settings.allowed],
         "proxy.proxyUrl": f"http://127.0.0.1:{settings.proxy_port}",
         "agents.defaults.workspace": str(layout.workspace),
+        "agents.defaults.userTimezone": settings.time_zone,
         "agents.defaults.model.primary": model,
         "agents.defaults.modelPolicy.allow": [model],  # one model, and nothing a session could switch to
         f"agents.defaults.models.{model}.agentRuntime.id": RUNTIME_ID,

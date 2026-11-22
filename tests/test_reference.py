@@ -1,3 +1,4 @@
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ SETTINGS = ref.HostSettings(
     host_token_path=Path("/data/keys/host-bot.token"),
     allowed=(111111, 222222, 2**51 + 5),
     model="anthropic/claude-sonnet-5",
+    time_zone="UTC",
 )
 
 
@@ -144,7 +146,7 @@ def test_cores_tools_come_through_the_adapters_mcp_server():
     from klepa_core.host.instruction import TOOLS
 
     settings = ref.HostSettings(
-        19300, 19201, 19202, Path("/run/adapter.sock"), Path("/k"), Path("/t"), (1,), "anthropic/claude-sonnet-5"
+        19300, 19201, 19202, Path("/run/adapter.sock"), Path("/k"), Path("/t"), (1,), "anthropic/claude-sonnet-5", "UTC"
     )
     layout = ref.HostLayout(runtime_dir=Path("/rt"), host_dir=Path("/h"))
     table = ref.table(settings, layout)
@@ -156,3 +158,27 @@ def test_cores_tools_come_through_the_adapters_mcp_server():
     assert sorted(table["tools.alsoAllow"]) == sorted(TOOLS)  # exact names only (spec 4.3)
     assert table["gateway.tools.deny"] == table["tools.alsoAllow"]  # never through /tools/invoke
     assert "mcp.servers.klepa" in ref.policy(table)  # every heartbeat proves the gateway runs this server
+
+
+@pytest.mark.parametrize(
+    ("zone", "when", "expected"),
+    [
+        ("Europe/Berlin", "2026-01-15T12:00:00+00:00", "Etc/GMT-1"),  # winter: UTC+1; the Etc names' sign is turned
+        ("Europe/Berlin", "2026-07-15T12:00:00+00:00", "Etc/GMT-2"),  # summer: UTC+2
+        ("America/New_York", "2026-01-15T12:00:00+00:00", "Etc/GMT+5"),
+        ("UTC", "2026-01-15T12:00:00+00:00", "UTC"),
+        ("Asia/Kolkata", "2026-01-15T12:00:00+00:00", "UTC"),  # +05:30 has no Etc name: UTC, and the place stays home
+    ],
+)
+def test_the_gateway_gets_the_familys_offset_never_its_place(zone, when, expected):
+    """OpenClaw 2026.10 puts the time zone's name into every turn (its Temporal Context): an Area/City name says where
+    the family lives (the canary test). The gateway gets a zone of the same offset without a place."""
+    from datetime import datetime
+
+    assert ref.placeless_zone(zone, datetime.fromisoformat(when)) == expected
+
+
+def test_the_table_carries_the_placeless_zone():
+    table = ref.table(dataclasses.replace(SETTINGS, time_zone="Etc/GMT-1"), LAYOUT)
+    assert table["agents.defaults.userTimezone"] == "Etc/GMT-1"
+    assert "agents.defaults.userTimezone" in ref.policy(table)
