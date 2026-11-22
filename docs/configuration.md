@@ -20,13 +20,14 @@ flowchart LR
         PR["[processing]"]
         ME["[[members]]"]
     end
-    TOP --> L[texts, month folders,<br>the gateway's place-free zone]
+    TOP --> L["texts, month folders, the gateway's place-free zone,<br>defaults: private keywords, shared folder, OCR languages"]
     PA --> DATA[data and documents folders]
     TE --> GK[gatekeeper: the family bot]
     ME --> GK
     ME --> STAND[stand-ins for the host]
-    SP --> SPACES[spaces and private keywords]
+    SP --> SPACES["default space, shared folder's name"]
     IN --> GK
+    IN --> INT["size limit, batch and album windows,<br>poll timeout, private keywords"]
     SC --> SNAP[daily snapshot and line]
     SBK --> SB[service bot]
     HO --> GW[gatekeeper API, egress proxy,<br>Core's own OpenClaw gateway]

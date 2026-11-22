@@ -26,7 +26,7 @@ flowchart LR
     subgraph mac[The Mac, one user account]
         subgraph core["Core: klepa.core (launchd), Python"]
             GK[Gatekeeper<br>intake, journal, filter, receipts]
-            ST[(core.db, incoming/,<br>signed cards, snapshots)]
+            ST[(core.db, incoming/,<br>snapshots)]
             PR[Processing<br>jobs, readers in a sandbox]
             HI[Host interface<br>Telegram-shaped API, queue, outbox]
             AL[Adapter link + Core's tools<br>Unix socket, HMAC]
@@ -48,7 +48,8 @@ flowchart LR
     ST --> PR
     ST -->|verified copy + card| DOCS
     GK --> HI
-    CH <-->|127.0.0.1, fake token| HI
+    CH -->|getUpdates, sendMessage<br>fake token| EP
+    EP -->|the gatekeeper:<br>its one loopback address| HI
     AD <-->|signed messages| AL
     MCP -->|signed tool calls| AL
     AG --> MCP
@@ -110,12 +111,14 @@ The data directory must be mode 0700, on a local disk, and never inside iCloud o
 ├─ run/adapter.sock           the adapter plugin's Unix socket, 0600 (with a host)
 ├─ host/                      0700, out of Time Machine and snapshots: Core's own gateway (with a host)
 │  ├─ openclaw.json           the reference config Core writes; OpenClaw may not change it
+│  ├─ gateway.token           0600: the gateway's own auth token, a secret like those in keys/
+│  ├─ applied.sha256          the digest of the config, adapter and plist Core last loaded
 │  ├─ state/                  OpenClaw's state: sessions, the model's token (auth store)
 │  ├─ state.version           the OpenClaw the state was last made ready for (Upgrade, below)
 │  ├─ workspace/  home/       the agent's workspace and the gateway's own HOME
-│  ├─ logs/                   the gateway's log (rotates at 20 MB), doctor-<version>.log
+│  ├─ logs/                   gateway.log (rotates at 20 MB), launchd's gateway.out/err.log, doctor-<version>.log
 │  ├─ klepa.gateway.plist     its launchd agent, loaded only by Core
-│  └─ login.pending           while host login holds the gateway's state
+│  └─ login.pending           while host login holds the gateway's state, and until Core reads its "stopped"
 └─ .metadata_never_index      keeps Spotlight out
 ```
 
@@ -181,19 +184,23 @@ flowchart TD
     C -- no --> D[dropped, logged without text]
     C -- yes --> S{at most 20 MB?}
     S -- no --> TL["too_large: sender asked to send it another way"]
-    S -- yes --> DL["download (5 tries, 60 s silence limit)"]
+    S -- yes --> DL["download (60 s silence limit)"]
+    DL -- "5 failures" --> AG[sender asked to send it again]
     DL --> IN["incoming/YYYY/MM + record in core.db"]
     IN --> CP["copy in the documents folder<br>+ HMAC-signed card, verified by SHA-256"]
-    IN --> RC[one receipt per batch]
+    IN --> RC["without a host: one receipt per batch<br>with a host: the batch goes to the host"]
     IN --> JOB{a reader for its kind?}
     JOB -- no --> NR[kept, not read]
     JOB -- "program missing" --> W[waits in the queue, one alert]
     JOB -- yes --> SB["reader in sandbox-exec<br>no network, writes only in its jobs/ folder"]
     SB --> T["evidence_text, page by page<br>+ search index"]
-    T --> M["served to the host as marks<br>(transcript 8,000, document 3,000 chars)"]
-    IN --> TWO{"2+ images in the batch?"}
+    T --> E["the batch's reading ends"]
+    E --> TWO{"2+ images in the batch?"}
+    TWO -- no --> M["served to the host as marks<br>(transcript 8,000, document 3,000 chars)"]
     TWO -- yes --> DR["draft of a document: its pages named in a last mark"]
-    DR --> MK["model orders the pages (make_pdf)<br>or says not_a_document"]
+    DR --> M
+    MK["model orders the pages (make_pdf)<br>or says not_a_document"]
+    M -- "with a draft" --> MK
     MK --> PDF["Core builds the PDF from the originals<br>and sends it after the model's answer"]
 ```
 
@@ -321,14 +328,15 @@ sequenceDiagram
     participant Q as host queue + API
     participant G as gateway (OpenClaw)
     participant A as adapter plugin
+    participant S as MCP server (mcp.ts)
     participant C as Core (adapter link, tools)
     participant M as model
     participant O as outbox
     P->>GK: message (or files)
     GK->>GK: journal, filter sender, store files, read them
-    GK->>Q: served text (stand-in ids, marks for files)
-    G->>Q: getUpdates (long poll, only while RUNNING)
-    Q-->>G: text-only update
+    GK->>Q: queued (the text is built from the journal when polled)
+    G->>Q: getUpdates (long poll, through the egress proxy)
+    Q-->>G: text-only update, stand-in ids, marks for files (only while RUNNING, heartbeat at most 15 s old)
     G->>A: before_dispatch
     A->>C: dispatch (signed)
     G->>A: before_prompt_build
@@ -340,17 +348,21 @@ sequenceDiagram
     G->>M: Core's instruction + the conversation (through the egress proxy)
     opt tool calls
         M-->>G: tool call
-        G->>A: before_tool_call (signs it)
-        A->>C: call over the socket (MCP server, no key)
-        C-->>G: result
+        G->>A: before_tool_call
+        A-->>G: params + _klepa signature (run, call, params)
+        G->>S: tools/call
+        S->>C: POST /v1/tool over the socket (no key of its own)
+        C-->>S: result, if the signature and the run's turn check out
+        S-->>G: result
     end
     M-->>G: answer
     G->>A: reply_payload_sending (text only, Core's error text)
     A->>C: turn_reply
     G->>Q: sendMessage
-    Q->>O: held durably, then "sent"
-    O->>O: links and record ids out, HTML from an allow-list
-    O->>P: released one chat at a time, while the heartbeat is fresh
+    Q->>Q: HTML from an allow-list, links and record ids out
+    Q->>O: held durably
+    Q-->>G: "sent" (a message id of Core's range, 2^41 and up)
+    O->>P: released one chat at a time, while RUNNING and the heartbeat is at most 15 s old
 ```
 
 **The gatekeeper's API** (`host/api.py`). The host talks to a Telegram-shaped API on `127.0.0.1` with a fake token:
@@ -439,7 +451,7 @@ sequenceDiagram
     participant L as launchd
     participant OC as OpenClaw CLI
     participant C as Core (supervisor)
-    O->>K: take the lock (Core starts nothing while it is held: "busy")
+    O->>K: take the lock
     O->>OC: models auth paste-token (token on stdin)
     OC-->>O: refused: exclusive offline state ownership
     O->>L: bootout klepa.gateway
@@ -447,37 +459,48 @@ sequenceDiagram
         O-->>O: another OpenClaw owns the state: named, nothing stopped, no mark
     else Core's gateway stopped
         O->>K: mark "stopped"
+        C->>K: gateway gone (checked every 2 s), lock held: "busy"
+        C->>C: STARTING "login", no alert, starts nothing
         loop until OpenClaw's state is free (60 s in all)
             O->>OC: paste-token again
         end
         O->>OC: models auth list (until it can tell)
         OC-->>O: profile listed
         O->>K: release the lock
-        C->>K: gateway gone, mark says "stopped" (read once)
-        C->>C: STARTING "login", no alert
-        C->>L: bootstrap, then the start gate
+        C->>C: the gate's 30 s wait for a heartbeat runs out
+        C->>K: mark says "stopped" (read once, honoured if under 120 s old)
+        C->>L: bootstrap, then the start gate (probe up to 150 s)
     end
 ```
+
+A mark older than 120 seconds explains nothing: Core then stops the gateway with an alert, as for any failed gate.
+
 
 **Supervision** (`host/supervisor.py`, D26):
 
 ```mermaid
 stateDiagram-v2
     [*] --> STARTING: Core starts (loads its gateway, or keeps a current one)
+    [*] --> HOLD: Core starts paused (the owner's Pause is kept)
     STARTING --> RUNNING: start gate passed
-    STARTING --> STOPPED: gate failed (no_heartbeat, ready, probe, model_auth, model_silent)
+    STARTING --> STOPPED: gate or start failed, alert
     STARTING --> STARTING: host login stopped the gateway ("login"), quietly
+    STARTING --> HOLD: owner's Pause
     RUNNING --> STARTING: new boot_id or new process ("new_boot", "new_process")
     RUNNING --> STARTING: gateway exited, alert ("exited")
-    RUNNING --> HOLD: 3 min without a heartbeat ("silent")
-    RUNNING --> STOPPED: heartbeat no longer matches, or 3 exits in 10 min
+    RUNNING --> STARTING: host login stopped it ("login"), quietly
+    RUNNING --> HOLD: 3 min without a heartbeat ("silent"), alert
     RUNNING --> HOLD: owner's Pause
+    RUNNING --> STOPPED: heartbeat no longer matches, or 3 exits in 10 min
     HOLD --> RUNNING: heartbeat of the gated boot again
-    HOLD --> STOPPED: heartbeat no longer matches, or 3 exits in 10 min
     HOLD --> STARTING: heartbeat of another boot
+    HOLD --> STARTING: gateway exited, or host login (not while paused)
     HOLD --> STARTING: owner's Resume
+    HOLD --> STOPPED: heartbeat no longer matches, or 3 exits in 10 min
     STOPPED --> STARTING: owner's Resume, or a boot other than the failed one
 ```
+
+Why a gate or a start fails (the reason the owner's alert names): `no_heartbeat` or `heartbeat:<key>` (no full heartbeat within 30 s, or one whose policy differs from Core's); `startupz`, `readyz`, the adapter's hooks refused in the log, or no model token stored; `probe` (the hook probe did not come back); `model_auth`; `model_silent`; `start: <why>` (Core would not or could not load the gateway: OpenClaw not installed, its state not migrated, no model token, launchd refused the bootstrap five times).
 
 The start gate, in order; anything that changes the state or the boot ends it, and the loop decides again:
 
@@ -487,15 +510,20 @@ sequenceDiagram
     participant L as launchd
     participant G as gateway + adapter
     participant M as model provider
-    C->>C: files written, config validated, state ready for this OpenClaw, model token stored
-    C->>L: bootstrap klepa.gateway
-    L->>G: start
+    C->>C: OpenClaw installed? state ready for it? files written, validated if they changed
+    alt a gateway already runs exactly these files
+        C->>C: kept running
+    else
+        C->>L: bootout (if loaded), then: model token stored?
+        C->>L: bootstrap klepa.gateway (up to 5 tries)
+        L->>G: start
+    end
     G-->>C: full heartbeat (policy, plugin hash, hooks), within 30 s
-    C->>G: /startupz, /readyz, log since start has no hook refusal
+    C->>G: /startupz, /readyz (up to 60 s), no hook refusal in the log since start, model token stored
     C->>G: probe 1 (a peer no member has)
     G-->>C: before_prompt_build, before_agent_run
     C-->>G: blocked on purpose
-    G-->>C: block written to the probe chat (60 s, 150 s after a crash or login)
+    G-->>C: block written to the probe chat (within 60 s, 150 s after an exit, a new boot or process, or login)
     C->>G: probe 2, to the model
     G->>M: one real call through the egress proxy
     M-->>G: answer or error
@@ -600,9 +628,9 @@ flowchart LR
     end
     MO -->|tools by exact name, each call signed| T["Core's tools<br>only the speaker's spaces"]
     MO -->|HTTP| EP{egress proxy}
-    EP -->|"api.anthropic.com:443 only"| API[model provider]
+    EP -->|"host.egress_allow only (api.anthropic.com:443)"| API[model provider]
     EP -.->|anything else: refused| NET[internet]
-    MO -->|sendMessage| OB["outbox: text only,<br>links inactive, no record ids"]
+    EP -->|"the gatekeeper's API (its one loopback address)"| OB["sendMessage: text only,<br>links inactive, no record ids, then the outbox"]
     OB --> TG[member's own chat]
     MO -.->|no other Telegram method,<br>no files, no other chat| X[refused by the gatekeeper]
     API -.->|"sees: Core's instruction, the talk,<br>stand-ins, names, offset (no place)"| PV[(provider's logs)]

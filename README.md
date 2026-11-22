@@ -31,7 +31,7 @@ flowchart LR
         R -->|text, search| DB
         DB -->|verified copy + signed card| DOCS[documents folder]
         GK --> Q[Host queue<br>text only, stand-ins]
-        OB[Outbox<br>hold, sanitize, release] --> GK
+        API[Telegram-shaped API<br>sanitizes: links, record ids out] --> OB[Outbox<br>hold, release] --> GK
         T[Core's tools<br>signed calls]
         S[Supervisor]
         X[Egress proxy]
@@ -39,11 +39,12 @@ flowchart LR
     subgraph host[Core's own OpenClaw gateway]
         OC[Agent + adapter plugin]
     end
-    Q -->|Telegram-shaped API| OC
-    OC -->|sendMessage| OB
+    Q --> API
+    OC <-->|getUpdates, sendMessage<br>via the egress proxy| API
     OC <-->|search, get, make_pdf, ...| T
-    S -->|start gate, heartbeat| OC
-    OC -->|HTTP| X --> M[Anthropic API]
+    S -->|launchctl, start gate| OC
+    OC -->|heartbeat| S
+    OC -->|other HTTP| X --> M[Anthropic API]
     S -.->|alerts, buttons| SB[Telegram<br>service bot] -.-> OW([owner])
 ```
 
@@ -51,7 +52,7 @@ flowchart LR
 2. **Filtering.** Only messages from configured family members in a private chat are accepted. Everything else is dropped and logged without its text.
 3. **Storing and reading.** Attachments are downloaded, recorded in `core.db`, copied into the documents folder next to an HMAC-signed provenance card (the copy verified by SHA-256), and read by sandboxed readers: text, transcripts, page images.
 4. **The assistant.** Members' texts, and what was read from their files, reach Core's own OpenClaw gateway through a Telegram-shaped API with an exact method allow-list; people appear there under stand-ins, never their Telegram ids. The model answers with Core's instruction and Core's tools only; every tool call is signed, and every HTTP request goes through an egress proxy that lets only the model API through.
-5. **Answers.** Every message the gateway sends is held in Core's outbox, stripped of links and record ids, and released only while the gateway is healthy.
+5. **Answers.** Every message the gateway sends is stripped of links and record ids, held in Core's outbox, and released only while the gateway is RUNNING with a fresh heartbeat.
 6. **Supervision.** Core starts the gateway itself, lets it have messages only after a start gate (heartbeat, a hook probe, a model probe), and holds or stops it when it goes quiet or stops matching. The service bot tells the owner, with buttons and no model behind them.
 
 See [docs/architecture.md](docs/architecture.md) for the full design and the roadmap.
