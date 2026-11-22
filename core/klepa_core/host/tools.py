@@ -40,6 +40,16 @@ _ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 _SIG = re.compile(r"[0-9a-f]{64}")
 _MIME = re.compile(r"[\w.+-]{1,64}/[\w.+-]{1,128}")
 _READABLE = ("stored", "processing", "processed", "failed", "too_large")  # what get reads and search lists
+ANSWER_MAX = 900_000  # a picture's answer, JSON with base64, under the MCP shim's 1 MiB (mcp.ts MAX_ANSWER_BYTES)
+
+
+@dataclass(frozen=True)
+class Picture:
+    """A tool's answer that shows the model a page (stage 2c-2): its meta as text, and the picture as an image."""
+
+    meta: dict[str, Any]
+    data: bytes
+    mime: str = "image/jpeg"
 
 
 class ToolRefused(Exception):
@@ -125,12 +135,16 @@ class Tool:
             if not _typed(value, schema):
                 kind = schema["type"]
                 what = f"a list of {schema['items']['type']}s" if kind == "array" else f"a {kind}"
+                if "enum" in schema:
+                    what = "one of " + ", ".join(str(choice) for choice in schema["enum"])
                 raise ToolRefused(f"{name} must be {what}")
         return dict(params)
 
 
 def _typed(value: Any, schema: Mapping[str, Any]) -> bool:
     kind = schema["type"]
+    if "enum" in schema and value not in schema["enum"]:
+        return False
     if kind == "string":
         return isinstance(value, str)
     if kind == "integer":

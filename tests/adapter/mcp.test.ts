@@ -9,11 +9,12 @@ import { test } from "node:test";
 import { answer } from "../../core/klepa_core/host/openclaw/adapter/mcp.ts";
 
 /** Core's tool endpoints on a Unix socket: GET /v1/tools and POST /v1/tool. */
-async function fakeCore(): Promise<{ socket: string; calls: unknown[]; close: () => void }> {
+async function fakeCore(answer?: unknown): Promise<{ socket: string; calls: unknown[]; close: () => void }> {
   const dir = mkdtempSync(join(tmpdir(), "klepa-mcp-"));
   const socket = join(dir, "core.sock");
   const calls: unknown[] = [];
   const server = createServer((conn) => {
+    conn.on("error", () => {}); // the shim drops an answer too large, and the write after it meets a closed socket
     let raw = "";
     conn.on("data", (chunk) => {
       raw += chunk.toString("utf8");
@@ -25,7 +26,7 @@ async function fakeCore(): Promise<{ socket: string; calls: unknown[]; close: ()
       let reply: unknown = { tools: [{ name: "search", description: "find", inputSchema: { type: "object" } }] };
       if (raw.startsWith("POST /v1/tool ")) {
         calls.push(JSON.parse(body));
-        reply = { isError: false, content: [{ type: "text", text: "{}" }] };
+        reply = answer ?? { isError: false, content: [{ type: "text", text: "{}" }] };
       }
       const out = JSON.stringify(reply);
       conn.end(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(out)}\r\n\r\n${out}`);
@@ -72,4 +73,23 @@ test("tools are Core's, and a call goes to Core with its arguments as they are",
 test("without Core a call is an error, never a made-up result", async () => {
   const lost = await answer({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "search" } }, "/nonexistent.sock");
   assert.deepEqual(lost, { jsonrpc: "2.0", id: 9, error: { code: -32603, message: "Klepa Core did not answer." } });
+});
+
+test("a picture Core answers within the shim's limit reaches the model whole; a larger answer is an error", async () => {
+  const data = Buffer.alloc(400_000, 7).toString("base64"); // a 400 KB picture, as Core's large view at most
+  const picture = { isError: false, content: [{ type: "text", text: "{}" }, { type: "image", data, mimeType: "image/jpeg" }] };
+  const core = await fakeCore(picture);
+  try {
+    const called = await answer({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "view_page", arguments: {} } }, core.socket);
+    assert.deepEqual(called, { jsonrpc: "2.0", id: 3, result: picture });
+  } finally {
+    core.close();
+  }
+  const huge = await fakeCore({ isError: false, content: [{ type: "image", data: "A".repeat(1_200_000), mimeType: "image/jpeg" }] });
+  try {
+    const dropped = await answer({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "view_page", arguments: {} } }, huge.socket);
+    assert.deepEqual(dropped, { jsonrpc: "2.0", id: 4, error: { code: -32603, message: "Klepa Core did not answer." } });
+  } finally {
+    huge.close();
+  }
 });

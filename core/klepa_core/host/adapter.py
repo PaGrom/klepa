@@ -13,9 +13,11 @@ the live probe is the one message before_dispatch lets through (spec 6.1).
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import hmac
+import inspect
 import json
 import logging
 import os
@@ -36,7 +38,7 @@ from ..locale import Locale
 from .instruction import TOOLS
 from .queue import HostQueue
 from .supervisor import PROBE_BLOCK, Supervisor
-from .tools import ToolBox, ToolRefused, parse_call
+from .tools import ANSWER_MAX, Picture, ToolBox, ToolRefused, parse_call
 from .turns import Prompt, Turn, TurnRegistry
 
 SIGNATURE_HEADER = "X-Klepa-Signature"
@@ -208,6 +210,8 @@ class AdapterServer:
         try:
             name, arguments = parse_call(await request.read())
             result = self.tools.call(name, arguments)
+            if inspect.isawaitable(result):  # a page drawn in the sandbox (stage 2c-2)
+                result = await result
         except ToolRefused as exc:
             self.events.log("tool_refused", {"reason": exc.reason[:80]})
             return web.json_response({"isError": True, "content": [{"type": "text", "text": str(exc)}]})
@@ -215,6 +219,17 @@ class AdapterServer:
             log.warning("a tool failed: %s", type(exc).__name__)  # its text may carry a person's data
             self.events.log("tool_failed", {"error": type(exc).__name__})
             return web.json_response({"isError": True, "content": [{"type": "text", "text": "Klepa's tool failed."}]})
+        if isinstance(result, Picture):
+            meta = json.dumps(result.meta, ensure_ascii=False)
+            image = base64.b64encode(result.data).decode("ascii")
+            if len(meta) + len(image) > ANSWER_MAX:  # the shim would drop it, and the model hear nothing
+                self.events.log("tool_refused", {"reason": "picture too large"})
+                return web.json_response(
+                    {"isError": True, "content": [{"type": "text", "text": "the picture is too large"}]}
+                )
+            self.events.log("tool_called", {"tool": name})
+            content = [{"type": "text", "text": meta}, {"type": "image", "data": image, "mimeType": result.mime}]
+            return web.json_response({"isError": False, "content": content})
         self.events.log("tool_called", {"tool": name})
         text = json.dumps(result, ensure_ascii=False)
         return web.json_response({"isError": False, "content": [{"type": "text", "text": text}]})

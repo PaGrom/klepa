@@ -250,6 +250,62 @@ async def test_a_tool_that_breaks_tells_the_model_and_core_goes_on(server, short
     assert EventLog(conn).kinds().count("tool_failed") == 1
 
 
+async def post_tool(short_dir, call):
+    import aiohttp
+
+    connector = aiohttp.UnixConnector(path=str(short_dir / "run" / "adapter.sock"))
+    async with (
+        aiohttp.ClientSession(connector=connector) as session,
+        session.post("http://core/v1/tool", json=call) as response,
+    ):
+        return response.status, await response.json()
+
+
+async def test_a_tool_may_answer_with_a_picture_and_may_wait(server, short_dir, monkeypatch):
+    """Stage 2c-2: a picture goes to the model as an MCP image block beside its meta; a tool may await (a page drawn
+    in the sandbox); a refusal raised after the await is a refusal, not a failure."""
+    import base64
+
+    from klepa_core.host.tools import Picture, ToolRefused
+
+    adapter_server, _, conn, _ = server
+
+    async def drawn():
+        return Picture({"id": "r1", "page": 1}, b"\xff\xd8\xff" + b"x" * 1000)
+
+    async def refused():
+        raise ToolRefused("no such record")
+
+    answers = {"view": drawn, "late": refused}
+    monkeypatch.setattr(adapter_server.tools, "call", lambda name, arguments: answers[name]())
+    status, answer = await post_tool(short_dir, {"name": "view", "arguments": {}})
+    assert status == 200
+    assert answer["isError"] is False
+    text, image = answer["content"]
+    assert json.loads(text["text"]) == {"id": "r1", "page": 1}
+    assert image == {
+        "type": "image",
+        "data": base64.b64encode(b"\xff\xd8\xff" + b"x" * 1000).decode(),
+        "mimeType": "image/jpeg",
+    }
+    _, answer = await post_tool(short_dir, {"name": "late", "arguments": {}})
+    assert answer == {"isError": True, "content": [{"type": "text", "text": "no such record"}]}
+    assert EventLog(conn).kinds().count("tool_refused") == 1
+    assert EventLog(conn).kinds().count("tool_failed") == 0
+
+
+async def test_a_picture_the_mcp_shim_would_drop_is_refused_by_core_first(server, short_dir, monkeypatch):
+    """The shim drops answers over 1 MiB (mcp.ts); base64 grows a picture by a third: Core refuses above ANSWER_MAX."""
+    from klepa_core.host.tools import ANSWER_MAX, Picture
+
+    adapter_server, _, _, _ = server
+    big = Picture({"id": "r1"}, b"\xff\xd8\xff" + b"x" * 700_000)
+    monkeypatch.setattr(adapter_server.tools, "call", lambda name, arguments: big)
+    _, answer = await post_tool(short_dir, {"name": "view", "arguments": {}})
+    assert answer == {"isError": True, "content": [{"type": "text", "text": "the picture is too large"}]}
+    assert ANSWER_MAX <= 900_000
+
+
 async def test_cores_tools_are_listed_and_a_signed_call_runs(server, short_dir):
     import aiohttp
 
