@@ -355,6 +355,23 @@ def _text_status(box: ToolBox, job: sqlite3.Row | None) -> str:
     return _TEXT_STATUS[job["state"]]
 
 
+def _unread_pages(box: ToolBox, evidence_id: str) -> list[int]:
+    """The pages the model has not read yet: a photo's page 1 without text, a PDF's scanned pages it has not saved."""
+    image = box.conn.execute(
+        "SELECT 1 FROM job j WHERE j.evidence_id = ? AND j.kind = 'image' AND NOT EXISTS "
+        "(SELECT 1 FROM evidence_text t WHERE t.evidence_id = j.evidence_id AND t.page = 1)",
+        (evidence_id,),
+    ).fetchone()
+    if image is not None:
+        return [1]
+    rows = box.conn.execute(
+        "SELECT s.page FROM scan_page s WHERE s.evidence_id = ? AND NOT EXISTS (SELECT 1 FROM evidence_text t "
+        "WHERE t.evidence_id = s.evidence_id AND t.page = s.page AND t.saved_by_reading IS NOT NULL) ORDER BY s.page",
+        (evidence_id,),
+    ).fetchall()
+    return [int(row[0]) for row in rows]
+
+
 def _get(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
     row = _record(box, caller, params["id"])
     record: dict[str, Any] = {
@@ -374,6 +391,19 @@ def _get(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
         record["version"] = version
     job = box.conn.execute("SELECT kind, state, pages, note FROM job WHERE evidence_id=?", (row["id"],)).fetchone()
     record["text_status"] = _text_status(box, job)
+    if record["text_status"] == "read":  # stage 2c-2: what the model reads in the background
+        unread = _unread_pages(box, row["id"])
+        if job["kind"] == "image" and unread:
+            gave_up = box.conn.execute(
+                "SELECT 1 FROM reading WHERE evidence_id = ? AND page = 1 AND state IN ('failed', 'cancelled')",
+                (row["id"],),
+            ).fetchone()
+            record["text_status"] = "picture" if gave_up else "being_read"
+            if "page" in params:
+                raise ToolRefused("the record has no text to read yet: look at it with view_page")
+            return record
+        if unread:
+            record["being_read"] = unread
     if record["text_status"] != "read":
         if "page" in params:
             raise ToolRefused("the record has no text to read")
@@ -590,44 +620,61 @@ def _save_text(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
                 raise ToolRefused("this page has an exact text layer: it is kept as it is")
         elif kind != "image" or row["channel"] == "core":
             raise ToolRefused("only a photo's or a scanned page's text is saved")
-        if part == 1:
-            box.conn.execute("DELETE FROM evidence_text WHERE evidence_id = ? AND page = ?", (row["id"], page))
-            box.conn.execute(
-                "INSERT INTO evidence_text(evidence_id, page, text, extractor, created_at, saved_by_reading) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (row["id"], page, text, f"model {box.model}", now, reading["id"]),
-            )
-        else:
-            appended = box.conn.execute(
-                "UPDATE evidence_text SET text = text || char(10) || ? "
-                "WHERE evidence_id = ? AND page = ? AND saved_by_reading = ?",
-                (text, row["id"], page, reading["id"]),
-            )
-            if appended.rowcount != 1:
-                raise ToolRefused("save part 1 of this page first")
-        full = box.conn.execute(
-            "SELECT text FROM evidence_text WHERE evidence_id = ? AND page = ?", (row["id"], page)
-        ).fetchone()["text"]
-        if kind == "image":
-            box.conn.execute(
-                "INSERT INTO job(evidence_id, kind, state, pages, created_at) VALUES (?, 'image', 'done', 1, ?) "
-                "ON CONFLICT(evidence_id) DO UPDATE SET state = 'done', pages = MAX(COALESCE(pages, 0), 1)",
-                (row["id"], now),
-            )
-            box.conn.execute(
-                "UPDATE evidence SET state = 'processed' WHERE id = ? AND state IN ('stored', 'processing', 'failed')",
-                (row["id"],),
-            )
-        reindex_page(box.conn, row["id"], page, full)
-        if kind == "image":
-            _refresh_derived(box, row, full, now)
+        keep_text(box.conn, row, kind, page, part, text, model=box.model, reading_id=int(reading["id"]), now=now)
     EventLog(box.conn).log("text_saved", {"page": page, "part": part, "length": len(text)})
     return {"saved": True, "id": row["id"], "page": page}
 
 
-def _refresh_derived(box: ToolBox, source: sqlite3.Row, text: str, now: float) -> None:
+def keep_text(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    kind: str | None,
+    page: int,
+    part: int,
+    text: str,
+    *,
+    model: str,
+    reading_id: int,
+    now: float,
+) -> None:
+    """A reading's text of a page, in the caller's transaction: part 1 replaces the page, later parts follow it; the
+    index, a photo's job and state, and the PDFs Core made of the photo follow (stage 2c-2)."""
+    if part == 1:
+        conn.execute("DELETE FROM evidence_text WHERE evidence_id = ? AND page = ?", (row["id"], page))
+        conn.execute(
+            "INSERT INTO evidence_text(evidence_id, page, text, extractor, created_at, saved_by_reading) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (row["id"], page, text, f"model {model}", now, reading_id),
+        )
+    else:
+        appended = conn.execute(
+            "UPDATE evidence_text SET text = text || char(10) || ? "
+            "WHERE evidence_id = ? AND page = ? AND saved_by_reading = ?",
+            (text, row["id"], page, reading_id),
+        )
+        if appended.rowcount != 1:
+            raise ToolRefused("save part 1 of this page first")
+    full = conn.execute(
+        "SELECT text FROM evidence_text WHERE evidence_id = ? AND page = ?", (row["id"], page)
+    ).fetchone()["text"]
+    if kind == "image":
+        conn.execute(
+            "INSERT INTO job(evidence_id, kind, state, pages, created_at) VALUES (?, 'image', 'done', 1, ?) "
+            "ON CONFLICT(evidence_id) DO UPDATE SET state = 'done', pages = MAX(COALESCE(pages, 0), 1)",
+            (row["id"], now),
+        )
+        conn.execute(
+            "UPDATE evidence SET state = 'processed' WHERE id = ? AND state IN ('stored', 'processing', 'failed')",
+            (row["id"],),
+        )
+    reindex_page(conn, row["id"], page, full)
+    if kind == "image":
+        _refresh_derived(conn, row, full, model, now)
+
+
+def _refresh_derived(conn: sqlite3.Connection, source: sqlite3.Row, text: str, model: str, now: float) -> None:
     """The PDFs Core made of this photo get its text as their page; only one as private as the photo is now."""
-    made = box.conn.execute(
+    made = conn.execute(
         "SELECT id, space_id, derived_from FROM evidence WHERE channel = 'core' AND derived_from LIKE ?",
         (f'%"{source["id"]}"%',),
     ).fetchall()
@@ -638,14 +685,14 @@ def _refresh_derived(box: ToolBox, source: sqlite3.Row, text: str, now: float) -
         if source["space_id"] != "shared" and pdf["space_id"] != source["space_id"]:
             continue  # the photo went personal and this PDF has not followed it yet: not its text
         page = sources.index(source["id"]) + 1
-        box.conn.execute("DELETE FROM evidence_text WHERE evidence_id = ? AND page = ?", (pdf["id"], page))
-        box.conn.execute(
+        conn.execute("DELETE FROM evidence_text WHERE evidence_id = ? AND page = ?", (pdf["id"], page))
+        conn.execute(
             "INSERT INTO evidence_text(evidence_id, page, text, extractor, created_at) VALUES (?, ?, ?, ?, ?)",
-            (pdf["id"], page, text, f"model {box.model}", now),
+            (pdf["id"], page, text, f"model {model}", now),
         )
-        indexed = box.conn.execute("SELECT 1 FROM evidence_fts WHERE evidence_id = ? LIMIT 1", (pdf["id"],)).fetchone()
+        indexed = conn.execute("SELECT 1 FROM evidence_fts WHERE evidence_id = ? LIMIT 1", (pdf["id"],)).fetchone()
         if indexed is not None:  # the latest version keeps its rows (its name's at least); _build cleared the older
-            reindex_page(box.conn, pdf["id"], page, text)
+            reindex_page(conn, pdf["id"], page, text)
 
 
 TOOLS = (
@@ -669,7 +716,8 @@ TOOLS = (
         "says what part of the original the text leaves out), reading (it is being read: usually seconds, long "
         "recordings and scans take minutes), waiting (it is not read until the owner installs what reading it "
         "needs), failed (it could not be read; the original is kept and can be sent), none (a file of this kind is "
-        "not read).",
+        "not read), being_read (a photo the model reads in the background: look at it with view_page now), picture "
+        "(a photo whose text could not be read: look at it). being_read on a PDF lists its scanned pages still read.",
         {
             "id": {"type": "string"},
             "page": {"type": "integer", "description": "Which page of the text, from 1; 1 when not given."},

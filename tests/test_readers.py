@@ -12,7 +12,7 @@ import zipfile
 import pytest
 from PIL import Image
 
-from fakereaders import INSIDE, OCRMYPDF, PlainRunner, processing_config
+from fakereaders import INSIDE, PDFTOTEXT, PlainRunner, processing_config
 from klepa_core.processing import readers as readers_module
 from klepa_core.processing.readers import (
     FRAGMENT_CHARS,
@@ -68,59 +68,12 @@ def test_a_pdf_with_a_text_layer_is_read_page_by_page(setup):
     assert (pages.extractor, pages.note) == ("pdftotext", None)
 
 
-def test_a_page_without_a_text_layer_is_read_with_ocr_and_the_others_kept(setup):
-    pages = read(setup, "pdf", f"{POLICY} PAGEBREAK  ".encode(), "mixed.pdf")
-    assert pages.texts == [POLICY, "scanned page 2 in rus+eng"]
-    assert pages.extractor == "pdftotext, ocrmypdf rus+eng"
-
-
-def test_a_scan_with_a_little_text_of_its_own_is_read_with_ocr(setup):
-    """A page number, a stamp or "Scanned by …" on a scan is a text layer too: OCR is forced on such pages, which
-    keep whichever text has more letters."""
-    content = f"{POLICY} PAGEBREAK Page 2 PAGEBREAK Scanned by CamScanner PAGEBREAK {TERMS}"
-    pages = read(setup, "pdf", content.encode(), "mixed.pdf")
-    assert pages.texts == [POLICY, "scanned page 2 in rus+eng", "scanned page 3 in rus+eng", TERMS]
-    tmp_path = setup[2]
-    args = json.loads((tmp_path / "jobs" / "pdf" / "ocrmypdf.args").read_text())
-    assert args[args.index("--pages") + 1] == "2-3"
-    assert "--force-ocr" in args
-    assert "--skip-text" not in args
-    assert args[args.index("--jobs") + 1] == "2"
-
-
-def test_a_short_page_keeps_its_text_layer_when_ocr_finds_less(setup):
-    title = "Insurance contract for the family house, signed in the spring."  # fewer than 100 letters
-    pages = read(setup, "pdf", f"{title} PAGEBREAK {POLICY}".encode(), "contract.pdf")
-    assert pages.texts == [title, POLICY]
-    assert pages.extractor == "pdftotext"
-
-
 def test_scans_past_the_limit_are_left_and_the_pages_say_so(setup, monkeypatch):
-    monkeypatch.setattr(readers_module, "MAX_OCR_PAGES", 2)
-    pages = read(setup, "pdf", b" PAGEBREAK " * 3, "scans.pdf")  # four pages, none with text
-    assert pages.texts == ["scanned page 1 in rus+eng", "scanned page 2 in rus+eng", "", ""]
-    assert pages.note == "OCR read the first 2 of 4 scanned pages"
-
-
-def test_a_signed_scan_is_read(setup):
-    """ocrmypdf refuses a digitally signed PDF unless told that what it writes may break the signature, and it writes
-    no PDF here; official documents are often signed (final review, I-A)."""
-    pages = read(setup, "pdf", b"SCAN SIGNED", "statement.pdf")
-    assert pages.texts == ["scanned page 1 in rus+eng", "scanned page 2 in rus+eng"]
-
-
-def test_when_ocr_fails_the_text_layer_is_kept_and_the_note_says_so(setup):
-    """One page that OCR cannot read must not take the pages already read with it."""
-    pages = read(setup, "pdf", f"{POLICY} PAGEBREAK a short page OCRFAIL".encode(), "policy.pdf")
-    assert pages.texts == [POLICY, "a short page OCRFAIL"]
-    assert pages.extractor == "pdftotext"
-    assert pages.note == "the scanned pages could not be read: ocrmypdf exited with 5"
-
-
-def test_a_scan_whose_ocr_fails_fails(setup):
-    """Nothing but scans, and OCR failed: there is no text to keep."""
-    with pytest.raises(ReaderFailed, match="ocrmypdf exited with 5"):
-        read(setup, "pdf", b"SCAN OCRFAIL", "scan.pdf")
+    """The model reads at most SCAN_PAGES scanned pages of one PDF; the note says how many it reads of how many."""
+    monkeypatch.setattr(readers_module, "SCAN_PAGES", 1)
+    pages = read(setup, "pdf", b"SCAN", "scan.pdf")
+    assert pages.scan_pages == (1,)
+    assert pages.note == "the model reads the first 1 of 2 scanned pages"
 
 
 @pytest.mark.skipif(not sandbox_available(), reason="sandbox-exec exists on macOS only")
@@ -129,31 +82,19 @@ def test_a_python_reader_installed_under_a_path_with_a_space_runs_in_the_sandbox
     """Under a path with a space, as in "Application Support", an installer (uv, pip) begins a Python program with a
     shell that starts its interpreter, and no shell may run in the sandbox: Core starts the interpreter itself, with the
     script (found in the live run of stage 2b-1)."""
-    tool = tmp_path / "Application Support" / "bin" / "ocrmypdf"
+    tool = tmp_path / "Application Support" / "bin" / "pdftotext"
     tool.parent.mkdir(parents=True)
     trampoline = "#!/bin/sh\n'''exec' " + quote + sys.executable + quote + ' "$0" "$@"\n' + "' '''\n"
-    tool.write_text(f"{trampoline}import sys\n{INSIDE}\n{OCRMYPDF}")
+    tool.write_text(f"{trampoline}import sys\n{INSIDE}\n{PDFTOTEXT}")
     tool.chmod(0o755)
-    processing = dataclasses.replace(processing_config(tmp_path), ocrmypdf=tool)
+    processing = dataclasses.replace(processing_config(tmp_path), pdftotext=tool)
     source = tmp_path / "incoming" / "scan.pdf"
     source.parent.mkdir()
-    source.write_bytes(b"SCAN")
+    source.write_bytes(POLICY.encode())
     job = tmp_path / "jobs" / "scan"
     job.mkdir(parents=True)
     pages = asyncio.run(Readers(processing, sandbox_for(processing, ())).read("pdf", source, job))
-    assert pages.texts == ["scanned page 1 in eng", "scanned page 2 in eng"]
-
-
-def test_a_scan_is_read_with_ocr_in_the_installations_languages(setup):
-    pages = read(setup, "pdf", b"SCAN", "scan.pdf")
-    assert pages.texts == ["scanned page 1 in rus+eng", "scanned page 2 in rus+eng"]
-    assert pages.extractor == "ocrmypdf rus+eng"
-
-
-def test_a_photo_is_read_with_ocr(setup):
-    pages = read(setup, "image", b"receipt 42", "photo.jpg")
-    assert pages.texts == ["photo text (rus+eng): receipt 42"]
-    assert pages.extractor == "tesseract rus+eng"
+    assert pages.texts == [POLICY]
 
 
 def test_a_text_file_is_read_as_it_is(setup):
@@ -236,8 +177,8 @@ def test_the_reader_gets_a_copy_in_its_job_folder(setup):
     """Each stand-in refuses a file outside its job folder: a reader broken by a planted file must not reach the
     other originals in incoming/."""
     _, _, tmp_path = setup
-    read(setup, "image", b"text", "photo.jpg")
-    assert (tmp_path / "jobs" / "image" / "input.jpg").read_bytes() == b"text"
+    read(setup, "document", b"text", "letter.rtf")
+    assert (tmp_path / "jobs" / "document" / "input.rtf").read_bytes() == b"text"
 
 
 def test_a_long_transcript_is_kept_in_fragments_cut_between_sentences(setup):
@@ -276,23 +217,26 @@ def test_an_image_whose_size_cannot_be_read_is_not_read(setup):
 def test_what_each_kind_of_original_lacks_to_be_read_is_named(tmp_path):
     processing = processing_config(tmp_path, "rus+eng")
     assert Readers(processing, PlainRunner()).unavailable() == {}
-    (processing.tessdata / "rus.traineddata").unlink()
     broken = dataclasses.replace(processing, whisper=tmp_path / "nowhere" / "whisper-cli", whisper_model=None)
     assert Readers(broken, PlainRunner()).unavailable() == {
         "voice": ["whisper-cli", "whisper_model"],
         "video": ["whisper-cli", "whisper_model"],
-        "pdf": ["rus.traineddata"],
-        "image": ["rus.traineddata"],
     }
-    (processing.tessdata / "rus.traineddata").write_bytes(b"language")
+    processing.pdftoppm.unlink()  # it draws a PDF's page for the model
+    assert Readers(processing, PlainRunner()).unavailable() == {"pdf": ["pdftoppm"]}
     processing.ffmpeg.unlink()  # it joins a HEIC photo's tiles
-    assert set(Readers(processing, PlainRunner()).unavailable()) == {"voice", "video", "image"}
+    assert set(Readers(processing, PlainRunner()).unavailable()) == {"voice", "video", "image", "pdf"}
 
 
 def test_without_pillow_cores_renderer_of_pages_is_named_unavailable(tmp_path, monkeypatch):
+    """Core's renderer draws photos and pages for the model, and the PDFs of drafts."""
     processing = processing_config(tmp_path, "rus+eng")
     monkeypatch.setattr(readers_module, "_has_pillow", lambda: False)
-    assert Readers(processing, PlainRunner()).unavailable() == {"pages": ["pillow"]}
+    assert Readers(processing, PlainRunner()).unavailable() == {
+        "pdf": ["pillow"],
+        "image": ["pillow"],
+        "pages": ["pillow"],
+    }
 
 
 def test_a_programs_version_is_read_from_where_homebrew_put_it(tmp_path):
@@ -345,13 +289,13 @@ def test_a_file_that_is_no_spreadsheet_fails_as_one(setup):
 
 
 def test_a_heic_photo_is_turned_into_png_by_ffmpeg_then_read(setup):
-    """tesseract cannot open HEIC, and macOS's sips cannot work in the sandbox (it reads the home folder and writes
-    in the user's temporary folder): ffmpeg makes the PNG, joining an iPhone photo's tiles."""
-    pages = read(setup, "image", b"passport page", "photo.HEIC")
-    assert pages.texts == ["photo text (rus+eng): passport page"]
+    """Pillow cannot open HEIC, and macOS's sips cannot work in the sandbox (it reads the home folder and writes in
+    the user's temporary folder): ffmpeg makes the PNG, joining an iPhone photo's tiles, and Core draws it."""
+    pages = read(setup, "image", a_photo(), "photo.HEIC")
+    assert pages.texts == [""]
+    assert pages.pictures[1].name == "picture-1.jpg"
     folder = setup[2] / "jobs" / "image"
-    assert json.loads((folder / "ffmpeg.args").read_text())[-1].endswith("converted.png")
-    assert json.loads((folder / "tesseract.args").read_text())[0].endswith("converted.png")
+    assert json.loads((folder / "ffmpeg.args").read_text())[-1].endswith("joined.png")
 
 
 def test_a_tiled_photo_is_measured_by_its_whole_grid(setup):
@@ -398,17 +342,17 @@ def test_whisper_is_told_not_to_make_up_words_for_silence(setup):
 
 def test_a_program_gone_since_start_is_named_missing_not_failed(setup):
     """Homebrew upgrades a program under the same path: the job waits for it rather than failing for good."""
-    setup[0].tesseract.unlink()
-    with pytest.raises(ReaderMissing, match="tesseract"):
+    setup[0].ffprobe.unlink()
+    with pytest.raises(ReaderMissing, match="ffprobe"):
         read(setup, "image", b"receipt", "photo.jpg")
 
 
 def test_a_crafted_suffix_never_reaches_a_readers_arguments(setup):
     """The name came from the sender's device: the copy keeps only a suffix of letters and digits (finding M6)."""
-    read(setup, "image", b"receipt", "photo.png -l deu")
+    read(setup, "document", b"letter", "letter.rtf -o deu")
     _, _, tmp_path = setup
-    args = json.loads((tmp_path / "jobs" / "image" / "tesseract.args").read_text())
-    assert args[0].endswith("/input")
+    args = json.loads((tmp_path / "jobs" / "document" / "textutil.args").read_text())
+    assert args[-1].endswith("/input")
     assert "deu" not in args
 
 
@@ -545,7 +489,7 @@ def test_read_by_the_model_a_scan_has_no_ocr_and_names_its_scanned_pages(setup):
     source.write_bytes(f"SCAN {POLICY}".encode())
     job = tmp_path / "jobs" / "pdf"
     job.mkdir(parents=True)
-    pages = asyncio.run(Readers(processing, runner, model_reads=True).read("pdf", source, job))
+    pages = asyncio.run(Readers(processing, runner).read("pdf", source, job))
     assert pages.texts == ["", ""]
     assert pages.scan_pages == (1, 2)
     assert not (job / "ocrmypdf.args").exists()
@@ -558,7 +502,7 @@ def test_read_by_the_model_a_photo_gets_its_picture_drawn_not_ocr(setup):
     source.write_bytes(a_photo((3000, 4000)))
     job = tmp_path / "jobs" / "image"
     job.mkdir(parents=True)
-    pages = asyncio.run(Readers(processing, runner, model_reads=True).read("image", source, job))
+    pages = asyncio.run(Readers(processing, runner).read("image", source, job))
     assert pages.texts == [""]
     assert not (job / "tesseract.args").exists()
     drawn = pages.pictures[1]
@@ -572,8 +516,8 @@ def test_read_by_the_model_nothing_of_ocr_is_needed(setup):
     gone = dataclasses.replace(
         processing, tesseract=processing.tesseract.with_name("gone"), ocrmypdf=processing.ocrmypdf.with_name("gone")
     )
-    needs = Readers(gone, runner, model_reads=True).unavailable()
+    needs = Readers(gone, runner).unavailable()
     assert "pdf" not in needs
     assert "image" not in needs
     missing_ppm = dataclasses.replace(processing, pdftoppm=processing.pdftoppm.with_name("gone"))
-    assert Readers(missing_ppm, runner, model_reads=True).unavailable()["pdf"] == ["gone"]
+    assert Readers(missing_ppm, runner).unavailable()["pdf"] == ["gone"]

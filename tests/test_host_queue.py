@@ -418,3 +418,21 @@ def test_a_reading_is_served_from_its_spaces_reader_peer_and_retired_when_over(s
     assert row(second)["message_id"] > row(first)["message_id"]
     assert row(second)["date"] >= int(clock())
     assert queue.waiting_chats() == []  # a reader chat never gets the hold text
+
+
+def test_a_photo_and_a_scan_are_marked_as_read_in_the_background(setup):
+    """Stage 2c-2: a photo is a picture whose text comes later; a PDF's scanned pages too."""
+    queue, _, conn, _ = setup
+    record(conn, "ph", chat_id=OWNER, message_id=1, kind="photo", mime="image/jpeg")
+    record(conn, "doc", chat_id=OWNER, message_id=2, name="d.pdf", mime="application/pdf")
+    conn.execute("INSERT INTO job(evidence_id, kind, state, pages, created_at) VALUES ('ph', 'image', 'done', 1, 0)")
+    conn.execute("INSERT INTO job(evidence_id, kind, state, pages, created_at) VALUES ('doc', 'pdf', 'done', 2, 0)")
+    conn.execute(
+        "INSERT INTO evidence_text(evidence_id, page, text, extractor, created_at) VALUES ('doc', 1, 'Policy', 'p', 0)"
+    )
+    conn.execute("INSERT INTO scan_page(evidence_id, page) VALUES ('doc', 2)")
+    queue.enqueue_attachment(OWNER, [(1, 1, "ph"), (2, 2, "doc")])
+    [update] = queue.serve(None, 100, everything)
+    text = update["message"]["text"]
+    assert "a picture: its text is being read in the background; look at it with klepa__view_page" in text
+    assert "1 scanned page(s) are being read in the background" in text

@@ -193,3 +193,18 @@ def test_a_draft_is_shown_on_sheets_and_every_page_it_showed_is_recorded(box):
     assert shown_pages == {f"p{n}" for n in (*range(1, 17), 19, 20)}
     with pytest.raises(ToolRefused, match="no such draft"):
         view(box, {"draft": 8}, call="c3", tool="view_draft")
+
+
+def test_a_photo_is_drawn_from_the_picture_kept_when_it_came(box, tmp_path):
+    """Stage 2c-2: a view composes the photo drawn once when it came (no HEIC decoded again)."""
+    issue(box.conn, OWNER, "run-1")
+    photo(box.conn, "p1", "owner")
+    sha = box.conn.execute("SELECT sha256 FROM evidence WHERE id='p1'").fetchone()[0]
+    kept = tmp_path / "pictures"
+    kept.mkdir()
+    (kept / f"{sha}-1.jpg").write_bytes(b"\xff\xd8\xff kept")
+    box.conn.execute("INSERT INTO thumb(sha256, page, path, created_at) VALUES (?, 1, ?, 0)", (sha, f"{sha}-1.jpg"))
+    readers = StubReaders()
+    box.pictures = Pictures(box.conn, readers, box.incoming_dir, tmp_path / "jobs", pictures_dir=kept)
+    view(box, {"id": "p1"})
+    assert readers.calls == [("image", f"{sha}-1.jpg", 1, 1568)]

@@ -112,10 +112,10 @@ def alerts_logged(conn):
 def test_processing_whose_sandbox_would_open_a_hidden_folder_reads_nothing_and_says_so(
     make_config, tmp_path, monkeypatch
 ):
-    """OCR's languages in the home folder itself would make all of it readable (finding I3)."""
+    """A program configured as the home folder itself would make all of it readable (finding I3)."""
     from pathlib import Path
 
-    cfg, conn, alerts, events = processing_setup(make_config, tmp_path, monkeypatch, tessdata=Path.home())
+    cfg, conn, alerts, events = processing_setup(make_config, tmp_path, monkeypatch, pdftoppm=Path.home())
     parts = app._processing(cfg, conn, alerts, events)
     assert parts is not None
     assert (parts.workers, parts.loops, parts.readable()) == ((), [], frozenset())

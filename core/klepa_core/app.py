@@ -321,6 +321,7 @@ def _processing(cfg: Config, conn: sqlite3.Connection, alerts: Alerts, events: E
     if cfg.processing is None:
         return None
     jobs = Jobs(conn, events)
+    jobs.pictures_dir = cfg.data_dir / "pictures"  # stage 2c-2: photos drawn once for the model
     jobs.recover()
     jobs.backfill()
     if not sandbox_available():
@@ -392,7 +393,12 @@ def _drafts(
     # Stage 2c-2: pages shown to the model as pictures, drawn in the readers' sandbox; with Core's own gateway, the
     # background reader, whose sessions Core resets after every reading
     host.tools.pictures = Pictures(
-        conn, processing.readers, cfg.incoming_dir, cfg.jobs_dir, album_quiet=cfg.album_quiet_seconds
+        conn,
+        processing.readers,
+        cfg.incoming_dir,
+        cfg.jobs_dir,
+        album_quiet=cfg.album_quiet_seconds,
+        pictures_dir=cfg.data_dir / "pictures",
     )
     if cfg.host is not None and cfg.host.gateway == "launchd":
         host.reader = Reader(

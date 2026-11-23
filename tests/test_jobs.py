@@ -501,3 +501,43 @@ def test_a_worker_hears_of_a_job_of_its_kind_whatever_the_other_worker_did_meanw
     wake_of(documents).clear()  # the documents worker woke first, looked, and found nothing of its kind
     assert documents.jobs.claim(documents.kinds) is None
     assert wake_of(recordings).is_set()
+
+
+# ---- stage 2c-2: what the model reads in the background ----
+def a_photo():
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (1200, 900), "#c8d6e5").save(buffer, "JPEG")
+    return buffer.getvalue()
+
+
+def test_a_photos_job_keeps_its_drawn_picture_and_no_text(setup, tmp_path):
+    """No OCR: the photo is drawn once for the model, kept beside Core's data by the photo's bytes, and the model
+    reads it in the background; its job is done with one page and no text."""
+    cfg, conn, _, worker = setup
+    worker.jobs.pictures_dir = tmp_path / "pictures"
+    store(cfg, conn, "ph", "photo", None, a_photo(), mime="image/jpeg")
+    conn.execute("UPDATE evidence SET sha256 = ? WHERE id = 'ph'", ("ab" * 32,))
+    worker.jobs.add("ph", "image")
+    assert asyncio.run(worker.run_once()) is True
+    job = conn.execute("SELECT state, pages FROM job WHERE evidence_id='ph'").fetchone()
+    assert (job["state"], job["pages"]) == ("done", 1)
+    assert texts(conn, "ph") == []
+    row = conn.execute("SELECT path FROM thumb WHERE sha256 = ? AND page = 1", ("ab" * 32,)).fetchone()
+    kept = tmp_path / "pictures" / row["path"]
+    assert kept.read_bytes()[:3] == b"\xff\xd8\xff"
+    assert stat.S_IMODE((tmp_path / "pictures").stat().st_mode) == 0o700
+
+
+def test_a_pdfs_scanned_pages_are_kept_for_the_model(setup):
+    cfg, conn, jobs, worker = setup
+    store(cfg, conn, "scan", "file", "scan.pdf", b"SCAN", mime="application/pdf")
+    jobs.add("scan", "pdf")
+    assert asyncio.run(worker.run_once()) is True
+    assert [tuple(r) for r in conn.execute("SELECT page FROM scan_page WHERE evidence_id='scan' ORDER BY page")] == [
+        (1,),
+        (2,),
+    ]

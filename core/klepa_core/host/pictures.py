@@ -60,6 +60,7 @@ class Pictures:
         album_quiet: float = 60.0,
         clock: Callable[[], float] = time.time,
         mono: Callable[[], float] = time.monotonic,
+        pictures_dir: Path | None = None,
     ) -> None:
         self.conn = conn
         self.readers = readers
@@ -69,6 +70,7 @@ class Pictures:
         self.clock = clock
         self.mono = mono
         self._slots: asyncio.Semaphore | None = None
+        self.pictures_dir = pictures_dir  # photos drawn once when they came (processing.jobs): views compose those
 
     # ---- who may see it ----------------------------------------------------------------------------------------------
     def _album_open(self, chat_id: int, media_group_id: str | None) -> bool:
@@ -155,10 +157,21 @@ class Pictures:
             slots.release()
             shutil.rmtree(folder, ignore_errors=True)
 
+    def _source(self, kind: str, record: sqlite3.Row) -> Path:
+        """A photo's picture drawn when it came, if Core has it: no HEIC decoded again; else the original."""
+        if kind == "image" and self.pictures_dir is not None:
+            row = self.conn.execute(
+                "SELECT path FROM thumb WHERE sha256 = ? AND page = 1", (record["sha256"],)
+            ).fetchone()
+            kept: Path | None = None if row is None else self.pictures_dir / str(row["path"])
+            if kept is not None and kept.is_file():
+                return kept
+        return self.incoming_dir / str(record["incoming_path"])
+
     async def page(self, kind: str, record: sqlite3.Row, page: int, size: str) -> bytes:
         side, cap = SIZES[size]
         deadline = self.mono() + VIEW_SECONDS
-        original = self.incoming_dir / record["incoming_path"]
+        original = self._source(kind, record)
 
         async def draw(folder: Path) -> bytes:
             return await self.readers.picture(kind, original, page, folder, side=side, max_bytes=cap, deadline=deadline)
@@ -175,7 +188,7 @@ class Pictures:
             for index, (kind, record) in enumerate(pages):
                 part = folder / f"part-{index}"
                 part.mkdir(mode=0o700)
-                original = self.incoming_dir / record["incoming_path"]
+                original = self._source(kind, record)
                 data = await self.readers.picture(
                     kind, original, 1, part, side=side, max_bytes=SIZES["large"][1] * 4, deadline=deadline
                 )

@@ -37,6 +37,7 @@ BACKOFF_SECONDS = (60.0, 300.0, 1800.0)  # after the provider said it is busy
 RESET_ALERT_AFTER = 5  # failed resets of one peer before the owner is told
 PERSON_PAUSE_SECONDS = 60.0  # after a person's turn met a busy provider
 TICK_SECONDS = 1.0
+BACKFILL_SECONDS = 5.0  # how often the reader looks for what to read
 BUSY = ("rate_limit", "provider", "timeout")
 
 
@@ -79,6 +80,7 @@ class Reader:
         self.clock = clock
         self.current: _Current | None = None
         self.paused_until = 0.0
+        self._next_backfill = 0.0
         self.wake = asyncio.Event()
 
     # ---- the queue ---------------------------------------------------------------------------------------------------
@@ -92,6 +94,28 @@ class Reader:
             (evidence_id, page, row["space_id"], self.clock()),
         )
         self.wake.set()
+
+    def backfill(self) -> int:
+        """What to read, from what Core stored: a photo whose job drew its picture and has no text yet, and each
+        scanned page of a PDF; also what came while no reader ran. Returns how many readings it queued."""
+        readable = "('stored', 'processing', 'processed', 'failed')"
+        rows = self.conn.execute(
+            "SELECT j.evidence_id, 1 AS page, e.space_id FROM job j JOIN evidence e ON e.id = j.evidence_id "
+            f"WHERE j.kind = 'image' AND j.state = 'done' AND e.state IN {readable} "
+            "AND NOT EXISTS (SELECT 1 FROM evidence_text t WHERE t.evidence_id = j.evidence_id AND t.page = 1) "
+            "AND NOT EXISTS (SELECT 1 FROM reading r WHERE r.evidence_id = j.evidence_id AND r.page = 1) "
+            "UNION ALL "
+            "SELECT s.evidence_id, s.page, e.space_id FROM scan_page s JOIN evidence e ON e.id = s.evidence_id "
+            f"WHERE e.state IN {readable} "
+            "AND NOT EXISTS (SELECT 1 FROM reading r WHERE r.evidence_id = s.evidence_id AND r.page = s.page)"
+        ).fetchall()
+        now = self.clock()
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO reading(evidence_id, page, space_id, state, queued_at) "
+            "VALUES (?, ?, ?, 'queued', ?)",
+            [(row["evidence_id"], int(row["page"]), row["space_id"], now) for row in rows],
+        )
+        return len(rows)
 
     def recover(self) -> None:
         """At start: a reading a stopped Core left running is queued again, its message retired; a failed one gets
@@ -126,6 +150,9 @@ class Reader:
 
     # ---- one step ----------------------------------------------------------------------------------------------------
     async def step(self) -> None:
+        if self.clock() >= self._next_backfill:
+            self.backfill()
+            self._next_backfill = self.clock() + BACKFILL_SECONDS
         if self.current is not None:
             self._settle()
         if self.current is not None:

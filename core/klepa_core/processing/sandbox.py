@@ -1,6 +1,6 @@
 """The sandbox every attachment reader runs in (spec 8: sandbox-exec, no network).
 
-A reader is a program that parses a file someone sent: ffmpeg, whisper, pdftotext, tesseract, ocrmypdf, textutil.
+A reader is a program that parses a file someone sent: ffmpeg, whisper, pdftotext, pdftoppm, textutil, Core's renderer.
 It runs with no network, writes only in its job's folder, signals no other process, and runs no program but the
 readers. It reads nothing in the hidden folders (the home folder, Core's data and documents folders, other people's
 homes, the shared and temporary folders, the logs) but its job's folder and what the readers need, and of the folders
@@ -293,8 +293,8 @@ async def _kill(process: asyncio.subprocess.Process) -> None:
 def sandbox_for(processing: ProcessingConfig, private: Sequence[Path]) -> Sandbox:
     """The sandbox of an installation. Hidden: the home folder, the shared folders, the user's own temporary folders
     and `private` (Core's data and documents folders, wherever they are), which are hidden again after the readable
-    ones. Readable there: the programs and the speech model (the files, not their folders), the OCR languages, and the
-    environment and interpreter that run ocrmypdf (finding 5: the whole folder of uv's interpreters, for its
+    ones. Readable there: the programs and the speech model (the files, not their folders), and the
+    environment and interpreter that run Core's renderer (finding 5: the whole folder of uv's interpreters, for its
     version-less links). Only Homebrew's programs, the configured ones, Apple's textutil, and that interpreter
     may run. Refuses (ValueError) a readable folder that is or holds a hidden one, which would open it, and anything
     readers need kept in `private`, which is hidden again after it: every job would fail."""
@@ -304,13 +304,11 @@ def sandbox_for(processing: ProcessingConfig, private: Sequence[Path]) -> Sandbo
         processing.ffprobe,
         processing.pdftotext,
         processing.pdftoppm,
-        processing.tesseract,
-        processing.ocrmypdf,
         processing.textutil,
     )
     interpreters = Path(os.path.realpath(sys.base_prefix)).parent
     core = Path(__file__).resolve().parents[2]  # the folder that holds klepa_core: Core's own reader of spreadsheets
-    readable = [processing.tessdata, Path(sys.prefix), interpreters, core, *programs]
+    readable = [Path(sys.prefix), interpreters, core, *programs]  # Core's interpreter runs its renderer and sheets
     if processing.whisper_model is not None:
         readable.append(processing.whisper_model)
     hidden = (Path.home(), *SHARED_FOLDERS, *private, user_folder())

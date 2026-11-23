@@ -390,3 +390,24 @@ def test_a_saved_page_refreshes_the_pdf_made_of_it_and_only_the_latest_is_found(
     talk = conversation(box)
     found = box.call("search", signed("search", {"query": "quarterly"}, talk, "s1"))
     assert sorted(r["id"] for r in found["results"]) == ["new", "p2"]
+
+
+def test_the_reader_finds_what_to_read_photos_without_text_and_scanned_pages(worker):
+    """Readings come from what Core stored: a photo whose job drew its picture and has no text, and each scanned page
+    of a PDF; nothing already read or saved, nothing twice; also what came before the reader ran."""
+    reader, conn, _clock, _, _, _, _ = worker
+    photo(conn, "p1", "owner")
+    photo(conn, "p2", "owner")
+    store(conn, "scan", "owner", "s.pdf")
+    for record, kind in (("p1", "image"), ("p2", "image"), ("scan", "pdf")):
+        conn.execute(
+            "INSERT INTO job(evidence_id, kind, state, pages, created_at) VALUES (?, ?, 'done', 1, 0)", (record, kind)
+        )
+    conn.execute(
+        "INSERT INTO evidence_text(evidence_id, page, text, extractor, created_at) VALUES ('p2', 1, 'x', 'm', 0)"
+    )
+    conn.execute("INSERT INTO scan_page(evidence_id, page) VALUES ('scan', 2), ('scan', 3)")
+    reader.backfill()
+    reader.backfill()
+    queued = sorted((r["evidence_id"], r["page"]) for r in conn.execute("SELECT * FROM reading"))
+    assert queued == [("p1", 1), ("scan", 2), ("scan", 3)]

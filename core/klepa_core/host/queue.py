@@ -275,7 +275,10 @@ class HostQueue:
         items = []
         for row in self.conn.execute(
             "SELECT e.id, e.kind, e.original_name, e.mime, j.kind AS reader, j.state, j.note, "
-            "(SELECT MAX(page) FROM evidence_text t WHERE t.evidence_id = e.id) AS last_page "
+            "(SELECT MAX(page) FROM evidence_text t WHERE t.evidence_id = e.id) AS last_page, "
+            "(SELECT COUNT(*) FROM scan_page s WHERE s.evidence_id = e.id AND NOT EXISTS "
+            "(SELECT 1 FROM evidence_text t WHERE t.evidence_id = s.evidence_id AND t.page = s.page "
+            "AND t.saved_by_reading IS NOT NULL)) AS scans "
             "FROM host_message_item i JOIN evidence e ON e.id = i.evidence_id LEFT JOIN job j ON j.evidence_id = e.id "
             "WHERE i.host_message_id=? ORDER BY i.position",
             (host_message_id,),
@@ -305,6 +308,7 @@ class HostQueue:
                     row["note"],
                     tuple(texts),
                     int(row["last_page"] or 0),
+                    int(row["scans"]) if reader == "pdf" else int(reader == "image" and not any(texts)),
                 )
             )
         return items

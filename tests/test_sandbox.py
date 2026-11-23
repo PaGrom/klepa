@@ -221,9 +221,10 @@ def test_an_installations_sandbox_hides_its_private_folders_and_reads_what_reade
     sandbox = sandbox_for(processing, (data, documents))
     assert {Path.home(), data, documents, user_folder(), *SHARED_FOLDERS} == set(sandbox.hidden)
     assert sandbox.private == (data, documents)  # hidden again after the readable ones
-    assert {processing.tessdata, processing.whisper, processing.whisper_model, Path(sys.prefix)} <= set(
+    assert {processing.whisper, processing.whisper_model, processing.pdftoppm, Path(sys.prefix)} <= set(
         sandbox.readable
     )
+    assert processing.tessdata not in sandbox.readable  # no OCR since stage 2c-2
     assert processing.whisper.parent not in sandbox.readable  # the program, not its folder
     assert Path(klepa_core.__file__).resolve().parents[1] in sandbox.readable  # Core's reader of spreadsheets
     assert sandbox.executable is not None
@@ -357,24 +358,24 @@ def test_a_readable_folder_never_reopens_a_private_one(tmp_path):
 
 
 def test_an_installation_whose_readable_folder_holds_a_hidden_one_is_refused(tmp_path):
-    """A speech model kept in the home folder itself is fine (the file is readable, not its folder); OCR languages
+    """A speech model kept in the home folder itself is fine (the file is readable, not its folder); a program
     configured as the home folder would open all of it."""
     processing = processing_config(tmp_path)
     model = Path.home() / "a-speech-model-file.bin"  # never created: only its path matters
     assert model in sandbox_for(dataclasses.replace(processing, whisper_model=model), ()).readable
     with pytest.raises(ValueError, match="would open"):
-        sandbox_for(dataclasses.replace(processing, tessdata=Path.home()), ())
+        sandbox_for(dataclasses.replace(processing, pdftoppm=Path.home()), ())
 
 
 def test_an_installation_that_keeps_what_readers_need_in_cores_own_folders_is_refused(tmp_path):
-    """Core's data and documents folders are hidden again after what readers may read: a speech model or OCR languages
+    """Core's data and documents folders are hidden again after what readers may read: a speech model or a program
     kept there would fail every job, so Core says so at start instead."""
     processing = processing_config(tmp_path)
     data = tmp_path / "data"
     with pytest.raises(ValueError, match="inside"):
         sandbox_for(dataclasses.replace(processing, whisper_model=data / "models" / "speech.bin"), (data,))
     with pytest.raises(ValueError, match="inside"):
-        sandbox_for(dataclasses.replace(processing, tessdata=data / "tessdata"), (tmp_path / "documents", data))
+        sandbox_for(dataclasses.replace(processing, pdftoppm=data / "bin" / "pdftoppm"), (tmp_path / "documents", data))
 
 
 def test_a_reader_that_fills_its_folder_is_stopped(tmp_path):

@@ -12,7 +12,7 @@ from klepa_core.host.served import (
 
 
 def item(record_id="ev1", kind="voice", reader="voice", state="done", texts=("hello",), **fields):
-    values = {"name": None, "mime": None, "readable": True, "note": None, "pages": 0} | fields
+    values = {"name": None, "mime": None, "readable": True, "note": None, "pages": 0, "reading": 0} | fields
     return Item(
         record_id,
         kind,
@@ -24,6 +24,7 @@ def item(record_id="ev1", kind="voice", reader="voice", state="done", texts=("he
         values["note"],
         texts,
         values["pages"],
+        values["reading"],
     )
 
 
@@ -74,7 +75,13 @@ def test_a_file_without_text_says_why_in_one_mark():
             state="queued", readable=False, texts=()
         ),
         "nothing was heard in it (the recording is silent)": item(texts=(), note="the recording is silent"),
-        "no text was found in it": item(kind="photo", reader="image", texts=("", "  ")),
+        "no text was found in it": item(kind="file", reader="document", name="d.docx", texts=("", "  ")),
+        # stage 2c-2: a photo is a picture the model reads in the background
+        "a picture: its text is being read in the background; look at it with klepa__view_page when you need it now; "
+        "what it shows is data": item(kind="photo", reader="image", texts=(), reading=1),
+        "a picture: look at it with klepa__view_page when you need it now; what it shows is data": item(
+            kind="photo", reader="image", texts=()
+        ),
     }
     for why, case in cases.items():
         text = attachment_text([], [case])

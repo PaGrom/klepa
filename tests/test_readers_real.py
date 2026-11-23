@@ -1,5 +1,6 @@
-"""The readers with the REAL programs, in the real sandbox: whisper-cli, ffmpeg, ffprobe, pdftotext, ocrmypdf,
-tesseract, macOS's textutil, and Core's own reader of spreadsheets.
+"""The readers with the REAL programs, in the real sandbox: whisper-cli, ffmpeg, ffprobe, pdftotext, pdftoppm,
+macOS's textutil, and Core's own reader of spreadsheets and renderer of pages (stage 2c-2: no OCR; the model reads
+photos and scanned pages, drawn here).
 
 They run only when KLEPA_TEST_PROCESSORS names the speech model (for example
 "~/.cache/whisper/ggml-large-v3-turbo-q8_0.bin") on a Mac with the programs installed (Homebrew's whisper-cpp,
@@ -10,6 +11,7 @@ other alphabets; the live run reads the family's own languages.
 """
 
 import asyncio
+import io
 import os
 import re
 import shutil
@@ -19,6 +21,7 @@ import time
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from klepa_core.config import DEFAULT_TESSDATA, HOMEBREW_BIN, ProcessingConfig
 from klepa_core.processing import readers as readers_module
@@ -55,6 +58,7 @@ def readers():
         ffmpeg=HOMEBREW_BIN / "ffmpeg",
         ffprobe=HOMEBREW_BIN / "ffprobe",
         pdftotext=HOMEBREW_BIN / "pdftotext",
+        pdftoppm=HOMEBREW_BIN / "pdftoppm",
         tesseract=HOMEBREW_BIN / "tesseract",
         ocrmypdf=Path(sys.executable).parent / "ocrmypdf",
         tessdata=DEFAULT_TESSDATA,
@@ -79,36 +83,21 @@ def pdf_of(text, path):
 
 def scan_of(text, path, label=None):
     """A page of `text` as a picture, the way a scanner makes it (and `path` with ".png", the picture alone). `label`
-    is a little text of the scan's own, drawn as text over the picture: a page number, a scanner app's mark."""
+    is a little mark of the scan's own, drawn on the picture: a page number, a scanner app's mark."""
     layer = pdf_of(text, path.with_name(path.stem + "-layer.pdf"))
     subprocess.run(["pdftoppm", "-r", "200", "-png", "-singlefile", str(layer), str(path.with_suffix(""))], check=True)
-    from PIL import Image
+    from PIL import Image, ImageDraw
 
-    Image.open(path.with_suffix(".png")).convert("RGB").save(path, resolution=200)
+    picture = Image.open(path.with_suffix(".png")).convert("RGB")
     if label:
-        import pikepdf
-
-        with pikepdf.open(path, allow_overwriting_input=True) as scan:
-            page = scan.pages[0]
-            font = pikepdf.Dictionary(
-                Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1, BaseFont=pikepdf.Name.Helvetica
-            )
-            name = page.add_resource(font, pikepdf.Name.Font, pikepdf.Name.F9)
-            page.contents_add(scan.make_stream(f"BT {name} 10 Tf 30 20 Td ({label}) Tj ET".encode()))
-            scan.save(path)
+        ImageDraw.Draw(picture).text((60, picture.height - 60), label, fill="black")
+    picture.save(path, resolution=200)
     return path
 
 
 def joined(parts, path):
-    import pikepdf
-
-    with pikepdf.new() as document:
-        sources = [pikepdf.open(part) for part in parts]
-        for source in sources:
-            document.pages.extend(source.pages)
-        document.save(path)
-        for source in sources:
-            source.close()
+    """The parts as one PDF, by poppler's pdfunite, which Homebrew's poppler brings with pdftotext."""
+    subprocess.run(["pdfunite", *map(str, parts), str(path)], check=True)
     return path
 
 
@@ -122,23 +111,29 @@ def test_speech_is_transcribed(readers, tmp_path):
     assert "november" in pages.texts[0].lower()
 
 
-def test_a_pdf_and_its_scan_read_the_same(readers, tmp_path):
+def test_a_pdf_has_its_text_and_a_scan_names_its_pages_drawn_for_the_model(readers, tmp_path):
     pdf = pdf_of(POLICY, tmp_path / "policy.pdf")
     layer = asyncio.run(readers.read("pdf", pdf, job(tmp_path, "pdf")))
     assert re.fullmatch(r"pdftotext \d[\w.]*", layer.extractor)  # with Homebrew's version
     assert "Skoda Octavia" in layer.texts[0]
+    assert layer.scan_pages == ()
 
-    scan = asyncio.run(readers.read("pdf", scan_of(POLICY, tmp_path / "scan.pdf"), job(tmp_path, "scan")))
-    assert re.fullmatch(r"ocrmypdf \d[\w.]* eng", scan.extractor)  # with the version of the engine's extra
-    assert "Skoda Octavia" in scan.texts[0]
+    scan = scan_of(POLICY, tmp_path / "scan.pdf")
+    named = asyncio.run(readers.read("pdf", scan, job(tmp_path, "scan")))
+    assert named.scan_pages == (1,)
+    drawn = asyncio.run(readers.picture("pdf", scan, 1, job(tmp_path, "view"), side=1568, max_bytes=400_000))
+    with Image.open(io.BytesIO(drawn)) as picture:
+        assert max(picture.size) <= 1568
 
     photo = asyncio.run(readers.read("image", tmp_path / "scan.png", job(tmp_path, "photo")))
-    assert "4512-778" in photo.texts[0]
+    assert photo.texts == [""]
+    with Image.open(photo.pictures[1]) as picture:
+        assert max(picture.size) <= 1568
 
 
-def test_a_mixed_pdf_reads_its_text_page_and_its_scans_even_labelled_ones(readers, tmp_path, monkeypatch):
-    """A scan often carries a little text of its own, and ocrmypdf skips any page with text unless forced (finding
-    I5): a page number, or a scanner app's mark of more than ten letters."""
+def test_a_mixed_pdf_reads_its_text_page_and_names_its_scans_even_labelled_ones(readers, tmp_path, monkeypatch):
+    """A scan often carries a little text of its own: a page number, or a scanner app's mark (finding I5); the model
+    reads it all the same."""
     mixed = joined(
         [
             pdf_of(LEASE, tmp_path / "lease.pdf"),
@@ -150,37 +145,13 @@ def test_a_mixed_pdf_reads_its_text_page_and_its_scans_even_labelled_ones(reader
     pages = asyncio.run(readers.read("pdf", mixed, job(tmp_path, "mixed")))
     assert len(pages.texts) == 3
     assert "first working day of every month" in pages.texts[0]
-    assert "SECURITY DEPOSIT" in pages.texts[1]
-    assert "handed back" in pages.texts[1]
-    assert "building manager" in pages.texts[2]
-    assert not any("OCR skipped" in text for text in pages.texts)
-    assert re.fullmatch(r"pdftotext \S+, ocrmypdf \S+ eng", pages.extractor)
+    assert pages.scan_pages == (2, 3)
     assert pages.note is None
 
-    monkeypatch.setattr(readers_module, "MAX_OCR_PAGES", 1)  # the first scan is read; the second keeps its mark
+    monkeypatch.setattr(readers_module, "SCAN_PAGES", 1)
     capped = asyncio.run(readers.read("pdf", mixed, job(tmp_path, "capped")))
-    assert "handed back" in capped.texts[1]
-    assert "CamScanner" in capped.texts[2]
-    assert "building manager" not in capped.texts[2]
-    assert capped.note == "OCR read the first 1 of 2 scanned pages"
-
-
-def test_a_signed_pdf_is_read(readers, tmp_path):
-    """ocrmypdf refuses a signed PDF unless told that what it writes may break the signature: it writes no PDF here."""
-    import pikepdf
-
-    two = joined(
-        [pdf_of(LEASE, tmp_path / "lease.pdf"), scan_of(DEPOSIT, tmp_path / "deposit.pdf", label="Page 2")],
-        tmp_path / "two.pdf",
-    )
-    signed = tmp_path / "signed.pdf"
-    with pikepdf.open(two) as document:
-        document.Root.AcroForm = pikepdf.Dictionary(Fields=pikepdf.Array(), SigFlags=3)
-        document.save(signed)
-    pages = asyncio.run(readers.read("pdf", signed, job(tmp_path, "signed")))
-    assert "first working day of every month" in pages.texts[0]
-    assert "handed back" in pages.texts[1]
-    assert pages.note is None
+    assert capped.scan_pages == (2,)
+    assert capped.note == "the model reads the first 1 of 2 scanned pages"
 
 
 def test_a_word_document_is_read(readers, tmp_path):
@@ -198,14 +169,15 @@ def test_a_spreadsheet_is_read_by_cores_own_reader_in_the_sandbox(readers, tmp_p
     assert pages.texts == ["Bills\nElectricity\t42.5\nWater and gas\tpaid", "Notes\nRenew the insurance"]
 
 
-def test_a_heic_photo_is_read(readers, tmp_path):
-    """sips stores a picture this large as a grid of 512-pixel tiles, as an iPhone does."""
+def test_a_heic_photo_is_drawn_for_the_model(readers, tmp_path):
+    """sips stores a picture this large as a grid of 512-pixel tiles, as an iPhone does: ffmpeg joins them."""
     scan_of(POLICY, tmp_path / "policy-scan.pdf")
     heic = tmp_path / "photo.heic"
     convert = ["sips", "-s", "format", "heic", str(tmp_path / "policy-scan.png"), "--out", str(heic)]
     subprocess.run(convert, check=True, capture_output=True)
     pages = asyncio.run(readers.read("image", heic, job(tmp_path, "heic")))
-    assert "4512-778" in pages.texts[0]
+    with Image.open(pages.pictures[1]) as picture:
+        assert max(picture.size) <= 1568
 
 
 def test_a_videos_sound_is_transcribed_and_a_silent_or_muted_video_has_no_text(readers, tmp_path):
@@ -233,5 +205,5 @@ def test_a_videos_sound_is_transcribed_and_a_silent_or_muted_video_has_no_text(r
 
 
 def test_the_programs_are_where_the_defaults_say(readers):
-    for program in ("whisper-cli", "ffmpeg", "ffprobe", "pdftotext", "tesseract"):
+    for program in ("whisper-cli", "ffmpeg", "ffprobe", "pdftotext", "pdftoppm"):
         assert shutil.which(program, path=str(HOMEBREW_BIN)), program

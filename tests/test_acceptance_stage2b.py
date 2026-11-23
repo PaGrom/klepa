@@ -41,15 +41,22 @@ async def test_attachments_are_read_in_the_sandbox_and_their_texts_kept(fake_tg,
     cfg = make_config(api_root=fake_tg.url, text=BASE_CONFIG + section)
     fake_tg.add_voice(OWNER, b"renew the car insurance")
     fake_tg.add_document(OWNER, "policy.pdf", b"%PDF policy number 4512 PAGEBREAK valid until November")
-    fake_tg.add_photo(MEMBER, b"receipt for the tyres")
+    import io
+
+    from PIL import Image
+
+    photo = io.BytesIO()
+    Image.new("RGB", (800, 600), "#c8d6e5").save(photo, "JPEG")
+    fake_tg.add_photo(MEMBER, photo.getvalue())
     await run_until(cfg, lambda: done_jobs(cfg) == 3)
-    assert page_texts(cfg) == [
+    assert page_texts(cfg) == [  # a photo's text is the model's to read, in the background (stage 2c-2: no OCR)
         ("voice", 1, "transcript: renew the car insurance"),
         ("file", 1, "%PDF policy number 4512"),
         ("file", 2, "valid until November"),
-        ("photo", 1, "photo text (eng): receipt for the tyres"),
     ]
     assert {row["state"] for row in evidence_rows(cfg)} == {"processed"}
+    [kept] = query(cfg, "SELECT path FROM thumb")  # the photo drawn once, for the model's views
+    assert (cfg.data_dir / "pictures" / kept["path"]).read_bytes()[:3] == b"\xff\xd8\xff"
     assert not list(cfg.jobs_dir.iterdir())  # no copy of an original is left behind
 
 

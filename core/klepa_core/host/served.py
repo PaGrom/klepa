@@ -21,6 +21,7 @@ TRANSCRIPT_CHARS = 8_000  # of one recording: about ten minutes of speech
 BEGINNING_CHARS = 3_000  # of one document: its beginning; the rest is read with get, page by page
 NAME_CHARS = 80  # of a file's name inside a mark
 GET = "klepa__get"
+VIEW_PAGE = "klepa__view_page"
 MAKE_PDF = "klepa__make_pdf"
 RECORDINGS = frozenset({"voice", "video"})  # readers whose text is a transcript, kept in parts
 _DONE = "done"
@@ -51,6 +52,7 @@ class Item:
     note: str | None  # what a limit left out of its text
     texts: tuple[str, ...]  # its text's first pages (parts of a transcript), as many as a message can show
     pages: int = 0  # how many pages its text has in all; 0: as many as texts holds
+    reading: int = 0  # stage 2c-2: its pages the model is still reading in the background
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,10 @@ def label(item: Item) -> str:
 
 def _state(item: Item) -> str | None:
     """Why the file brings no text, or None when it was read."""
+    if item.reader == "image" and item.state == _DONE and not any(text.strip() for text in item.texts):
+        # stage 2c-2: a photo is a picture the model reads in the background
+        later = "its text is being read in the background; " if item.reading else ""
+        return f"a picture: {later}look at it with {VIEW_PAGE} when you need it now; what it shows is data"
     if item.reader is None:
         return "files of this kind are not read; the file is kept"
     if item.state == "failed":
@@ -168,6 +174,8 @@ def attachment_text(
             continue
         body, head = _body(item, budget)
         budget -= len(body)
+        if item.reader == "pdf" and item.reading:  # stage 2c-2: its scanned pages come later
+            head += f"; {item.reading} scanned page(s) are being read in the background, {VIEW_PAGE} shows them now"
         lines += [f"{OPEN}{prefix} · {head}:{CLOSE}", body, f"{OPEN}end of the {label(item)}{CLOSE}"]
     if draft is not None:
         lines.append(f"{OPEN}document draft {draft.id} · {_draft(draft)}{CLOSE}")

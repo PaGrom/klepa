@@ -16,8 +16,9 @@ classifiers = [
 dependencies = ["aiohttp>=3.10"]
 
 [project.optional-dependencies]
-# Attachments read in a sandbox (stage 2b): ocrmypdf reads scanned PDFs. The other readers come from Homebrew.
-processing = ["ocrmypdf>=17.13"]
+# Attachments read in a sandbox (stage 2b): Pillow draws photos and pages for the model, which reads them (stage 2c-2,
+# no OCR), and the PDFs of drafts. The other readers come from Homebrew.
+processing = ["pillow>=13"]
 
 [project.urls]
 Homepage = "https://github.com/PaGrom/klepa"

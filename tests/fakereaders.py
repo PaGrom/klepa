@@ -49,6 +49,9 @@ args = sys.argv[1:]
 source = args[-1]
 inside(source)
 data = open(source, "rb").read().decode("utf-8", "replace")
+if "SLOW" in data:  # a photo that hangs its reader (stage 2c-2: measured before it is drawn)
+    import time
+    time.sleep(30)
 if args[args.index("-select_streams") + 1] == "a":  # does it have sound?
     print("" if "MUTE" in data else "1")
 else:

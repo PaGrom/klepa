@@ -500,3 +500,24 @@ def test_make_pdf_takes_not_a_document_as_a_boolean_and_passes_it_on(box):
 def test_make_pdf_tells_the_model_that_no_document_gets_no_pdf(box):
     [spec] = [tool for tool in box.specs() if tool["name"] == "make_pdf"]
     assert "If they are no document, pass not_a_document instead, and no PDF is made" in spec["description"]
+
+
+def test_get_says_a_photos_text_is_being_read_or_that_it_is_a_picture(box):
+    """Stage 2c-2: a photo's text comes from a background reading; until then get says so, and a picture the model
+    could not read is a picture to look at."""
+    issue(box.conn, OWNER, "run-1")
+    store(box.conn, "ph", "owner", "p.jpg", mime="image/jpeg")
+    store(box.conn, "doc", "owner", "d.pdf")
+    box.conn.execute(
+        "INSERT INTO job(evidence_id, kind, state, pages, created_at) VALUES ('ph', 'image', 'done', 1, 0)"
+    )
+    read_as(box.conn, "doc", "Policy", "")
+    box.conn.execute("INSERT INTO scan_page(evidence_id, page) VALUES ('doc', 2)")
+    assert box.call("get", signed("get", {"id": "ph"}, call_id="c1"))["text_status"] == "being_read"
+    box.conn.execute(
+        "INSERT INTO reading(evidence_id, page, space_id, state, queued_at) VALUES ('ph', 1, 'shared', 'failed', 0)"
+    )
+    assert box.call("get", signed("get", {"id": "ph"}, call_id="c2"))["text_status"] == "picture"
+    doc = box.call("get", signed("get", {"id": "doc"}, call_id="c3"))
+    assert doc["text_status"] == "read"
+    assert doc["being_read"] == [2]

@@ -127,6 +127,7 @@ class Jobs:
         self.events = events
         self.clock = clock
         self._wakes: list[asyncio.Event] = []  # each worker's own: one that looks and finds nothing clears only its own
+        self.pictures_dir: Path | None = None  # stage 2c-2: where a photo drawn for the model is kept, by its bytes
 
     def add(self, evidence_id: str, kind: str) -> bool:
         """Queue an original's job; False when it has one already."""
@@ -196,8 +197,31 @@ class Jobs:
                 [(job.evidence_id, n, text, pages.extractor, now) for n, text in enumerate(pages.texts, 1) if text],
             )
             index_pages(self.conn, job.evidence_id, pages.texts)
+            # Stage 2c-2: what the model reads in the background (host/reader.py queues it from here)
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO scan_page(evidence_id, page) VALUES (?, ?)",
+                [(job.evidence_id, page) for page in pages.scan_pages],
+            )
+            self._keep_pictures(job.evidence_id, pages, now)
             self._mark(job.evidence_id, "processed")
         return True
+
+    def _keep_pictures(self, evidence_id: str, pages: Pages, now: float) -> None:
+        """A photo drawn for the model, moved out of its job's folder before the folder goes, under its original's
+        bytes: views and sheets compose it instead of decoding the photo again."""
+        if not pages.pictures or self.pictures_dir is None:
+            return
+        row = self.conn.execute("SELECT sha256 FROM evidence WHERE id = ?", (evidence_id,)).fetchone()
+        if row is None:
+            return
+        self.pictures_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for page, drawn in pages.pictures.items():
+            name = f"{row['sha256']}-{page}.jpg"
+            os.replace(drawn, self.pictures_dir / name)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO thumb(sha256, page, path, created_at) VALUES (?, ?, ?, ?)",
+                (row["sha256"], page, name, now),
+            )
 
     def failed(self, job: Job, error: str) -> bool:
         """False when the job was cancelled meanwhile."""
