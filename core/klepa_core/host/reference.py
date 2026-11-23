@@ -92,6 +92,8 @@ FIXED: dict[str, Any] = {
     # Stage 2c-2: what a request carries of a chat's history. OpenClaw keeps up to ceil(1.5 * 3) earlier turns and the
     # current one: at 10 pictures and 3 MB a turn, a request stays under the API's 100 images and 32 MB (R4-C2).
     "channels.telegram.dmHistoryLimit": 3,
+    # the largest side of a picture the model is shown: Core's large view; OpenClaw's own default would cut it to 1200
+    "agents.defaults.imageMaxDimensionPx": 1568,
     "channels.telegram.groupPolicy": "disabled",
     "channels.telegram.streaming.mode": "off",
     "channels.telegram.linkPreview": False,

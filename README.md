@@ -151,19 +151,16 @@ Core never starts a gateway on a state the pinned OpenClaw has not migrated; the
 
 ## Reading attachments
 
-Core reads voice messages, videos, PDFs, scans, photos, Word documents and spreadsheets in a sandbox, so that search
-finds a file by what it says ([architecture](docs/architecture.md#processing)). It needs Core running as a service, on
-macOS.
+Core reads voice messages, videos, PDFs, Word documents and spreadsheets in a sandbox, and the model reads photos and
+scanned pages in the background, so that search finds a file by what it says
+([architecture](docs/architecture.md#processing)). It needs Core running as a service, on macOS; photos and scans need
+the agent host too. There is no OCR.
 
-1. **The programs:** `brew install whisper-cpp ffmpeg poppler tesseract ghostscript`, and ocrmypdf in Core's
-   environment: `uv pip install --python "$KLEPA_HOME/venv/bin/python" '.[processing]'`. macOS's own `textutil` reads
-   Word documents.
+1. **The programs:** `brew install whisper-cpp ffmpeg poppler`, and Pillow in Core's environment, for Core's renderer
+   of pages: `uv pip install --python "$KLEPA_HOME/venv/bin/python" '.[processing]'`. macOS's own `textutil` reads Word
+   documents.
 2. **A speech model** for whisper.cpp, for example `ggml-large-v3-turbo-q8_0.bin` from the whisper.cpp project.
-3. **The OCR languages** in `~/Library/Application Support/Klepa/tessdata` (0700): `<language>.traineddata` from
-   [tessdata_best](https://github.com/tesseract-ocr/tessdata_best) at a pinned commit, checked by SHA-256, with links to
-   Homebrew's `configs`, `tessconfigs`, `pdf.ttf`, `eng.traineddata` and `osd.traineddata` from
-   `$(brew --prefix tesseract)/share/tessdata`.
-4. **Configure it:** add a `[processing]` section with `whisper_model` ([configuration](docs/configuration.md#processing))
+3. **Configure it:** add a `[processing]` section with `whisper_model` ([configuration](docs/configuration.md#processing))
    and restart Core. If something is missing, the service bot says what; the files wait and are read after a restart
    that has it.
 
@@ -193,7 +190,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and the rules.
 | 1a | Core receives files from Telegram and stores them durably | done |
 | 1b | Service bot, signed daily snapshots, Core as a launchd service | done |
 | 1c | OpenClaw behind the gatekeeper: its own install, reference config, adapter plugin, egress proxy, supervision | done |
-| 2 | Processing: the model answers through Core's signed tools (2a, done); transcription and OCR in a sandbox, searchable texts, attachments to the host as text, progress and cancel (2b, done); photo drafts to PDF (2c-1, done); page viewer (2c-2) | in progress |
+| 2 | Processing: the model answers through Core's signed tools (2a, done); transcription in a sandbox, searchable texts, attachments to the host as text, progress and cancel (2b, done); photo drafts to PDF (2c-1, done); pictures to the model, its background reading of photos and scans, titles (2c-2) | in progress |
 | 3 | Knowledge: facts with verified quotes, `make_private`, disclosure journal | planned |
 | 4 | Reminders and self-checks, fenced outbound delivery | planned |
 | 5 | Workflows the family teaches by example | planned |

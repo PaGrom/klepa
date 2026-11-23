@@ -62,6 +62,7 @@ def test_the_adapter_reports_every_value_but_the_unreported():
         ("tools.toolSearch", False),  # OpenClaw 2026.10 hides tools behind search/describe/dispatch unless told not to
         ("tools.codeMode", False),  # and turns a JavaScript surface on by itself for some models
         ("channels.telegram.dmHistoryLimit", 3),
+        ("agents.defaults.imageMaxDimensionPx", 1568),
         (
             "tools.alsoAllow",
             [

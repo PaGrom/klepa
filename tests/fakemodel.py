@@ -56,6 +56,26 @@ class Request:
         return body.split("\nRuntime:", 1)[0].strip()
 
     @property
+    def images(self) -> list[tuple[int, int, int]]:
+        """Every picture the request carries, as (bytes, width, height): OpenClaw puts a tool's image in a user message
+        of its own after the tool's result (stage 2c-2)."""
+        import base64
+        import io
+
+        from PIL import Image
+
+        found = []
+        for message in self.messages:
+            content = message.get("content")
+            for part in content if isinstance(content, list) else []:
+                url = (part.get("image_url") or {}).get("url", "") if isinstance(part, dict) else ""
+                if url.startswith("data:"):
+                    data = base64.b64decode(url.split(",", 1)[1])
+                    with Image.open(io.BytesIO(data)) as picture:
+                        found.append((len(data), picture.width, picture.height))
+        return found
+
+    @property
     def tool_results(self) -> list[str]:
         """What tools answered since the person's last message, oldest first."""
         return [text_of(m.get("content")) for m in self.messages[self.human_index + 1 :] if m.get("role") == "tool"]
@@ -107,7 +127,7 @@ def provider_table(url: str) -> dict[str, Any]:
                     "id": "scripted",
                     "name": "Scripted",
                     "reasoning": False,
-                    "input": ["text"],
+                    "input": ["text", "image"],  # stage 2c-2: it sees pictures, as Opus 5.5 does
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                     "contextWindow": 32000,
                     "maxTokens": 1000,
@@ -130,7 +150,7 @@ class FakeModel:
         self._runner: web.AppRunner | None = None
 
     async def start(self) -> None:
-        app = web.Application(client_max_size=8 * 1024 * 1024)
+        app = web.Application(client_max_size=64 * 1024 * 1024)  # a request may carry pictures
         app.router.add_get("/v1/models", self._models)
         app.router.add_post("/v1/chat/completions", self._complete)
         self._runner = web.AppRunner(app, access_log=None)

@@ -706,8 +706,41 @@ async def test_a_voice_note_reaches_the_model_as_its_transcript(stand_args, fake
         assert not [text for text in live.sent() if "got" in text]
 
 
+READING = re.compile(r"Read record (ev\w+), page (\d+):")
+
+
+def reading_of(request):
+    """The reading a request is a turn of: its session holds that reading alone (Core resets it between readings),
+    and after a look OpenClaw's last user message is the picture, so the whole request is searched."""
+    return READING.search(json.dumps(request.messages))
+
+
+def read_the_page(request):
+    """A background reading (stage 2c-2), as the model does it: look at the page large, save what it shows, say
+    nothing."""
+    record, page = reading_of(request).groups()
+    done = [message for message in request.messages if message.get("role") == "tool"]
+    if not done:
+        return fakemodel.Call("klepa__view_page", {"id": record, "page": int(page), "size": "large"})
+    if len(done) == 1:
+        text = f"the words on {record}"
+        return fakemodel.Call("klepa__save_text", {"id": record, "page": int(page), "part": 1, "text": text})
+    return fakemodel.Say("")
+
+
+def big_photo(colour):
+    """A phone's photo: larger than any picture Core shows, so the size it is shown at is measurable."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (3000, 4000), colour).save(buffer, "JPEG")
+    return buffer.getvalue()
+
+
 def page_photo(text, colour):
-    """A photo of a page: a real JPEG, whose words the stand-in OCR finds in its comment."""
+    """A photo of a page: a real JPEG, its words in its comment."""
     from io import BytesIO
 
     from PIL import Image
@@ -757,12 +790,16 @@ async def test_the_model_closes_a_draft_of_photos_that_are_no_document(stand_arg
     signs `not_a_document: true` as Core reads it, and no PDF is made."""
 
     def script(request):
+        if reading_of(request):
+            return read_the_page(request)
         draft = re.search(r"⟦document draft (\d+) ·", request.human)
-        if draft is not None and not request.tool_results:
+        if draft is not None and not request.tool_results:  # it looks at the pages first (stage 2c-2)
+            return fakemodel.Call("klepa__view_draft", {"draft": int(draft.group(1))})
+        if draft is not None and len(request.tool_results) == 1:
             revision = int(re.search(r"revision (\d+)", request.human).group(1))
             params = {"draft": int(draft.group(1)), "not_a_document": True, "revision": revision}
             return fakemodel.Call("klepa__make_pdf", params)
-        return fakemodel.Say("TRIP: " + ("closed" if request.tool_results else "none"))
+        return fakemodel.Say("TRIP: " + ("closed" if len(request.tool_results) > 1 else "none"))
 
     fake_model.script = script
     readers = processing_section(processing_config(tmp_path / "readers"))
@@ -802,3 +839,92 @@ async def test_a_reply_after_the_plugin_went_silent_waits_and_is_dropped_with_co
         silent.clear()
         await asyncio.sleep(3)
         assert "the late answer" not in live.sent()  # dropped, not sent late
+
+
+async def test_a_picture_from_view_page_reaches_the_model_as_an_image(stand_args, fake_model, tmp_path):
+    """Stage 2c-2, R18 on OpenClaw 2026.10.33: Core's picture reaches the model as an image, no larger than 1568
+    pixels (agents.defaults.imageMaxDimensionPx; OpenClaw's default would cut it to 1200)."""
+
+    def script(request):
+        if reading_of(request):
+            return read_the_page(request)
+        photo = re.search(r"⟦photo · record (ev\w+) ·", request.human)
+        if photo is not None and not request.tool_results:
+            return fakemodel.Call("klepa__view_page", {"id": photo.group(1), "size": "large"})
+        return fakemodel.Say(f"SEEN: {len(request.images)}")
+
+    fake_model.script = script
+    readers = processing_section(processing_config(tmp_path / "readers"))
+    async with live_stand(*stand_args, model=fake_model, extra=readers) as live:
+        await wait_until(lambda: live.state() == "RUNNING", timeout=90)
+        live.telegram.add_photo(MEMBER, big_photo("teal"))
+        await wait_until(lambda: any(text.startswith("SEEN:") for text in live.sent()), timeout=90)
+        answer = next(text for text in live.sent() if text.startswith("SEEN:"))
+        assert answer == "SEEN: 1"
+        # OpenClaw gives the picture in a user message of its own after the tool's result
+        seen = next(
+            request for request in fake_model.requests if request.images and not READING.search(str(request.messages))
+        )
+        [(size, width, height)] = seen.images
+        assert max(width, height) <= 1568
+        assert size <= 400_000
+
+
+async def test_readings_save_what_the_model_read_and_never_carry_an_earlier_one(stand_args, fake_model, tmp_path):
+    """Stage 2c-2: each photo is read in the background by a turn of the space's reader peer, which saves its text;
+    Core resets the reader's session between readings, so the second reading's request holds one picture and nothing
+    of the first."""
+
+    def script(request):
+        if reading_of(request):
+            return read_the_page(request)
+        return fakemodel.Say("OK")
+
+    fake_model.script = script
+    readers = processing_section(processing_config(tmp_path / "readers"))
+    async with live_stand(*stand_args, model=fake_model, extra=readers) as live:
+        await wait_until(lambda: live.state() == "RUNNING", timeout=90)
+        live.telegram.add_photo(MEMBER, big_photo("olive"))
+        await wait_until(
+            lambda: len(query(live.cfg, "SELECT 1 FROM evidence_text WHERE saved_by_reading IS NOT NULL")) == 1,
+            timeout=120,
+        )
+        live.telegram.add_photo(MEMBER, big_photo("navy"))
+        saved = "SELECT evidence_id, text FROM evidence_text WHERE saved_by_reading IS NOT NULL ORDER BY evidence_id"
+        await wait_until(lambda: len(query(live.cfg, saved)) == 2, timeout=120)
+        first, second = [row["evidence_id"] for row in query(live.cfg, saved)]
+        assert [row["text"] for row in query(live.cfg, saved)] == [f"the words on {first}", f"the words on {second}"]
+        later = [request for request in fake_model.requests if f"Read record {second}" in json.dumps(request.messages)]
+        assert later
+        for request in later:
+            carried = json.dumps(request.messages)
+            assert len(request.images) <= 1
+            assert first not in carried  # nothing of the first reading: its session was reset
+        assert not [text for text in live.sent() if "words on" in text]  # a reader's turn reaches nobody
+
+
+async def test_a_day_of_pictures_never_makes_a_request_carry_them_all(stand_args, fake_model, tmp_path):
+    """Stage 2c-2, review 4's C2: the history window (dmHistoryLimit 3: up to 6 turns in a request) drops older
+    turns' pictures, whatever the day brings."""
+
+    def script(request):
+        if reading_of(request):
+            return read_the_page(request)
+        record = re.search(r"look again at (ev\w+)", request.human)
+        if record is not None and len(request.tool_results) < 2:
+            return fakemodel.Call("klepa__view_page", {"id": record.group(1), "size": "small"})
+        return fakemodel.Say(f"TURN: {len(request.images)}")
+
+    fake_model.script = script
+    readers = processing_section(processing_config(tmp_path / "readers"))
+    async with live_stand(*stand_args, model=fake_model, extra=readers) as live:
+        await wait_until(lambda: live.state() == "RUNNING", timeout=90)
+        live.telegram.add_photo(MEMBER, big_photo("maroon"))
+        await wait_until(lambda: query(live.cfg, "SELECT id FROM evidence WHERE kind = 'photo'"), timeout=60)
+        record = query(live.cfg, "SELECT id FROM evidence WHERE kind = 'photo'")[0]["id"]
+        for turn in range(10):
+            live.telegram.add_text(MEMBER, f"look again at {record} ({turn})")
+            await wait_until(lambda n=turn: len([t for t in live.sent() if t.startswith("TURN:")]) == n + 1, timeout=90)
+        counts = [len(request.images) for request in fake_model.requests if "look again" in request.human]
+        assert max(counts) <= 12  # 2 a turn, 6 turns at most
+        assert len([t for t in live.sent() if t.startswith("TURN:")]) == 10
