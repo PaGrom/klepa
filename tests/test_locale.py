@@ -91,6 +91,8 @@ alert_host_model_auth = "token"
 alert_host_model_unavailable = "model {reason}"
 alert_egress_failed = "egress {error}"
 alert_processing_unavailable = "unread {missing}"
+alert_reading_stuck = "stuck"
+alert_reader_reset_failed = "no reset"
 """
 
 

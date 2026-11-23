@@ -109,6 +109,12 @@ class Attachments:
         if cancelled != 1:
             return False
         records = [record["id"] for record in self._records(host_message_id)]
+        self.conn.executemany(  # nor is any of it read in the background (the final review's I5): a running reading's
+            # turn is refused its tools, and the reader retires its message
+            "UPDATE reading SET state = 'cancelled', host_message_id = NULL, ended_at = ? "
+            "WHERE evidence_id = ? AND state IN ('queued', 'running')",
+            [(now, record) for record in records],
+        )
         running = self.jobs.cancel(records) if self.jobs is not None else []
         if running and self.stop_reading is not None:
             self.stop_reading(running)

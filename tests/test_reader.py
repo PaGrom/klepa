@@ -222,7 +222,7 @@ def test_a_turn_the_gateway_never_starts_counts_apart_and_ends_held_with_an_aler
 
 
 def test_a_peer_whose_reset_failed_gets_no_reading(worker):
-    reader, conn, _clock, _, resets, alerts, _ = worker
+    reader, conn, clock, _, resets, alerts, _ = worker
     photo(conn, "p1", "owner")
     photo(conn, "p2", "owner")
     reader.queue_reading("p1", 1)
@@ -234,6 +234,7 @@ def test_a_peer_whose_reset_failed_gets_no_reading(worker):
     resets.ok = False
     for _ in range(5):
         asyncio.run(reader.step())
+        clock.advance(1801)  # past the longest back-off
     assert states(conn)["p2#1"] == "queued"
     assert "reader_reset_failed" in alerts.raised
     resets.ok = True
@@ -411,3 +412,111 @@ def test_the_reader_finds_what_to_read_photos_without_text_and_scanned_pages(wor
     reader.backfill()
     queued = sorted((r["evidence_id"], r["page"]) for r in conn.execute("SELECT * FROM reading"))
     assert queued == [("p1", 1), ("scan", 2), ("scan", 3)]
+
+
+# ---- final review fixes ----
+def test_the_readers_alerts_are_known_to_the_owners_alerts_and_have_their_texts(core_db):
+    """Final review I1: a stuck reading and a reset that keeps failing reach the owner through Core's real alerts, in
+    every language."""
+    from klepa_core.alerts import Alerts
+    from klepa_core.locale import load_locale
+
+    _, conn, _ = core_db
+    alerts = Alerts(conn, None, EventLog(conn), load_locale("en"))
+    assert alerts.raise_("reading_stuck") is False  # nobody to tell yet, but a known class
+    assert alerts.raise_("reader_reset_failed") is False
+    for code in ("en", "ru", "sr", "uk"):
+        locale = load_locale(code)
+        assert locale.service_text("alert_reading_stuck")
+        assert locale.service_text("alert_reader_reset_failed")
+
+
+def tool_call(conn, message, seconds_ago, clock):
+    """The reading's turn called a tool `seconds_ago`."""
+    run = f"run-{message}"
+    conn.execute(
+        "INSERT OR IGNORE INTO host_run(run_id, boot_id, chat_id, sender_id, prompt_built_at, host_message_id, "
+        "registered_at, expires_at) VALUES (?, 'b', 1, 1, 0, ?, 0, ?)",
+        (run, message, clock() + 600),
+    )
+    conn.execute(
+        "INSERT INTO host_tool_call(run_id, tool_call_id, tool, used_at) VALUES (?, ?, 'save_text', ?)",
+        (run, f"c{seconds_ago}-{clock()}", clock() - seconds_ago),
+    )
+
+
+def test_a_reading_that_saved_and_fell_silent_ends_done(worker):
+    """Final review I2: a model may end a reading with no words, and then no reply ever comes; once it saved and its
+    tools have been quiet a while, the reading is done."""
+    from klepa_core.host import reader as reader_module
+
+    reader, conn, clock, _, _, _, _ = worker
+    photo(conn, "p1", "owner")
+    reader.queue_reading("p1", 1)
+    asyncio.run(reader.step())
+    reading, message = conn.execute("SELECT id, host_message_id FROM reading").fetchone()
+    saved(conn, reading, "p1")
+    tool_call(conn, message, 5, clock)
+    asyncio.run(reader.step())
+    assert states(conn) == {"p1#1": "running"}  # it may still be saving parts
+    clock.advance(reader_module.SAVE_IDLE_SECONDS)
+    asyncio.run(reader.step())
+    assert states(conn) == {"p1#1": "done"}
+
+
+def test_a_reading_that_keeps_saving_past_its_time_ends_after_its_attempts_keeping_its_text(worker):
+    """Final review I2: a turn that saved parts and outlives its time counts as an attempt; after three the text it
+    saved is kept and the reading is done, never read again and again."""
+    from klepa_core.host import reader as reader_module
+
+    reader, conn, clock, _, _, _, _ = worker
+    photo(conn, "p1", "owner")
+    reader.queue_reading("p1", 1)
+    for attempt in range(reader_module.COUNTED_ATTEMPTS):
+        asyncio.run(reader.step())
+        reading, message = conn.execute("SELECT id, host_message_id FROM reading").fetchone()
+        if attempt == 0:
+            saved(conn, reading, "p1")
+        tool_call(conn, message, 0, clock)  # still calling its tools
+        reader.tick_running(reader_module.READ_SECONDS + 1)
+        asyncio.run(reader.step())
+    assert states(conn) == {"p1#1": "done"}
+    assert conn.execute("SELECT COUNT(*) FROM evidence_text WHERE evidence_id = 'p1'").fetchone()[0] == 1
+
+
+def test_the_reader_is_asked_to_end_with_a_word():
+    """A reply ends the reading's turn at once; an empty end gives none."""
+    from klepa_core.host.instruction import reader_instruction
+
+    assert "answer with the one word: saved" in reader_instruction()
+
+
+def test_a_failed_reset_waits_its_back_off_and_is_not_tried_while_the_host_is_held(worker):
+    """Final review I3: a reset that failed is not asked again every tick, nor of a gateway that is not running."""
+    from klepa_core.host import reader as reader_module
+
+    reader, conn, clock, gate, resets, _, _ = worker
+    peer = reader_of("shared")
+    conn.execute("INSERT INTO reader_peer(peer_id, needs_reset) VALUES (?, 1)", (peer,))
+    resets.ok = False
+    asyncio.run(reader.step())
+    asyncio.run(reader.step())
+    assert resets.calls == [peer]  # once, then its back-off
+    clock.advance(reader_module.BACKOFF_SECONDS[0] + 1)
+    gate.running = False
+    asyncio.run(reader.step())
+    assert resets.calls == [peer]  # the host is held: nothing to reset against
+    gate.running = True
+    asyncio.run(reader.step())
+    assert resets.calls == [peer, peer]
+
+
+def test_the_backlog_is_read_newest_first(worker):
+    """Final review I4: after an upgrade, the photos sent last are the ones a person most likely asks about."""
+    reader, conn, _clock, _, _, _, _ = worker
+    photo(conn, "old", "owner", received="2026-01-01T08:00:00Z")
+    photo(conn, "new", "owner", received="2027-01-14T08:00:00Z")
+    reader.queue_reading("old", 1)
+    reader.queue_reading("new", 1)
+    asyncio.run(reader.step())
+    assert states(conn) == {"old#1": "queued", "new#1": "running"}

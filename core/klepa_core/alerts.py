@@ -41,6 +41,8 @@ DEFAULT_LIMITS: dict[str, float] = {
     "host_model_unavailable": 3600,
     "egress_failed": 3600,
     "processing_unavailable": 6 * 3600,
+    "reading_stuck": 6 * 3600,  # stage 2c-2: the background reader
+    "reader_reset_failed": 3600,
 }
 DOCUMENTS_GRACE_SECONDS = 300.0
 

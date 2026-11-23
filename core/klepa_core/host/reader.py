@@ -31,6 +31,7 @@ from ..events import EventLog
 from .queue import HostQueue
 
 READ_SECONDS = 180.0  # a reading's turn, counted only while the host runs
+SAVE_IDLE_SECONDS = 20.0  # saved, and its tools quiet this long: the turn is over even if no reply comes
 COUNTED_ATTEMPTS = 3  # turns that reached the model and saved nothing
 UNCOUNTED_ATTEMPTS = 5  # turns the gateway never started
 BACKOFF_SECONDS = (60.0, 300.0, 1800.0)  # after the provider said it is busy
@@ -80,6 +81,7 @@ class Reader:
         self.clock = clock
         self.current: _Current | None = None
         self.paused_until = 0.0
+        self._reset_after = 0.0  # a failed reset's back-off: not kept over a restart, which tries at once
         self._next_backfill = 0.0
         self.wake = asyncio.Event()
 
@@ -99,15 +101,21 @@ class Reader:
         """What to read, from what Core stored: a photo whose job drew its picture and has no text yet, and each
         scanned page of a PDF; also what came while no reader ran. Returns how many readings it queued."""
         readable = "('stored', 'processing', 'processed', 'failed')"
+        kept = (  # a batch its sender cancelled is never read (the final review's I5)
+            "AND NOT EXISTS (SELECT 1 FROM host_message_item i JOIN host_message m ON m.id = i.host_message_id "
+            "WHERE i.evidence_id = e.id AND m.cancelled_at IS NOT NULL) "
+        )
         rows = self.conn.execute(
             "SELECT j.evidence_id, 1 AS page, e.space_id FROM job j JOIN evidence e ON e.id = j.evidence_id "
             f"WHERE j.kind = 'image' AND j.state = 'done' AND e.state IN {readable} "
             "AND NOT EXISTS (SELECT 1 FROM evidence_text t WHERE t.evidence_id = j.evidence_id AND t.page = 1) "
             "AND NOT EXISTS (SELECT 1 FROM reading r WHERE r.evidence_id = j.evidence_id AND r.page = 1) "
+            f"{kept}"
             "UNION ALL "
             "SELECT s.evidence_id, s.page, e.space_id FROM scan_page s JOIN evidence e ON e.id = s.evidence_id "
             f"WHERE e.state IN {readable} "
-            "AND NOT EXISTS (SELECT 1 FROM reading r WHERE r.evidence_id = s.evidence_id AND r.page = s.page)"
+            "AND NOT EXISTS (SELECT 1 FROM reading r WHERE r.evidence_id = s.evidence_id AND r.page = s.page) "
+            f"{kept}"
         ).fetchall()
         now = self.clock()
         self.conn.executemany(
@@ -180,9 +188,13 @@ class Reader:
             else:
                 attempts = int(reading["attempts"]) + 1
                 self._end(current, "failed" if attempts >= COUNTED_ATTEMPTS else "queued", attempts=attempts)
+        elif self._saved(current.reading_id) and self._idle(current) >= SAVE_IDLE_SECONDS:
+            # Saved, then quiet: a model may end with no words, and then no reply comes (the final review's I2).
+            self._end(current, "done")
         elif current.running_seconds >= READ_SECONDS:
-            if self._saved(current.reading_id):  # parts saved, then silence: the next attempt saves it whole again
-                self._end(current, "queued")
+            if self._saved(current.reading_id):  # still saving past its time: an attempt; its text is kept at the end
+                attempts = int(reading["attempts"]) + 1
+                self._end(current, "done" if attempts >= COUNTED_ATTEMPTS else "queued", attempts=attempts)
                 return
             uncounted = int(reading["uncounted"]) + 1
             if uncounted >= UNCOUNTED_ATTEMPTS:
@@ -191,6 +203,15 @@ class Reader:
                     self.alerts.raise_("reading_stuck")
             else:
                 self._end(current, "queued", uncounted=uncounted)
+
+    def _idle(self, current: _Current) -> float:
+        """Seconds since the reading's turn last called a tool."""
+        row = self.conn.execute(
+            "SELECT MAX(t.used_at) FROM host_tool_call t JOIN host_run r ON r.run_id = t.run_id "
+            "WHERE r.host_message_id = ?",
+            (current.message_id,),
+        ).fetchone()
+        return 0.0 if row[0] is None else self.clock() - float(row[0])
 
     def _saved(self, reading_id: int) -> bool:
         row = self.conn.execute("SELECT 1 FROM evidence_text WHERE saved_by_reading = ? LIMIT 1", (reading_id,))
@@ -220,7 +241,10 @@ class Reader:
         self.current = None
 
     async def _resets(self) -> bool:
-        """Every peer marked for a reset is reset before anything else is issued; False while one fails."""
+        """Every peer marked for a reset is reset before anything else is issued; False while one fails. A reset is
+        asked only of a running gateway, and one that failed waits its back-off (the final review's I3)."""
+        if not self.gate.may_release() or self.clock() < self._reset_after:
+            return False
         marked = self.conn.execute("SELECT peer_id, failures FROM reader_peer WHERE needs_reset = 1").fetchall()
         for row in marked:
             peer = int(row["peer_id"])
@@ -229,6 +253,7 @@ class Reader:
                 continue
             failures = int(row["failures"]) + 1
             self.conn.execute("UPDATE reader_peer SET failures = ? WHERE peer_id = ?", (failures, peer))
+            self._reset_after = self.clock() + BACKOFF_SECONDS[min(failures, len(BACKOFF_SECONDS)) - 1]
             if failures >= RESET_ALERT_AFTER and self.alerts is not None:
                 self.alerts.raise_("reader_reset_failed")
             return False
@@ -248,7 +273,8 @@ class Reader:
         rows = self.conn.execute(
             "SELECT r.*, e.space_id AS now_space, e.chat_id, e.media_group_id, e.authenticated_subject "
             "FROM reading r JOIN evidence e ON e.id = r.evidence_id "
-            "WHERE r.state = 'queued' AND r.not_before <= ? ORDER BY r.page > 1, r.page, r.queued_at, r.id",
+            "WHERE r.state = 'queued' AND r.not_before <= ? "
+            "ORDER BY r.page > 1, r.page, e.received_at DESC, r.id",  # newest first: what a person asks about next
             (self.clock(),),
         ).fetchall()
         for row in rows:

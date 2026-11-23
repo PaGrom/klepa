@@ -85,6 +85,8 @@ alert_host_model_auth = "⚠️ Model nije prihvatio token: dok ponovo ne prorad
 alert_host_model_unavailable = "⚠️ Model nije odgovorio na početnu proveru ({reason}). Host ipak radi: na svaku poruku ljudi dobijaju izvinjenje dok model ponovo ne odgovori."
 alert_egress_failed = "⚠️ Proksi za odlazni saobraćaj ne može da se pokrene ({error}). Host ne može da dođe do modela."
 alert_processing_unavailable = "⚠️ Prilozi se čuvaju, ali se ne čitaju ({missing}). Čekaju: kada se instalira ono što nedostaje i jezgro ponovo pokrene, biće pročitani."
+alert_reading_stuck = "⚠️ Gateway pet puta nije preuzeo čitanje fotografije ili skenirane strane. Čitanje čeka ponovno pokretanje jezgra; do tada pretraga ne nalazi tu stranu."
+alert_reader_reset_failed = "⚠️ Jezgro ne može da poništi sesiju pozadinskog čitača u gateway-u, pa se fotografije i skenovi za sada ne čitaju. Proveri gateway (klepa-core host status)."
 
 [cancel]
 words = ["otkaži", "otkazi", "откажи", "stop", "стоп", "cancel"]

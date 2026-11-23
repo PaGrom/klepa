@@ -244,7 +244,7 @@ sequenceDiagram
     participant Q as host queue + API
     participant G as gateway (OpenClaw)
     participant T as Core's tools
-    R->>R: backfill: photos without text and scan_page rows, photos first, then deeper pages
+    R->>R: backfill: photos without text and scan_page rows, not a cancelled batch's; first pages first, newest first
     R->>R: wait: host RUNNING, no person's turn live, provider not busy, the album quiet
     R->>Q: "Read record X, page P" from the space's reader peer, in its own chat
     G->>Q: getUpdates
@@ -252,14 +252,15 @@ sequenceDiagram
     T-->>G: the picture
     G->>T: save_text(X, P, part 1..n)
     T->>T: evidence_text (model <id>), search index, the PDFs made of it
-    G->>Q: a reply to the reader chat: dropped, nobody reads it
-    R->>R: the reading ends with its turn
+    G->>Q: the reply "saved" to the reader chat: dropped, nobody reads it
+    R->>R: the reading ends with its reply, or 20 s after its last save when no reply comes
     R->>G: sessions.reset of the reader peer's session (Core's own credentials)
 ```
 
-- **One reader peer per space** (shared, and each member's own), a stand-in beside the probe peer in the gateway's `allowFrom`, each with a one-turn history (`channels.telegram.dms.<peer>.historyLimit = 1`). After every reading Core resets that peer's session through the gateway (`sessions.reset`, proven live: the next turn carries nothing earlier), so a reading never sees another; a peer whose reset failed gets nothing until one succeeds, also after a restart (`reader_peer.needs_reset`).
+- **One reader peer per space** (shared, and each member's own), a stand-in beside the probe peer in the gateway's `allowFrom`, each with a one-turn history (`channels.telegram.dms.<peer>.historyLimit = 1`). After every reading Core resets that peer's session through the gateway (`sessions.reset`, proven live: the next turn carries nothing earlier), so a reading never sees another; a peer whose reset failed gets nothing until one succeeds, also after a restart (`reader_peer.needs_reset`); a reset is asked only of a RUNNING gateway, and one that failed is tried again after 1, 5, then 30 minutes; after five failures the owner is told.
 - **What a reading may do**: Core itself, not only the gateway's list, lets a reading's turn call `view_page` and `save_text` on its own record and page, for the record's owner; a superseded attempt may do nothing; no person's turn may call `save_text`. A PDF page is saved only where pdftotext found nothing (`scan_page`): a digital text layer stays exact.
-- **People first**: nothing is issued while a person's turn is live, while the host is not RUNNING with a fresh heartbeat, or for a minute after a person's turn met a busy provider. The reading's clock (180 s) runs only while the host does; a turn that reached the model and saved nothing counts (three, then `failed`, queued again at the next start); a busy provider backs a reading off (1, 5, 30 minutes); a turn the gateway never starts counts apart, and after five the owner is told.
+- **People first**: nothing is issued while a person's turn is live, while the host is not RUNNING with a fresh heartbeat, or for a minute after a person's turn met a busy provider. The reading's clock (180 s) runs only while the host does; a turn that reached the model and saved nothing counts (three, then `failed`, queued again at the next start); a turn that saved and then fell quiet for 20 s is done, and one still saving when its time ran out counts as an attempt, done after the third with what it saved; a busy provider backs a reading off (1, 5, 30 minutes); a turn the gateway never starts counts apart, and after five the owner is told.
+- **Order and cancel**: first pages before deeper ones, and within them the newest record first: after an upgrade, the backlog of old photos waits behind what the family sends now. Cancelling a batch cancels its readings, and a cancelled batch is never read.
 - **What people see**: a photo comes to the host at once as a picture whose text is being read, `get` says `being_read` (or `picture` when the model could not read it), and a PDF's mark says how many scanned pages are still being read. The model may look at any page meanwhile with `view_page`.
 - Without a host, or without Core's own gateway, nothing is read from photos and scans; their pictures are kept, and a later reader reads them.
 

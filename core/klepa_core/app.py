@@ -383,6 +383,7 @@ def _drafts(
     store: EvidenceStore,
     cfg: Config,
     events: EventLog,
+    alerts: Alerts | None = None,
 ) -> Drafts | None:
     """With a host and the sandbox: drafts of documents from photos (spec 6.1 item 4). A batch then waits until it
     was looked at for one, and the model's make_pdf changes them."""
@@ -407,6 +408,7 @@ def _drafts(
             host.supervisor,
             _session_reset(cfg),
             events,
+            alerts=alerts,
             album_quiet=cfg.album_quiet_seconds,
         )
         if host.adapter is not None:
@@ -537,7 +539,7 @@ async def run_service(
                 batcher = ReceiptBatcher(
                     outbox, journal, cfg.batch_window_seconds, cfg.locale, host=None if host is None else host.queue
                 )
-                drafts = _drafts(conn, host, processing, outbox, store, cfg, events)
+                drafts = _drafts(conn, host, processing, outbox, store, cfg, events, alerts)
                 attachments = _attachments(conn, host, processing, outbox, api, cfg, events, drafts)
                 gatekeeper = Gatekeeper(
                     cfg,

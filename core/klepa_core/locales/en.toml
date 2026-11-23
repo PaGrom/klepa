@@ -84,6 +84,8 @@ alert_host_model_auth = "⚠️ The model refused its token: people get a fixed 
 alert_host_model_unavailable = "⚠️ The model did not answer the start check ({reason}). The host runs anyway: people get an apology for each message until the model answers again."
 alert_egress_failed = "⚠️ The egress proxy does not start ({error}). The host cannot reach the model."
 alert_processing_unavailable = "⚠️ Attachments are kept but not read ({missing}). They wait: once what is missing is installed and Core restarts, they are read."
+alert_reading_stuck = "⚠️ The gateway did not take up a photo's or a scanned page's reading, five times. It waits until Core restarts; meanwhile search does not find that page."
+alert_reader_reset_failed = "⚠️ Core cannot reset the background reader's session in the gateway, so no photo or scan is read for now. Check the gateway (klepa-core host status)."
 
 [cancel]
 words = ["cancel", "stop"]

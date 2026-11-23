@@ -353,3 +353,21 @@ async def test_a_button_of_a_drafts_old_sheet_no_longer_works(setup):
     press = Classified("press", chat_id=OWNER, from_id=OWNER, message_id=500, callback_id="cb", data="b" * 32)
     await attachments.press(press)
     assert api.answered == [("cb", "This button no longer works.")]
+
+
+async def test_cancelling_a_batch_cancels_its_readings_and_none_is_queued_after(setup):
+    """Final review I5: a photo cancelled after its picture was drawn never goes to the provider."""
+    from klepa_core.host.reader import Reader
+
+    attachments, queue, conn, clock, _api, _ = setup
+    message = batch(queue, conn, "ph1", kind="photo", reader="image", state="done")
+    batch(queue, conn, "ph2", message_id=11, kind="photo", reader="image", state="done")
+    conn.execute(
+        "INSERT INTO reading(evidence_id, page, space_id, state, queued_at) VALUES ('ph1', 1, 'shared', 'queued', 0)"
+    )
+    assert attachments.cancel(message) is True
+    assert conn.execute("SELECT state FROM reading WHERE evidence_id = 'ph1'").fetchone()[0] == "cancelled"
+    reader = Reader(conn, queue, None, None, EventLog(conn), album_quiet=60.0, clock=clock)
+    reader.backfill()
+    queued = {row[0] for row in conn.execute("SELECT evidence_id FROM reading WHERE state = 'queued'")}
+    assert queued == {"ph2"}  # the other batch, not cancelled, is read
