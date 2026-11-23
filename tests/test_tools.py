@@ -417,6 +417,7 @@ def test_make_pdf_changes_a_draft_for_the_person_and_the_message_the_turn_answer
                 "reply_to": message_id,
                 "revision": 2,
                 "not_a_document": False,
+                "title": None,
             },
         )
     ]
@@ -479,8 +480,9 @@ def test_make_pdf_tells_the_model_to_order_drop_repeats_and_name_gaps_before_the
     """The owner's choice of 2026-10-27: no sheet to check; the PDF comes after the model's answer."""
     [spec] = [tool for tool in box.specs() if tool["name"] == "make_pdf"]
     description = spec["description"]
-    assert "before you answer, pass the draft, its revision and order" in description
-    assert "leaving a photo out only when its text is the same as another's" in description
+    assert "look at them with view_draft" in description  # stage 2c-2: the model sees the pages
+    assert "before you answer, pass the draft, its revision, a short title" in description
+    assert "leaving a photo out only when it shows the same page as another" in description
     assert "which page seems missing, if any" in description
     assert "sheet" not in description
     assert "button" not in description

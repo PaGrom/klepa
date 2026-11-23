@@ -36,6 +36,8 @@ draft_failed = "draft_failed text"
 draft_too_large = "draft_too_large text"
 draft_name = "Document {date}"
 draft_name_version = "Document {date}, version {version}"
+draft_name_titled = "{title} {date}"
+draft_name_titled_version = "{title} {date}, version {version}"
 
 [receipts]
 one_file = "got it"

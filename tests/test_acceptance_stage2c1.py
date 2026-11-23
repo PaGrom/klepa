@@ -178,6 +178,7 @@ class Reader(Model):
         found = DRAFT.search(text)
         if found and any("holiday" in words for words in seen.values()):  # photos of a trip: no document
             self.drafts.append(int(found.group(1)))
+            await tool("view_draft", {"draft": self.drafts[-1]})  # it looks at the pages before it says so
             await tool("make_pdf", {"draft": self.drafts[-1], "not_a_document": True, "revision": revision(text)})
             return "Nice photos of your trip."
         if found and "the chat's latest document" in text:  # a page sent later

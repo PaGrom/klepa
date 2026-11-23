@@ -28,20 +28,40 @@ NEVER = (
 def asks(revision):
     """The end of the mark of a draft the batch made, while the model has neither ordered it nor closed it."""
     return (
-        f"revision {revision}. Pass klepa__make_pdf with the draft, revision {revision} and order: the numbers of the "
-        "pages in the order their content shows (how a text runs on, headings, signatures, page numbers), each page "
-        "once, leaving a photo out only when its text is the same as another's (a second photo of one page); a page "
-        "with little or no text is never a repeat, and when unsure, keep both. Core sends the person the PDF after "
-        "your answer. In your answer say which photos you left out, if any, and if what the pages say shows a page is "
-        "missing (a gap in the page numbers, a text that breaks off), say which, so the person can send it. If the "
-        "images show people, places or things, and the person's words do not ask for a document, pass not_a_document "
-        f"with revision {revision} instead, and no PDF is made; little or no text is no sign of that, and when unsure, "
-        f"make the PDF; {NEVER}⟧"
+        f"revision {revision}. Look at the pages with klepa__view_draft (overview to see what they are, strips to read "
+        f"their tops and bottoms), then pass klepa__make_pdf with the draft, revision {revision}, a short title naming "
+        "the document by what it is, and order: the numbers of the pages in the order their content shows (how a text "
+        "runs on, headings, signatures, page numbers), each page once, leaving a photo out only when it shows the same "
+        "page as another (a second photo of one page); when unsure, keep both, and keep the order they came in. Core "
+        "sends the person the PDF after your answer. In your answer say which photos you left out, if any, and if what "
+        "the pages show says a page is missing (a gap in the page numbers, a text that breaks off), say which, so the "
+        "person can send it. If the pages show people, places or things, and the person's words do not ask for a "
+        f"document, pass not_a_document with revision {revision} instead, and no PDF is made; when unsure, make the "
+        f"PDF; {NEVER}⟧"
     )
 
 
-def declined(d, draft, *, revision=1, message_id=10):
-    """The model's not_a_document, in the turn on the batch whose first photo is `message_id`."""
+def looked_at(d, draft, *, chat_id=OWNER, person="owner", revision=1, skip=()):
+    """The model was shown the draft's pages (view_draft, stage 2c-2), but those in `skip`."""
+    picture = d.conn.execute(
+        "INSERT INTO host_picture(run_id, chat_id, person_id, size, bytes, shown_at) "
+        "VALUES ('run', ?, ?, 'overview', 1, 0)",
+        (chat_id, person),
+    ).lastrowid
+    d.conn.execute(
+        "INSERT INTO host_picture_record(picture_id, evidence_id, page) "
+        "SELECT ?, evidence_id, 1 FROM draft_page WHERE draft_id = ? AND revision = ?",
+        (picture, draft, revision),
+    )
+    for record in skip:
+        d.conn.execute("DELETE FROM host_picture_record WHERE evidence_id = ?", (record,))
+
+
+def declined(d, draft, *, revision=1, message_id=10, look=True):
+    """The model's not_a_document, in the turn on the batch whose first photo is `message_id`, having looked at the
+    draft's pages (stage 2c-2)."""
+    if look:
+        looked_at(d, draft, revision=revision)
     return d.drafts.change(
         "owner",
         OWNER,
@@ -875,13 +895,18 @@ async def test_photos_the_model_finds_no_document_get_no_pdf(d):
     assert draft_of(d, lone) is None  # a declined draft is offered no more photos
 
 
-async def test_a_draft_with_a_page_not_read_is_never_closed_as_no_document(d):
-    """The review's I2: no text because no reader read it (none installed, or it failed) is no sign of anything."""
+async def test_a_draft_with_a_page_the_model_never_saw_is_never_closed_as_no_document(d):
+    """The review's I2, since stage 2c-2: the model must have been shown every page (on a sheet or one by one)."""
     message = album(d, b"one", b"two")
     d.drafts.tick()
-    d.conn.execute("UPDATE job SET state='failed' WHERE evidence_id='ev11'")
-    with pytest.raises(DraftRefused, match=r"^a page was not read: make the PDF, and the person decides$"):
-        declined(d, draft_of(d, message))
+    draft = draft_of(d, message)
+    looked_at(d, draft, skip=("ev11",))
+    with pytest.raises(DraftRefused, match=r"^look at every page first \(view_draft\)$"):
+        declined(d, draft, look=False)
+    looked_at(d, draft)
+    assert declined(d, draft, look=False)["not_a_document"] is True
+    row = d.conn.execute("SELECT state, closed_reason FROM draft WHERE id=?", (draft,)).fetchone()
+    assert tuple(row) == ("declined", "model")
 
 
 async def test_a_draft_closed_as_no_document_opens_again_with_an_order(d):
@@ -1041,4 +1066,53 @@ async def test_an_album_sent_after_the_first_is_offered_to_its_document_and_make
     ordered(d, draft, [1, 2, 3, 4], revision=1, add=["ev20", "ev21"])
     await d.drafts.run_once()
     assert d.renderer.calls == [("pdf", [b"one", b"two", b"three", b"four"])]
-    assert state(d, other) == "open"  # never ordered: it makes nothing
+    assert (
+        state(d, other) == "declined"
+    )  # its pages all went into the document: it closes (stage 2c-2), and makes nothing
+    assert d.conn.execute("SELECT closed_reason FROM draft WHERE id=?", (other,)).fetchone()[0] == "merged"
+
+
+# ---- stage 2c-2: titles, and drafts merged into another ----
+async def test_the_model_names_the_document_and_a_new_version_keeps_the_name(d):
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    served(d)
+    draft = draft_of(d, message)
+    ordered_titled = d.drafts.change(
+        "owner", OWNER, SPACES, draft_id=draft, order=[1, 2], add=None, reply_to=None, revision=1,
+        title="Lease: flat/2\u202e",
+    )  # fmt: skip
+    assert ordered_titled["revision"] == 2
+    d.queue.mark_answered(OWNER, prefer=message)
+    await d.drafts.run_once()
+    _, _, payload = outbound(d, f"draft_pdf:{draft}:1")
+    assert payload["name"] == "Lease flat 2 2027-01-15.pdf"
+    ordered(d, draft, [2, 1], revision=2)
+    await d.drafts.run_once()
+    _, _, payload = outbound(d, f"draft_pdf:{draft}:2")
+    assert payload["name"] == "Lease flat 2 2027-01-15, version 2.pdf"
+
+
+async def test_a_draft_whose_pages_all_went_into_another_closes_as_merged(d):
+    """The live run of 2026-11-21: a second batch of the same document made draft 6, whose photos the model then
+    added to draft 5; draft 6 stayed open for nothing."""
+    first = album(d, b"one", b"two")
+    second = album(d, b"three", b"four", first=20)
+    d.drafts.tick()
+    a, b = draft_of(d, first), draft_of(d, second)
+    d.drafts.change(
+        "owner", OWNER, SPACES, draft_id=a, order=[1, 2, 3, 4], add=["ev20", "ev21"], reply_to=None, revision=1
+    )
+    row = d.conn.execute("SELECT state, closed_reason FROM draft WHERE id=?", (b,)).fetchone()
+    assert tuple(row) == ("declined", "merged")
+    assert d.conn.execute("SELECT COUNT(*) FROM event_log WHERE kind='draft_merged'").fetchone()[0] == 1
+
+
+async def test_a_declined_draft_opened_again_loses_its_closed_reason(d):
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    draft = draft_of(d, message)
+    declined(d, draft)
+    ordered(d, draft, [1, 2])
+    row = d.conn.execute("SELECT state, closed_reason FROM draft WHERE id=?", (draft,)).fetchone()
+    assert tuple(row) == ("open", None)

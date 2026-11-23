@@ -32,6 +32,8 @@ draft_failed = "Не змогла зібрати PDF. Фото збережен�
 draft_too_large = "Не змогла зібрати PDF: він вийшов би більшим за 50 МБ, а такі файли Telegram від мене не приймає. Фото збережено."
 draft_name = "Документ {date}"
 draft_name_version = "Документ {date}, версія {version}"
+draft_name_titled = "{title} {date}"
+draft_name_titled_version = "{title} {date}, версія {version}"
 
 [receipts]
 one_file = "📄 отримала"

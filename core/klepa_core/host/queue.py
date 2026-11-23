@@ -362,6 +362,7 @@ class HostQueue:
                 int(previous["revision"]),
                 made=False,
             ),
+            draft["closed_reason"],
         )
 
     def _draft_records(self, draft_id: int, revision: int) -> tuple[str, ...]:

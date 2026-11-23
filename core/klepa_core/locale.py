@@ -46,12 +46,16 @@ TEXT_KEYS = (
     "draft_too_large",
     "draft_name",
     "draft_name_version",
+    "draft_name_titled",
+    "draft_name_titled_version",
 )
 TEXT_FIELDS: dict[str, tuple[str, ...]] = {
     "original_failed": ("name",),
     "draft_built": ("n",),
     "draft_name": ("date",),
     "draft_name_version": ("date", "version"),
+    "draft_name_titled": ("title", "date"),
+    "draft_name_titled_version": ("title", "date", "version"),
 }
 SERVICE_FIELDS: dict[str, tuple[str, ...]] = {
     "status_button": (),

@@ -32,6 +32,8 @@ draft_failed = "I couldn't make the PDF. The photos are saved."
 draft_too_large = "I couldn't make the PDF: it would be larger than 50 MB, and Telegram doesn't take such files from me. The photos are saved."
 draft_name = "Document {date}"
 draft_name_version = "Document {date}, version {version}"
+draft_name_titled = "{title} {date}"
+draft_name_titled_version = "{title} {date}, version {version}"
 
 [receipts]
 one_file = "📄 got it"

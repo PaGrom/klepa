@@ -31,6 +31,7 @@ from ..events import EventLog
 from ..evidence import EvidenceStore
 from ..host.queue import HostQueue
 from ..locale import Locale
+from ..names import clean_title
 from ..processing.jobs import job_kind, remove
 from ..processing.readers import OutputTooLarge, ReaderFailed, ReaderMissing, Readers
 from ..processing.sandbox import ProcessingStopped
@@ -225,7 +226,7 @@ class Drafts:
         last went) once the turn's message `by` is answered."""
         self._set_pages(draft_id, revision, records)
         self.conn.execute(
-            "UPDATE draft SET revision = ?, ordered = ?, ordered_by = ?, state = 'open', "
+            "UPDATE draft SET revision = ?, ordered = ?, ordered_by = ?, state = 'open', closed_reason = NULL, "
             "reply_to = COALESCE(?, reply_to), updated_at = ? WHERE id = ?",
             (revision, revision, by, reply_to, self.clock(), draft_id),
         )
@@ -259,6 +260,7 @@ class Drafts:
         reply_to: int | None,
         revision: int | None = None,
         not_a_document: bool = False,
+        title: str | None = None,
     ) -> dict[str, Any]:
         """A new revision of the person's own draft, or a new draft from images they may see, and its PDF after the
         model's answer. `add`: records of images to add; `order`: the pages to keep by number, the draft's pages as
@@ -305,10 +307,11 @@ class Drafts:
                         raise DraftRefused("it was put in order already: it is a document")
                     if caller is None or caller["draft_id"] != draft_id or caller["draft_revision"] is None:
                         raise DraftRefused("only the turn on the photos that made the draft closes it")
-                    if not self._all_read(draft_id, int(draft["revision"])):  # the review's I2: no text, no sign
-                        raise DraftRefused("a page was not read: make the PDF, and the person decides")
+                    if not self._all_seen(draft_id, int(draft["revision"]), chat_id):  # the review's I2, 2c-2
+                        raise DraftRefused("look at every page first (view_draft)")
                     self.conn.execute(
-                        "UPDATE draft SET state = 'declined', updated_at = ? WHERE id = ?", (self.clock(), draft_id)
+                        "UPDATE draft SET state = 'declined', closed_reason = 'model', updated_at = ? WHERE id = ?",
+                        (self.clock(), draft_id),
                     )
                     declined = {"draft": draft_id, "revision": int(draft["revision"]), "by": "model"}
                     self.events.log("draft_declined", declined)
@@ -334,7 +337,13 @@ class Drafts:
                     raise DraftRefused(f"a document has at most {MAX_PAGES} pages")
                 revision = int(draft["revision"]) + 1
                 self._revise(draft_id, revision, [str(page["id"]) for page in pages], reply_to, by)
+            named = clean_title(title)
+            if named is not None:  # the model's name for the document (stage 2c-2); a later revision keeps it
+                self.conn.execute("UPDATE draft SET title = ? WHERE id = ?", (named, draft_id))
+            merged = self._merge_orphans(draft_id, person_id, chat_id, [str(page["id"]) for page in pages])
         self.events.log("draft_changed", {"draft": draft_id, "revision": revision, "pages": len(pages)})
+        for orphan in merged:
+            self.events.log("draft_merged", {"draft": orphan, "into": draft_id})
         self.drawing.set()  # its PDF is built once the model has answered
         result: dict[str, Any] = {
             "draft": draft_id,
@@ -348,6 +357,37 @@ class Drafts:
             result["left_out"] = "; ".join(notes)
         result["pdf"] = NOTE
         return result
+
+    def _all_seen(self, draft_id: int, revision: int, chat_id: int) -> bool:
+        """The model was shown every page of the revision in this chat, on a sheet or one by one (stage 2c-2): it may
+        say they are no document only having seen them."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM draft_page p WHERE p.draft_id = ? AND p.revision = ? AND NOT EXISTS "
+            "(SELECT 1 FROM host_picture_record r JOIN host_picture h ON h.id = r.picture_id "
+            "WHERE r.evidence_id = p.evidence_id AND h.chat_id = ?)",
+            (draft_id, revision, chat_id),
+        ).fetchone()
+        return int(row[0]) == 0
+
+    def _merge_orphans(self, draft_id: int, person_id: str, chat_id: int, records: Sequence[str]) -> list[int]:
+        """Every other open draft of the person in the chat, never built, whose pages all went into this one: it
+        closes, merged (the live run of 2026-11-21: a second batch of one document stayed open for nothing)."""
+        kept = set(records)
+        closed = []
+        for other in self.conn.execute(
+            "SELECT id, revision FROM draft WHERE person_id = ? AND chat_id = ? AND state = 'open' AND id != ?",
+            (person_id, chat_id, draft_id),
+        ).fetchall():
+            if self._built(int(other["id"])):
+                continue
+            pages = {str(page["id"]) for page in self._pages(int(other["id"]), int(other["revision"]))}
+            if pages and pages <= kept:
+                self.conn.execute(
+                    "UPDATE draft SET state = 'declined', closed_reason = 'merged', updated_at = ? WHERE id = ?",
+                    (self.clock(), other["id"]),
+                )
+                closed.append(int(other["id"]))
+        return closed
 
     def _all_read(self, draft_id: int, revision: int) -> bool:
         """Every page's reading ended with a text, empty or not: a reader not installed, or one that failed, is no
@@ -525,6 +565,13 @@ class Drafts:
 
     def _name(self, draft: sqlite3.Row, version: int) -> str:
         date = datetime.fromtimestamp(float(draft["created_at"]), self.store.tz).date().isoformat()
+        title = draft["title"]
+        if title:  # the model's name for it (stage 2c-2)
+            if version == 1:
+                return self.locale.text("draft_name_titled").format(title=title, date=date) + ".pdf"
+            return (
+                self.locale.text("draft_name_titled_version").format(title=title, date=date, version=version) + ".pdf"
+            )
         if version == 1:
             return self.locale.text("draft_name").format(date=date) + ".pdf"
         return self.locale.text("draft_name_version").format(date=date, version=version) + ".pdf"

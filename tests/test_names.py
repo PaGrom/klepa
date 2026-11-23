@@ -56,3 +56,12 @@ def test_card_lookalike_cannot_collide_with_card_file():
     name = disk_name(EID, "Contract.pdf.json")
     assert name == f"{EID}-Contract.pdf.json"
     assert name != f"{EID}.card.json"
+
+
+def test_a_title_is_one_clean_line_of_at_most_80_characters():
+    from klepa_core.names import clean_title
+
+    assert clean_title("Lease: flat/2") == "Lease flat 2"
+    assert clean_title("  a\\b\tc\u202e\u200bd  ") == "a b cd"
+    assert clean_title("x" * 200) == "x" * 80
+    assert clean_title(" \u200b ") is None

@@ -47,3 +47,23 @@ def disk_name(evidence_id: str, original_name: str | None) -> str:
     budget = MAX_NAME_BYTES - len(prefix.encode("utf-8")) - len(extension.encode("utf-8"))
     stem = _cut_utf8(stem, budget).rstrip() or "file"
     return prefix + stem + extension
+
+
+MAX_TITLE_CHARS = 80
+
+
+def clean_title(title: str | None) -> str | None:
+    """The model's name for a document it made (stage 2c-2), as part of a file name: one line, no path separator, no
+    control or format character (bidi overrides included), runs of spaces as one, at most 80 characters; None when
+    nothing is left, and the template names it."""
+    if not title:
+        return None
+    kept = []
+    for ch in unicodedata.normalize("NFC", title):
+        if ch.isspace() or ch in _SEPARATORS:
+            kept.append(" ")
+        elif not unicodedata.category(ch).startswith("C"):
+            kept.append(ch)
+    cleaned = " ".join(unicodedata.normalize("NFC", "".join(kept)).split()).lstrip(".")
+    cleaned = cleaned[:MAX_TITLE_CHARS].strip()
+    return cleaned or None

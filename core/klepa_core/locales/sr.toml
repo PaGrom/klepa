@@ -32,6 +32,8 @@ draft_failed = "Nisam uspela da napravim PDF. Fotografije su sačuvane."
 draft_too_large = "Nisam uspela da napravim PDF: bio bi veći od 50 MB, a takve fajlove Telegram od mene ne prima. Fotografije su sačuvane."
 draft_name = "Dokument {date}"
 draft_name_version = "Dokument {date}, verzija {version}"
+draft_name_titled = "{title} {date}"
+draft_name_titled_version = "{title} {date}, verzija {version}"
 
 [receipts]
 one_file = "📄 primila sam"

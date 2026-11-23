@@ -459,6 +459,7 @@ def _make_pdf(box: ToolBox, caller: Caller, params: dict[str, Any]) -> Any:
             reply_to=caller.message_id,
             revision=params.get("revision"),
             not_a_document=bool(params.get("not_a_document", False)),
+            title=params.get("title"),
         )
     except DraftRefused as exc:
         raise ToolRefused(str(exc)) from None
@@ -735,9 +736,10 @@ TOOLS = (
     Tool(
         "make_pdf",
         "Make a PDF of a person's photos of a document, or change one. Two or more photos sent at once make a draft, "
-        "which Core's mark names with its pages by number: before you answer, pass the draft, its revision and order, "
+        "which Core's mark names with its pages by number: look at them with view_draft (strips to order them), then, "
+        "before you answer, pass the draft, its revision, a short title naming the document by what it is, and order, "
         "the pages in the order their content shows (how a text runs on, headings, signatures, page numbers), each "
-        "page once, leaving a photo out only when its text is the same as another's; Core sends the person the PDF of "
+        "page once, leaving a photo out only when it shows the same page as another; Core sends the person the PDF of "
         "the originals once you have answered. Say in your answer which photos you left out, if any, and which page "
         "seems missing, if any. If they are no document, pass not_a_document instead, and no PDF is made. When the "
         "person asks in words to reorder, drop or add pages, or sends a page that was missing, call this with the "
@@ -759,9 +761,14 @@ TOOLS = (
                 "since is refused with its pages as they are.",
             },
             "add": {"type": "array", "items": {"type": "string"}, "description": "Record ids of photos to add."},
+            "title": {
+                "type": "string",
+                "description": 'What the document is, in a few words of the person\'s language ("Lease of the flat", '
+                '"Passport"): its file\'s name, with the date. Kept by later versions.',
+            },
             "not_a_document": {
                 "type": "boolean",
-                "description": "True when what was read of the draft's images shows people, places or things and "
+                "description": "True when the draft's pages, which you looked at, show people, places or things and "
                 "the person's words do not ask for a document (little text is no sign; when unsure, make the PDF): "
                 "the draft closes, and no PDF is made. Only with the draft and its revision, before its first PDF; "
                 "make_pdf with the draft and an order opens it again.",

@@ -22,6 +22,7 @@ BEGINNING_CHARS = 3_000  # of one document: its beginning; the rest is read with
 NAME_CHARS = 80  # of a file's name inside a mark
 GET = "klepa__get"
 VIEW_PAGE = "klepa__view_page"
+VIEW_DRAFT = "klepa__view_draft"
 MAKE_PDF = "klepa__make_pdf"
 RECORDINGS = frozenset({"voice", "video"})  # readers whose text is a transcript, kept in parts
 _DONE = "done"
@@ -66,6 +67,7 @@ class Draft:
     waits: bool = True  # the model has neither ordered it nor closed it since
     state: str = "open"
     previous: Draft | None = None  # the chat's document these images may continue (an album of a long one)
+    closed: str | None = None  # why a declined draft closed: model (no document) or merged (stage 2c-2)
 
 
 def clean(text: str) -> str:
@@ -204,6 +206,8 @@ def _draft(draft: Draft) -> str:
             f"not_a_document for it; {NEVER}"
         )
     what = f"{len(draft.records)} pages made from the images above, in the order they came: {_numbers(draft)}"
+    if draft.state == "declined" and draft.closed == "merged":  # stage 2c-2: its pages went into another
+        return f"{what}; its pages went into another document of the chat, and it makes nothing; {NEVER}"
     if draft.state == "declined":  # the review's M4: a turn retried after the model closed it
         return (
             f"{what}; it is closed as no document, and no PDF is made; {MAKE_PDF} with the draft and an order opens it"
@@ -218,15 +222,16 @@ def _draft(draft: Draft) -> str:
             )
         return f"{what}; you have ordered it already, and Core sends the PDF after your answer; {NEVER}"
     text = (
-        f"{what}; revision {draft.revision}. Pass {MAKE_PDF} with the draft, revision {draft.revision} and order: the "
-        "numbers of the pages in the order their content shows (how a text runs on, headings, signatures, page "
-        "numbers), each page once, leaving a photo out only when its text is the same as another's (a second photo of "
-        "one page); a page with little or no text is never a repeat, and when unsure, keep both. Core sends the person "
-        "the PDF after your answer. In your answer say which photos you left out, if any, and if what the pages say "
-        "shows a page is missing (a gap in the page numbers, a text that breaks off), say which, so the person can "
-        "send it. If the images show people, places or things, and the person's words do not ask for a document, pass "
-        f"not_a_document with revision {draft.revision} instead, and no PDF is made; little or no text is no sign of "
-        "that, and when unsure, make the PDF"
+        f"{what}; revision {draft.revision}. Look at the pages with {VIEW_DRAFT} (overview to see what they are, "
+        f"strips to read their tops and bottoms), then pass {MAKE_PDF} with the draft, revision {draft.revision}, a "
+        "short title naming the document by what it is, and order: the numbers of the pages in the order their content "
+        "shows (how a text runs on, headings, signatures, page numbers), each page once, leaving a photo out only when "
+        "it shows the same page as another (a second photo of one page); when unsure, keep both, and keep the order "
+        "they came in. Core sends the person the PDF after your answer. In your answer say which photos you left out, "
+        "if any, and if what the pages show says a page is missing (a gap in the page numbers, a text that breaks "
+        "off), say which, so the person can send it. If the pages show people, places or things, and the person's "
+        f"words do not ask for a document, pass not_a_document with revision {draft.revision} instead, and no PDF is "
+        "made; when unsure, make the PDF"
     )
     if draft.previous is not None:
         previous = draft.previous
