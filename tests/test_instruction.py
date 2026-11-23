@@ -117,3 +117,12 @@ def test_a_file_sent_with_no_question_gets_a_short_answer_and_no_offers():
     answers = text.split("## Answers", 1)[1].split("##", 1)[0]
     assert "never ask what to do with it or offer to send it back, even if you did earlier" in answers
     assert "Never show record ids, even if you did earlier" in answers
+
+
+def test_the_instruction_tells_the_model_to_look_at_pictures_and_name_documents():
+    """Stage 2c-2: photos and scans are pictures whose text comes later; a document gets a title."""
+    text = instruction("en")
+    assert "A photo or a scan is a picture whose text comes later" in text
+    assert "klepa__view_page" in text
+    assert "with a short title naming it" in text
+    assert "maybe gone from what you see" in text
