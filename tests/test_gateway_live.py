@@ -792,14 +792,18 @@ async def test_the_model_closes_a_draft_of_photos_that_are_no_document(stand_arg
     def script(request):
         if reading_of(request):
             return read_the_page(request)
-        draft = re.search(r"⟦document draft (\d+) ·", request.human)
-        if draft is not None and not request.tool_results:  # it looks at the pages first (stage 2c-2)
+        # after a look, OpenClaw's last user message is the picture: the turn's draft and calls are in the request
+        turn = json.dumps(request.messages, ensure_ascii=False)
+        drafts = list(re.finditer(r"⟦document draft (\d+) ·", turn))
+        draft = drafts[-1] if drafts else None
+        calls = [m for m in request.messages if m.get("role") == "tool"]
+        if draft is not None and not calls:  # it looks at the pages first (stage 2c-2)
             return fakemodel.Call("klepa__view_draft", {"draft": int(draft.group(1))})
-        if draft is not None and len(request.tool_results) == 1:
-            revision = int(re.search(r"revision (\d+)", request.human).group(1))
+        if draft is not None and len(calls) == 1:
+            revision = int(re.search(r"revision (\d+)", turn[draft.start() :]).group(1))
             params = {"draft": int(draft.group(1)), "not_a_document": True, "revision": revision}
             return fakemodel.Call("klepa__make_pdf", params)
-        return fakemodel.Say("TRIP: " + ("closed" if len(request.tool_results) > 1 else "none"))
+        return fakemodel.Say("TRIP: " + ("closed" if len(calls) > 1 else "none"))
 
     fake_model.script = script
     readers = processing_section(processing_config(tmp_path / "readers"))
