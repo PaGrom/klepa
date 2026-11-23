@@ -389,16 +389,6 @@ class Drafts:
                 closed.append(int(other["id"]))
         return closed
 
-    def _all_read(self, draft_id: int, revision: int) -> bool:
-        """Every page's reading ended with a text, empty or not: a reader not installed, or one that failed, is no
-        sign that a page holds no text."""
-        row = self.conn.execute(
-            "SELECT COUNT(*) FROM draft_page p LEFT JOIN job j ON j.evidence_id = p.evidence_id "
-            "WHERE p.draft_id = ? AND p.revision = ? AND (j.state IS NULL OR j.state != 'done')",
-            (draft_id, revision),
-        ).fetchone()
-        return int(row[0]) == 0
-
     def _built(self, draft_id: int) -> bool:
         row = self.conn.execute("SELECT 1 FROM document_version WHERE draft_id = ? LIMIT 1", (draft_id,)).fetchone()
         return row is not None
@@ -458,8 +448,6 @@ class Drafts:
     # ---- the PDF ----------------------------------------------------------------------------------------------------
     async def _builds(self) -> None:
         for draft in self.conn.execute("SELECT * FROM draft WHERE state = 'building' ORDER BY id").fetchall():
-            if not self._quiet(int(draft["id"]), int(draft["revision"])):
-                continue  # looked at again on the next pass
             try:
                 await self._build(draft)
             except Exception as exc:  # one draft must not stop the others; its error's type names it
@@ -492,7 +480,7 @@ class Drafts:
                 mime="application/pdf",
                 data=data,
                 sources=[str(page["id"]) for page in pages],
-                texts=[self._text(str(page["id"])) for page in pages],
+                album_quiet=self.album_quiet,  # its space from its pages as they are, inside the insert (stage 2c-2)
             )
         reply_to = draft["reply_to"]
         document = {
@@ -540,17 +528,6 @@ class Drafts:
             },
         )
 
-    def _quiet(self, draft_id: int, revision: int) -> bool:
-        """No page's album got an item for the quiet window: a late private caption can no longer move it (review 1's
-        I4), so the document's space is known."""
-        for page in self._pages(draft_id, revision):
-            if page["media_group_id"] is None:
-                continue
-            last = self.store.album_last_received(int(page["chat_id"]), str(page["media_group_id"]))
-            if last is not None and self.clock() - last < self.album_quiet:
-                return False
-        return True
-
     def _version(self, draft_id: int, revision: int) -> int:
         """The version a revision's PDF is: the one it was given, or the next."""
         row = self.conn.execute(
@@ -575,13 +552,6 @@ class Drafts:
         if version == 1:
             return self.locale.text("draft_name").format(date=date) + ".pdf"
         return self.locale.text("draft_name_version").format(date=date, version=version) + ".pdf"
-
-    def _text(self, evidence_id: str) -> str:
-        """A page's text: all that was read from its photo."""
-        rows = self.conn.execute(
-            "SELECT text FROM evidence_text WHERE evidence_id = ? ORDER BY page", (evidence_id,)
-        ).fetchall()
-        return "\n\n".join(str(row[0]) for row in rows)
 
     # ---- drawing ----------------------------------------------------------------------------------------------------
     async def _render(

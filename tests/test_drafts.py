@@ -783,8 +783,10 @@ async def test_a_link_a_sandboxed_step_leaves_in_the_job_folder_is_never_written
     assert state(d, draft_of(d, message)) == "failed"
 
 
-async def test_a_pdf_waits_until_its_album_is_quiet(d):
-    """Review 1's I4: an album's late item may still make it personal, so a PDF of its photos waits for the quiet."""
+async def test_a_pdf_goes_out_at_once_and_is_personal_until_its_album_is_quiet(d):
+    """Stage 2c-2 (the owner, 2026-11-21: no 60-second wait): the PDF goes out once the model answered. A late item
+    may still make the album personal (review 1's I4), so until the album is quiet the PDF is its sender's alone, and
+    the copy waits; then it is the album's space, shared here, and copied."""
     first = d.clock() - 5
     for offset, content in enumerate((b"one", b"two")):
         image(d, f"ev{10 + offset}", content, message_id=10 + offset, album="a", received=first)
@@ -793,10 +795,46 @@ async def test_a_pdf_waits_until_its_album_is_quiet(d):
     draft = draft_of(d, message)
     ordered(d, draft, [1, 2], revision=1)
     await d.drafts.run_once()
-    assert state(d, draft) == "building"  # 5 of 60 quiet seconds
+    assert state(d, draft) == "done"  # 5 of 60 quiet seconds: no wait
+    pdf = d.conn.execute("SELECT * FROM evidence WHERE channel = 'core'").fetchone()
+    assert pdf["space_id"] == "personal:owner"
+    store = d.drafts.store
+    assert store.derived_ready(pdf, 60.0, now=d.clock()) is False  # the album is not quiet: no copy yet
     d.clock.advance(56)
+    assert store.derived_ready(pdf, 60.0, now=d.clock()) is True
+    assert d.conn.execute("SELECT space_id FROM evidence WHERE id = ?", (pdf["id"],)).fetchone()[0] == "shared"
+
+
+async def test_a_pdf_of_a_page_another_person_keeps_is_never_made(d):
+    """Review 3's I2: a page that became another member's own while the PDF was drawn: no PDF, nothing stored."""
+    message = album(d, b"one", b"two")
+    d.drafts.tick()
+    draft = draft_of(d, message)
+    ordered(d, draft, [1, 2], revision=1)
+    original = d.drafts.store.ingest_derived
+
+    async def moved_meanwhile(*args, **kwargs):
+        d.conn.execute("UPDATE evidence SET space_id = 'personal:member' WHERE id = 'ev11'")
+        return await original(*args, **kwargs)
+
+    d.drafts.store.ingest_derived = moved_meanwhile
     await d.drafts.run_once()
-    assert state(d, draft) == "done"
+    assert state(d, draft) == "failed"
+    assert d.conn.execute("SELECT COUNT(*) FROM evidence WHERE channel = 'core'").fetchone()[0] == 0
+    assert outbound(d, f"draft_pdf:{draft}:1") is None
+
+
+async def test_a_pdf_of_a_personal_page_stays_personal(d):
+    message = album(d, b"one", b"two")
+    d.conn.execute("UPDATE evidence SET space_id = 'personal:owner' WHERE id = 'ev10'")
+    d.drafts.tick()
+    draft = draft_of(d, message)
+    ordered(d, draft, [1, 2], revision=1)
+    await d.drafts.run_once()
+    pdf = d.conn.execute("SELECT * FROM evidence WHERE channel = 'core'").fetchone()
+    assert pdf["space_id"] == "personal:owner"
+    assert d.drafts.store.derived_ready(pdf, 60.0, now=d.clock()) is True
+    assert d.conn.execute("SELECT space_id FROM evidence WHERE id = ?", (pdf["id"],)).fetchone()[0] == "personal:owner"
 
 
 async def test_a_stop_cancels_the_drawing_under_way_and_its_draft_is_drawn_again(d):

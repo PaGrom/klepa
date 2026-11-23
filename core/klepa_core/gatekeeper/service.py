@@ -197,7 +197,10 @@ class Gatekeeper:
 
     def _ready_to_copy(self, row: Any) -> bool:
         """Copy only closed batches, and album items only after the album has been quiet for a while:
-        until then a late item may still carry a private caption (#15)."""
+        until then a late item may still carry a private caption (#15). A record Core made from others came in no
+        batch: it waits for its sources' albums (stage 2c-2)."""
+        if row["channel"] == "core":
+            return bool(self.store.derived_ready(row, self.cfg.album_quiet_seconds))
         if self.journal.state(row["update_id"]) != "done":
             return False
         if row["media_group_id"] is None:

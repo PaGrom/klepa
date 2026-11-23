@@ -246,8 +246,9 @@ async def test_a_record_core_made_is_kept_like_an_original_with_its_sources_and_
     assert store.conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0] == 1
 
 
-async def test_a_record_core_made_is_copied_at_once_with_its_sources_on_its_card(store):
-    """It came in no batch, so nothing a batch may still change holds it back."""
+async def test_a_record_core_made_is_copied_once_its_sources_albums_are_quiet_with_its_sources_on_its_card(store):
+    """It came in no batch; since stage 2c-2 its PDF goes out at once, and its copy waits for its sources' albums
+    (none here: copied at once)."""
     made = await store.ingest_derived(
         "draft:1:1",
         space_id="shared",
@@ -260,7 +261,7 @@ async def test_a_record_core_made_is_copied_at_once_with_its_sources_on_its_card
         sources=["ev2", "ev1"],
         texts=["page one"],
     )
-    assert await store.copy_pending(ready=lambda row: False) == 1
+    assert await store.copy_pending(ready=lambda row: row["channel"] == "core" and store.derived_ready(row, 60.0)) == 1
     row = store.conn.execute("SELECT copy_state, documents_path FROM evidence WHERE id=?", (made["id"],)).fetchone()
     copy = store.documents_dir / row["documents_path"]
     assert (row["copy_state"], copy.read_bytes()) == ("copied", b"%PDF made")

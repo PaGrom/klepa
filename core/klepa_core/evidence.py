@@ -32,6 +32,10 @@ from .names import disk_name
 from .search import index_names, index_pages
 
 
+class DerivedRefused(Exception):
+    """A record Core would make from others that are no longer the person's to use (stage 2c-2)."""
+
+
 @dataclass(frozen=True)
 class IncomingFile:
     update_id: int
@@ -171,11 +175,17 @@ class EvidenceStore:
         mime: str,
         data: bytes,
         sources: Sequence[str],
-        texts: Sequence[str],
+        texts: Sequence[str] | None = None,
+        album_quiet: float | None = None,
     ) -> sqlite3.Row:
         """A record Core made from others (a document from photos): stored and copied like an original, under the
         person whose originals it was made from, with its sources in order on its card and its texts searchable page
-        by page. Idempotent by `key`."""
+        by page. Idempotent by `key`.
+
+        Stage 2c-2: with `album_quiet`, the space comes from the sources as they are inside the insert's transaction:
+        every source must be shared or the person's own (else DerivedRefused, nothing stored); the record is the
+        person's own if a source is, or while a source's album may still take a late private caption; the copy pass
+        (derived_ready) makes it shared later. Without `texts` the sources' texts are read there too."""
         existing = self.by_ingest_key(key)
         if existing is not None:
             return existing
@@ -187,6 +197,10 @@ class EvidenceStore:
         digest = hashlib.sha256(data).hexdigest()
         await asyncio.to_thread(self._write_original, directory, disk, data, digest)
         with transaction(self.conn):
+            if album_quiet is not None:
+                space_id = self._derived_space(sources, person_id, album_quiet)
+            if texts is None:
+                texts = [self._page_text(source) for source in sources]
             self.conn.execute(
                 """INSERT INTO evidence(id, space_id, kind, original_name, disk_name, incoming_path, mime, size,
                        sha256, received_at, message_date, channel, chat_id, message_id, update_id,
@@ -300,6 +314,51 @@ class EvidenceStore:
         ).fetchall()
         return [row for row in made if items & set(json.loads(row["derived_from"] or "[]"))]
 
+    def _page_text(self, evidence_id: str) -> str:
+        row = self.conn.execute(
+            "SELECT text FROM evidence_text WHERE evidence_id = ? AND page = 1", (evidence_id,)
+        ).fetchone()
+        return "" if row is None else str(row["text"])
+
+    def _album_open(self, chat_id: int, media_group_id: str | None, quiet: float, now: float) -> bool:
+        if media_group_id is None:
+            return False
+        last = self.album_last_received(chat_id, media_group_id)
+        return last is not None and now - last < quiet
+
+    def _derived_space(self, sources: Sequence[str], person_id: str, quiet: float) -> str:
+        own = f"personal:{person_id}"
+        rows = self.conn.execute(
+            f"SELECT id, space_id, chat_id, media_group_id FROM evidence WHERE id IN ({','.join('?' * len(sources))})",
+            list(sources),
+        ).fetchall()
+        if len(rows) != len(set(sources)) or any(row["space_id"] not in ("shared", own) for row in rows):
+            raise DerivedRefused("a page is no longer the person's to use")
+        now = time.time()
+        private = any(row["space_id"] == own for row in rows) or any(
+            self._album_open(int(row["chat_id"]), row["media_group_id"], quiet, now) for row in rows
+        )
+        return own if private else "shared"
+
+    def derived_ready(self, row: sqlite3.Row, quiet: float, *, now: float | None = None) -> bool:
+        """A record Core made from others may be copied once no source's album may still take a late private caption
+        (#15); it is then the space of its sources: shared when all are, else its person's own (stage 2c-2)."""
+        now = time.time() if now is None else now
+        sources = json.loads(row["derived_from"] or "[]")
+        found = self.conn.execute(
+            f"SELECT space_id, chat_id, media_group_id FROM evidence WHERE id IN ({','.join('?' * len(sources))})",
+            list(sources),
+        ).fetchall()
+        if any(self._album_open(int(source["chat_id"]), source["media_group_id"], quiet, now) for source in found):
+            return False
+        if row["space_id"] != "shared" and found and all(source["space_id"] == "shared" for source in found):
+            with transaction(self.conn):
+                self.conn.execute(
+                    "UPDATE evidence SET space_id = 'shared' WHERE id = ? AND space_id = ?",
+                    (row["id"], row["space_id"]),
+                )
+        return True
+
     def album_last_received(self, chat_id: int, media_group_id: str) -> float | None:
         """Unix time at which the latest stored item of an album arrived."""
         row = self.conn.execute(
@@ -322,9 +381,11 @@ class EvidenceStore:
         rows = self.conn.execute("SELECT * FROM evidence WHERE copy_state='pending' ORDER BY received_at").fetchall()
         copied = 0
         for row in rows:
-            # `ready` holds back what a batch may still change; a record Core made from others came in no batch.
-            if ready is not None and row["channel"] != "core" and not ready(row):
+            # `ready` holds back what a batch may still change, and a record Core made from others until its sources'
+            # albums are quiet (stage 2c-2: its PDF no longer waits for that); it may change the record's space.
+            if ready is not None and not ready(row):
                 continue
+            row = self.conn.execute("SELECT * FROM evidence WHERE id = ?", (row["id"],)).fetchone()
             if await self.copy_one(row):
                 copied += 1
         return copied
